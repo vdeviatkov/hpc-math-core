@@ -79,25 +79,42 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release -DHPC_ENABLE_AVX512=ON
 
 ## Sample benchmark output
 
-> Run on a hypothetical 4-core workstation. Replace with your actual output.
+> Run on 16 × 24 MHz CPU cores. Build: `cmake -DCMAKE_BUILD_TYPE=Release`, Apple Clang, C++20.
+>
+> CPU Caches: L1 Data 64 KiB · L1 Instruction 128 KiB · L2 Unified 4096 KiB (×16)  
+> Load Average: 3.43, 3.08, 3.57
 
 ```
-------------------------------------------------------------
-Benchmark               Time           CPU   Iterations
-------------------------------------------------------------
-Naive/N=64              5 µs           5 µs       140000
-Naive/N=256           370 µs         370 µs         1900
-Naive/N=512          4200 µs        4200 µs          167
-Naive/N=1024        52000 µs       52000 µs           13
-Naive/N=4096     ~5000000 µs    ~5000000 µs            1
-Reordered/N=64          4 µs           4 µs       180000
-Reordered/N=256        75 µs          75 µs         9300
-Reordered/N=512       610 µs         610 µs         1100
-Reordered/N=1024     5100 µs        5100 µs          137
-Reordered/N=4096   ~90000 µs      ~90000 µs            5
+---------------------------------------------------------------------------
+Benchmark                 Time             CPU   Iterations   GFLOP/s
+---------------------------------------------------------------------------
+Naive/N=64             85.3 µs          85.3 µs        8196    6.15 G/s
+Naive/N=256            9544 µs          9540 µs          73    3.52 G/s
+Naive/N=512          103163 µs        103154 µs           7    2.60 G/s
+Naive/N=1024         856731 µs        856668 µs           1    2.51 G/s
+Naive/N=4096      197161840 µs     196766521 µs           1  698.49 M/s
+
+Reordered/N=64         19.5 µs          19.5 µs       35664   26.92 G/s
+Reordered/N=256        2050 µs          2049 µs         343   16.38 G/s
+Reordered/N=512       16476 µs         16471 µs          43   16.30 G/s
+Reordered/N=1024     131522 µs        131484 µs           5   16.33 G/s
+Reordered/N=4096    8440910 µs       8437719 µs           1   16.29 G/s
 ```
 
-*Fill this table with your own numbers after running the benchmarks.*
+**Speedup of `gemm_reordered` over `gemm_naive`:**
+
+| N | Naive | Reordered | Speedup |
+|---|---|---|---|
+| 64 | 85.3 µs | 19.5 µs | **4.4×** |
+| 256 | 9544 µs | 2050 µs | **4.7×** |
+| 512 | 103163 µs | 16476 µs | **6.3×** |
+| 1024 | 856731 µs | 131522 µs | **6.5×** |
+| 4096 | 197161840 µs | 8440910 µs | **23.4×** |
+
+Notable observations:
+- The reordered kernel sustains a **flat ~16 GFLOP/s** across all sizes — hardware prefetching keeps the pipeline saturated even when the working set far exceeds L2/L3.
+- The naïve kernel degrades continuously with N, collapsing to **698 M/s at N=4096** — a direct consequence of column-stride access to B thrashing every cache level and becoming fully DRAM-latency-bound.
+- The **23× gap at N=4096** is the clearest possible argument for loop reordering as a zero-cost (same algorithmic complexity) transformation.
 
 ---
 
@@ -107,7 +124,7 @@ Reordered/N=4096   ~90000 µs      ~90000 µs            5
 GFLOP/s = (2 × N³) / (time_µs × 1000)
 ```
 
-Example: `gemm_reordered`, N=1024, 5100 µs → `2 × 1024³ / (5100 × 1000)` ≈ **0.42 GFLOP/s** (single-core, no SIMD). With AVX-512 FMA the theoretical peak on a 3 GHz core is ≈ 192 GFLOP/s — there is plenty of room for future steps.
+Example: `gemm_reordered`, N=1024, 131484 µs → `2 × 1024³ / (131484 × 1000)` ≈ **16.33 GFLOP/s** (single-core, scalar). With AVX-512 FMA the theoretical peak on a 3 GHz core is ≈ 192 GFLOP/s — there is ~12× headroom still to recover through SIMD vectorisation (Steps 2–3).
 
 ---
 
