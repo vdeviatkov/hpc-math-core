@@ -48,7 +48,6 @@ hpc-math-core/
 |---|---|---|
 | CMake | 3.25 | FetchContent, gtest_discover_tests |
 | C++ compiler | GCC 12 / Clang 16 / Apple Clang 15 | C++20 required |
-| Internet access | — | FetchContent downloads GTest & Google Benchmark |
 
 ---
 
