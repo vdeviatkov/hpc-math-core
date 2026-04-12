@@ -1,0 +1,63 @@
+---
+# =============================================================================
+# hpc-math-core — .clang-tidy
+#
+# Run manually:
+#   clang-tidy src/gemm/naive.hpp -- -std=c++20 -Iinclude -Isrc
+#
+# Or via CMake (requires compile_commands.json):
+#   cmake -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+#   run-clang-tidy -p build
+# =============================================================================
+
+Checks: >
+  clang-diagnostic-*,
+  clang-analyzer-*,
+  cppcoreguidelines-*,
+  modernize-*,
+  performance-*,
+  readability-*,
+  bugprone-*,
+  -modernize-use-trailing-return-type,
+  -cppcoreguidelines-avoid-magic-numbers,
+  -readability-magic-numbers,
+  -cppcoreguidelines-pro-bounds-pointer-arithmetic,
+  -cppcoreguidelines-pro-bounds-array-to-pointer-decay,
+  -readability-identifier-length
+
+WarningsAsErrors: ''
+
+HeaderFilterRegex: '(include/hpc|src/gemm).*\.(hpp|h)$'
+
+CheckOptions:
+  - key:   readability-identifier-naming.NamespaceCase
+    value: lower_case
+  - key:   readability-identifier-naming.ClassCase
+    value: CamelCase
+  - key:   readability-identifier-naming.StructCase
+    value: CamelCase
+  - key:   readability-identifier-naming.FunctionCase
+    value: lower_case
+  - key:   readability-identifier-naming.VariableCase
+    value: lower_case
+  - key:   readability-identifier-naming.ParameterCase
+    value: lower_case
+  - key:   readability-identifier-naming.MemberCase
+    value: lower_case
+  - key:   readability-identifier-naming.MemberSuffix
+    value: '_'
+  - key:   readability-identifier-naming.ConstantCase
+    value: CamelCase
+  - key:   readability-identifier-naming.ConstantPrefix
+    value: 'k'
+  - key:   readability-identifier-naming.EnumConstantCase
+    value: CamelCase
+  - key:   readability-identifier-naming.EnumConstantPrefix
+    value: 'k'
+  - key:   modernize-use-default-member-init.UseAssignment
+    value: '1'
+  - key:   performance-move-const-arg.CheckTriviallyCopyableMove
+    value: '1'
+  - key:   cppcoreguidelines-special-member-functions.AllowSoleDefaultDtor
+    value: '1'
+

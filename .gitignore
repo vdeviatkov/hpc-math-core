@@ -1,0 +1,136 @@
+# =============================================================================
+# hpc-math-core — .gitignore
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# CMake build artefacts
+# ---------------------------------------------------------------------------
+build/
+out/
+cmake-build-*/          # CLion default build directories
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+CPackConfig.cmake
+CPackSourceConfig.cmake
+install_manifest.txt
+_deps/                  # FetchContent download/source/build directories
+
+# ---------------------------------------------------------------------------
+# Compiled output
+# ---------------------------------------------------------------------------
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.out
+*.app
+
+# ---------------------------------------------------------------------------
+# Generated / cached files
+# ---------------------------------------------------------------------------
+*.d             # dependency files
+*.pch           # precompiled headers
+*.gch
+
+# ---------------------------------------------------------------------------
+# Benchmark & profiling output
+# ---------------------------------------------------------------------------
+*.json          # benchmark --benchmark_out results
+perf.data
+perf.data.old
+*.perf
+*.folded
+*.flamegraph
+callgrind.out.*
+massif.out.*
+cachegrind.out.*
+
+# ---------------------------------------------------------------------------
+# Test output
+# ---------------------------------------------------------------------------
+Testing/
+LastTest.log
+CTestCostData.txt
+
+# ---------------------------------------------------------------------------
+# IDE / editor metadata
+# ---------------------------------------------------------------------------
+
+# JetBrains (CLion, etc.)
+.idea/
+*.iml
+cmake-build-debug/
+cmake-build-release/
+cmake-build-relwithdebinfo/
+cmake-build-minsizerel/
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# Xcode
+*.xcodeproj/
+*.xcworkspace/
+DerivedData/
+*.pbxuser
+!default.pbxuser
+*.mode1v3
+!default.mode1v3
+*.mode2v3
+!default.mode2v3
+*.perspectivev3
+!default.perspectivev3
+xcuserdata/
+
+# Vim / Neovim
+*.swp
+*.swo
+*~
+.netrwhist
+tags
+.ccls-cache/
+
+# Emacs
+\#*\#
+.\#*
+*.elc
+
+# ---------------------------------------------------------------------------
+# macOS
+# ---------------------------------------------------------------------------
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon\r
+._*
+.Spotlight-V100
+.Trashes
+.fseventsd
+
+# ---------------------------------------------------------------------------
+# Linux
+# ---------------------------------------------------------------------------
+.nfs*
+
+# ---------------------------------------------------------------------------
+# Windows
+# ---------------------------------------------------------------------------
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ---------------------------------------------------------------------------
+# Clang tooling
+# ---------------------------------------------------------------------------
+# Do NOT ignore .clang-format or .clang-tidy — they are project config files
+# that belong in source control.
+compile_commands.json   # generated; re-created by cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+

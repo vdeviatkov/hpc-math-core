@@ -1,0 +1,214 @@
+---
+# =============================================================================
+# hpc-math-core — .clang-format
+#
+# Style: LLVM base with HPC-specific adjustments for readability in
+# numerically dense code (wider column limit, aligned declarations, etc.)
+# =============================================================================
+
+Language:        Cpp
+Standard:        c++20
+
+# ---------------------------------------------------------------------------
+# Column width
+# LLVM default is 80; 100 gives more room for long template signatures and
+# SIMD intrinsic chains without sacrificing readability on split screens.
+# ---------------------------------------------------------------------------
+ColumnLimit:     100
+
+# ---------------------------------------------------------------------------
+# Indentation
+# ---------------------------------------------------------------------------
+IndentWidth:                 4
+TabWidth:                    4
+UseTab:                      Never
+ContinuationIndentWidth:     4
+IndentCaseLabels:            true
+IndentCaseBlocks:            false
+IndentGotoLabels:            false
+IndentPPDirectives:          BeforeHash
+IndentExternBlock:           Indent
+IndentRequiresClause:        true
+LambdaBodyIndentation:       Signature
+
+# ---------------------------------------------------------------------------
+# Braces
+# ---------------------------------------------------------------------------
+BreakBeforeBraces:           Attach
+BraceWrapping:
+  AfterCaseLabel:      false
+  AfterClass:          false
+  AfterControlStatement: Never
+  AfterEnum:           false
+  AfterFunction:       false
+  AfterNamespace:      false
+  AfterStruct:         false
+  AfterUnion:          false
+  AfterExternBlock:    false
+  BeforeCatch:         false
+  BeforeElse:          false
+  BeforeLambdaBody:    false
+  BeforeWhile:         false
+  IndentBraces:        false
+  SplitEmptyFunction:  false
+  SplitEmptyRecord:    false
+  SplitEmptyNamespace: false
+
+# ---------------------------------------------------------------------------
+# Spaces
+# ---------------------------------------------------------------------------
+SpaceAfterCStyleCast:                 false
+SpaceAfterLogicalNot:                 false
+SpaceAfterTemplateKeyword:            true
+SpaceAroundPointerQualifiers:         Default
+SpaceBeforeAssignmentOperators:       true
+SpaceBeforeCaseColon:                 false
+SpaceBeforeCpp11BracedList:           false
+SpaceBeforeCtorInitializerColon:      true
+SpaceBeforeInheritanceColon:          true
+SpaceBeforeParens:                    ControlStatements
+SpaceBeforeRangeBasedForLoopColon:    true
+SpaceBeforeSquareBrackets:            false
+SpaceInEmptyBlock:                    false
+SpaceInEmptyParentheses:              false
+SpacesBeforeTrailingComments:         2
+SpacesInAngles:                       Never
+SpacesInCStyleCastParentheses:        false
+SpacesInConditionalStatement:         false
+SpacesInContainerLiterals:            false
+SpacesInParentheses:                  false
+SpacesInSquareBrackets:               false
+
+# ---------------------------------------------------------------------------
+# Alignment — makes struct/class member declarations easier to scan visually
+# ---------------------------------------------------------------------------
+AlignAfterOpenBracket:          Align
+AlignArrayOfStructures:         Right
+AlignConsecutiveAssignments:
+  Enabled:          true
+  AcrossEmptyLines: false
+  AcrossComments:   false
+  AlignCompound:    true
+  PadOperators:     true
+AlignConsecutiveBitFields:
+  Enabled:          true
+  AcrossEmptyLines: false
+  AcrossComments:   false
+AlignConsecutiveDeclarations:
+  Enabled:          false    # disabled: too noisy across template types
+  AcrossEmptyLines: false
+  AcrossComments:   false
+AlignConsecutiveMacros:
+  Enabled:          true
+  AcrossEmptyLines: false
+  AcrossComments:   false
+AlignEscapedNewlines:           Left
+AlignOperands:                  AlignAfterOperator
+AlignTrailingComments:
+  Kind:             Always
+  OverEmptyLines:   1
+
+# ---------------------------------------------------------------------------
+# Includes
+# ---------------------------------------------------------------------------
+SortIncludes:            CaseSensitive
+IncludeBlocks:           Regroup
+IncludeCategories:
+  # 1. Related header (e.g. "foo.hpp" when editing foo.cpp)
+  - Regex:           '^"[a-z_/]+\.hpp"'
+    Priority:        1
+    SortPriority:    0
+    CaseSensitive:   false
+  # 2. Project headers  <hpc/...>
+  - Regex:           '^<hpc/'
+    Priority:        2
+    SortPriority:    0
+    CaseSensitive:   false
+  # 3. Third-party headers (benchmark, gtest)
+  - Regex:           '^<(benchmark|gtest|gmock)/'
+    Priority:        3
+    SortPriority:    0
+    CaseSensitive:   false
+  # 4. C++ standard library
+  - Regex:           '^<[a-z_]+>'
+    Priority:        4
+    SortPriority:    0
+    CaseSensitive:   false
+  # 5. C standard library
+  - Regex:           '^<c[a-z]+'
+    Priority:        5
+    SortPriority:    0
+    CaseSensitive:   false
+
+# ---------------------------------------------------------------------------
+# Line breaking
+# ---------------------------------------------------------------------------
+AllowAllArgumentsOnNextLine:              true
+AllowAllParametersOfDeclarationOnNextLine: true
+AllowShortBlocksOnASingleLine:            Empty
+AllowShortCaseLabelsOnASingleLine:        false
+AllowShortEnumsOnASingleLine:             false
+AllowShortFunctionsOnASingleLine:         Inline
+AllowShortIfStatementsOnASingleLine:      Never
+AllowShortLambdasOnASingleLine:           Inline
+AllowShortLoopsOnASingleLine:             false
+AlwaysBreakAfterReturnType:               None
+AlwaysBreakBeforeMultilineStrings:        false
+AlwaysBreakTemplateDeclarations:          Yes
+BreakBeforeBinaryOperators:               NonAssignment
+BreakBeforeConceptDeclarations:           Always
+BreakBeforeTernaryOperators:              true
+BreakConstructorInitializers:             BeforeColon
+BreakInheritanceList:                     BeforeColon
+BreakStringLiterals:                      false   # do NOT break long string literals (docs/comments)
+PackConstructorInitializers:              BinPack
+
+# ---------------------------------------------------------------------------
+# Pointer / reference alignment
+# Align with the type, not the variable name: `const T* ptr`, not `const T *ptr`
+# ---------------------------------------------------------------------------
+PointerAlignment:         Left
+ReferenceAlignment:       Left
+DerivePointerAlignment:   false
+
+# ---------------------------------------------------------------------------
+# Trailing commas / semicolons
+# ---------------------------------------------------------------------------
+InsertTrailingCommas:     None
+
+# ---------------------------------------------------------------------------
+# Comments
+# ---------------------------------------------------------------------------
+ReflowComments:           false   # don't reflow doxygen / ASCII-art comments
+CommentPragmas:           '^ IWYU pragma:|^ nolint'
+
+# ---------------------------------------------------------------------------
+# Penalties (tune line-break decisions)
+# ---------------------------------------------------------------------------
+PenaltyBreakAssignment:              150
+PenaltyBreakBeforeFirstCallParameter: 30
+PenaltyBreakComment:                 300
+PenaltyBreakFirstLessLess:           120
+PenaltyBreakOpenParenthesis:         0
+PenaltyBreakString:                  1000
+PenaltyBreakTemplateDeclaration:     10
+PenaltyExcessCharacter:              100
+PenaltyIndentedWhitespace:           0
+PenaltyReturnTypeOnItsOwnLine:       200
+
+# ---------------------------------------------------------------------------
+# Miscellaneous
+# ---------------------------------------------------------------------------
+FixNamespaceComments:         true
+ShortNamespaceLines:          0       # always add closing comment on namespaces
+CompactNamespaces:            false
+MaxEmptyLinesToKeep:          1
+KeepEmptyLinesAtTheStartOfBlocks: false
+EmptyLineAfterAccessModifier: Never
+EmptyLineBeforeAccessModifier: LogicalBlock
+SeparateDefinitionBlocks:     Leave
+
+QualifierAlignment:           Leave   # leave const/volatile placement as-is
+RequiresClausePosition:       OwnLine
+RequiresExpressionIndentation: OuterScope
+
