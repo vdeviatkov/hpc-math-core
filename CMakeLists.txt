@@ -27,6 +27,55 @@ add_compile_options(
 )
 
 # ---------------------------------------------------------------------------
+# Aggressive optimisation flags (Release / RelWithDebInfo builds only)
+#
+# -O3               : Full optimisation — auto-vectorisation, loop transforms,
+#                     function inlining beyond -O2 thresholds.
+# -march=native     : Emit instructions for the exact CPU this binary is built
+#                     on (AVX2, FMA, BMI2, …). The resulting binary is NOT
+#                     portable to other machines.
+# -ffast-math       : Allows the compiler to reorder, contract and approximate
+#                     floating-point operations in ways that violate strict
+#                     IEEE-754. Enables:
+#                       -fno-signed-zeros, -fno-trapping-math,
+#                       -fassociative-math, -freciprocal-math,
+#                       -ffinite-math-only (assumes no NaN / Inf).
+#                     ⚠ Do NOT use in production code that relies on exact
+#                     FP semantics (e.g. compensated summation, NaN detection).
+#                     For benchmarking raw throughput it is safe and often
+#                     unlocks FMA contraction and vectoriser cost-models.
+# -funroll-loops    : Unroll loops whose trip count is known at compile time.
+#                     Reduces loop-overhead instructions; pairs well with SIMD.
+# -fno-omit-frame-pointer : Keep frame pointers so that profilers (perf,
+#                     Instruments) can unwind the call stack correctly even
+#                     in optimised builds.
+#
+# Inter-Procedural Optimisation (LTO / LTCG):
+#   cmake -DHPC_ENABLE_LTO=ON enables link-time optimisation so that the
+#   compiler can inline and optimise across translation-unit boundaries.
+#   Increases link time significantly for large projects.
+# ---------------------------------------------------------------------------
+add_compile_options(
+    $<$<AND:$<CXX_COMPILER_ID:GNU,Clang,AppleClang>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>:-O3>
+    $<$<AND:$<CXX_COMPILER_ID:GNU,Clang,AppleClang>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>:-march=native>
+    $<$<AND:$<CXX_COMPILER_ID:GNU,Clang,AppleClang>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>:-ffast-math>
+    $<$<AND:$<CXX_COMPILER_ID:GNU,Clang,AppleClang>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>:-funroll-loops>
+    $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-fno-omit-frame-pointer>
+)
+
+option(HPC_ENABLE_LTO "Enable Link-Time Optimisation (increases link time)" OFF)
+if(HPC_ENABLE_LTO)
+    include(CheckIPOSupported)
+    check_ipo_supported(RESULT _ipo_ok OUTPUT _ipo_err)
+    if(_ipo_ok)
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+        message(STATUS "LTO enabled for Release builds")
+    else()
+        message(WARNING "LTO not supported by this toolchain: ${_ipo_err}")
+    endif()
+endif()
+
+# ---------------------------------------------------------------------------
 # Optional: AVX-512 compilation flags
 #
 # Enable with:  cmake -DHPC_ENABLE_AVX512=ON ..
