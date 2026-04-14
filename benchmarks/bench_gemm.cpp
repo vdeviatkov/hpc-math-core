@@ -31,6 +31,7 @@
  * kernel we care about.
  */
 
+#include "gemm/blocked.hpp"
 #include "gemm/naive.hpp"
 #include "gemm/reordered.hpp"
 #include "hpc/matrix.hpp"
@@ -109,6 +110,31 @@ static void BM_Reordered(benchmark::State& state) {
     state.counters["N"] = static_cast<double>(N);
 }
 
+/**
+ * @brief Benchmark gemm_blocked for a given matrix size N.
+ *
+ * Uses the default compile-time tile size (kDefaultTile = 64).  To benchmark
+ * a different tile size, instantiate with a second template argument, e.g.:
+ *   BM_Blocked<1024, 32> for a 32-element tile on a machine with a small L1.
+ */
+template <std::size_t N>
+static void BM_Blocked(benchmark::State& state) {
+    MatrixD A(N, N), B(N, N), C(N, N);
+    fill_random(A, 1);
+    fill_random(B, 2);
+
+    for (auto _ : state) {
+        hpc::gemm::gemm_blocked(A, B, C);
+        benchmark::DoNotOptimize(C.data());
+        benchmark::ClobberMemory();
+    }
+
+    state.counters["GFLOP/s"] = benchmark::Counter(
+        flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
+    state.counters["N"]    = static_cast<double>(N);
+    state.counters["tile"] = static_cast<double>(hpc::gemm::kDefaultTile);
+}
+
 // ---------------------------------------------------------------------------
 // Register benchmarks
 //
@@ -131,5 +157,11 @@ BENCHMARK(BM_Reordered<256>)->Unit(benchmark::kMicrosecond)->Name("Reordered/N=2
 BENCHMARK(BM_Reordered<512>)->Unit(benchmark::kMicrosecond)->Name("Reordered/N=512");
 BENCHMARK(BM_Reordered<1024>)->Unit(benchmark::kMicrosecond)->Name("Reordered/N=1024");
 BENCHMARK(BM_Reordered<4096>)->Unit(benchmark::kMicrosecond)->Name("Reordered/N=4096");
+
+BENCHMARK(BM_Blocked<64>)->Unit(benchmark::kMicrosecond)->Name("Blocked/N=64");
+BENCHMARK(BM_Blocked<256>)->Unit(benchmark::kMicrosecond)->Name("Blocked/N=256");
+BENCHMARK(BM_Blocked<512>)->Unit(benchmark::kMicrosecond)->Name("Blocked/N=512");
+BENCHMARK(BM_Blocked<1024>)->Unit(benchmark::kMicrosecond)->Name("Blocked/N=1024");
+BENCHMARK(BM_Blocked<4096>)->Unit(benchmark::kMicrosecond)->Name("Blocked/N=4096");
 
 BENCHMARK_MAIN();

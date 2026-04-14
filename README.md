@@ -6,12 +6,13 @@ This repository starts from first principles — readable scalar code — and ad
 
 ---
 
-## Current status: Step 0 — Scalar CPU GEMM
+## Current status: Step 1 — Cache-Blocked GEMM
 
 | Kernel | Loop order | Description |
 |---|---|---|
 | `gemm_naive` | i → j → k | Baseline. Column-stride B access thrashes cache. |
 | `gemm_reordered` | i → k → j | Cache-friendly. Sequential access to both B and C. |
+| `gemm_blocked` | tiled i → k → j | L2-resident tiles. Eliminates reuse-distance problem for large N. |
 
 **Expected speedup** of `gemm_reordered` over `gemm_naive`: **4–8×** for N ≥ 256 on modern hardware. See [docs/cache-behavior.md](docs/cache-behavior.md) for the full analysis.
 
@@ -29,10 +30,11 @@ hpc-math-core/
 │   └── gemm/
 │       ├── naive.hpp           i-j-k implementation
 │       ├── reordered.hpp       i-k-j implementation
+│       ├── blocked.hpp         tiled i-k-j implementation (default tile=64)
 │       └── README.md           Per-kernel documentation with ASCII diagrams
 ├── benchmarks/
 │   ├── CMakeLists.txt
-│   └── bench_gemm.cpp          Google Benchmark driver (N = 64/256/512/1024)
+│   └── bench_gemm.cpp          Google Benchmark driver (N = 64/256/512/1024/4096)
 ├── tests/
 │   ├── CMakeLists.txt
 │   └── test_gemm.cpp           Google Test correctness suite
@@ -133,7 +135,7 @@ Example: `gemm_reordered`, N=1024, 131484 µs → `2 × 1024³ / (131484 × 1000
 | Step | Kernel | Key technique |
 |---|---|---|
 | ✅ 0 | `gemm_naive` / `gemm_reordered` | Loop reordering, cache-friendly access |
-| 🔜 1 | `gemm_blocked` | Loop tiling (L1/L2 blocking) |
+| ✅ 1 | `gemm_blocked` | Loop tiling (L2-resident tiles) |
 | 🔜 2 | `gemm_avx2` | 256-bit AVX2 FMA intrinsics |
 | 🔜 3 | `gemm_avx512` | 512-bit AVX-512 + software prefetch |
 | 🔜 4 | `gemm_cuda` | Tiled CUDA kernel (shared memory) |

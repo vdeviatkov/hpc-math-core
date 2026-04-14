@@ -15,6 +15,7 @@
  * accounts for double-precision rounding in the accumulation.
  */
 
+#include "gemm/blocked.hpp"
 #include "gemm/naive.hpp"
 #include "gemm/reordered.hpp"
 #include "hpc/matrix.hpp"
@@ -241,3 +242,95 @@ TEST(GemmReordered, RectangularMatrices) {
         expected += A(0, k) * B(k, 0);
     EXPECT_NEAR(C(0, 0), expected, kEpsD);
 }
+
+// ===========================================================================
+// 6. Blocked kernel tests
+// ===========================================================================
+
+TEST(GemmBlocked, MultiplyByIdentityGivesOriginal) {
+    constexpr std::size_t N = 32;
+    MatrixD A(N, N), I = make_identity(N), C(N, N);
+    fill_random(A, 1);
+
+    hpc::gemm::gemm_blocked(A, I, C);
+
+    for (std::size_t i = 0; i < N; ++i)
+        for (std::size_t j = 0; j < N; ++j)
+            EXPECT_NEAR(C(i, j), A(i, j), kEpsD) << "Mismatch at (" << i << ", " << j << ")";
+}
+
+TEST(GemmBlocked, MultiplyByZeroGivesZero) {
+    constexpr std::size_t N = 16;
+    MatrixD A(N, N), Z(N, N), C(N, N);
+    fill_random(A, 2);
+
+    hpc::gemm::gemm_blocked(A, Z, C);
+
+    for (std::size_t i = 0; i < N; ++i)
+        for (std::size_t j = 0; j < N; ++j)
+            EXPECT_DOUBLE_EQ(C(i, j), 0.0) << "Expected zero at (" << i << ", " << j << ")";
+}
+
+TEST(GemmBlocked, KnownResult2x2) {
+    MatrixD A(2, 2), B(2, 2), C(2, 2);
+    A(0, 0) = 1;
+    A(0, 1) = 2;
+    A(1, 0) = 3;
+    A(1, 1) = 4;
+    B(0, 0) = 5;
+    B(0, 1) = 6;
+    B(1, 0) = 7;
+    B(1, 1) = 8;
+
+    hpc::gemm::gemm_blocked(A, B, C);
+
+    EXPECT_NEAR(C(0, 0), 19.0, kEpsD);
+    EXPECT_NEAR(C(0, 1), 22.0, kEpsD);
+    EXPECT_NEAR(C(1, 0), 43.0, kEpsD);
+    EXPECT_NEAR(C(1, 1), 50.0, kEpsD);
+}
+
+TEST(GemmBlocked, RectangularMatrices) {
+    MatrixD A(3, 4), B(4, 2), C(3, 2);
+    fill_random(A, 7);
+    fill_random(B, 8);
+    hpc::gemm::gemm_blocked(A, B, C);
+
+    double expected = 0.0;
+    for (std::size_t k = 0; k < 4; ++k)
+        expected += A(0, k) * B(k, 0);
+    EXPECT_NEAR(C(0, 0), expected, kEpsD);
+}
+
+// Cross-validate blocked against naive for various sizes, including sizes that
+// are not multiples of the tile width (edge-tile handling).
+class GemmBlockedCrossValidation : public ::testing::TestWithParam<std::size_t> {};
+
+TEST_P(GemmBlockedCrossValidation, BlockedMatchesNaive) {
+    const std::size_t N = GetParam();
+    MatrixD A(N, N), B(N, N), C_naive(N, N), C_blocked(N, N);
+    fill_random(A, 123);
+    fill_random(B, 456);
+
+    hpc::gemm::gemm_naive(A, B, C_naive);
+    hpc::gemm::gemm_blocked(A, B, C_blocked);
+
+    for (std::size_t i = 0; i < N; ++i) {
+        for (std::size_t j = 0; j < N; ++j) {
+            const double expected = C_naive(i, j);
+            const double got      = C_blocked(i, j);
+            const double tol      = kEpsD * (1.0 + std::abs(expected));
+            EXPECT_NEAR(got, expected, tol) << "N=" << N << " at (" << i << ", " << j << ")";
+        }
+    }
+}
+
+// Include non-power-of-2 sizes to exercise partial (edge) tile handling.
+INSTANTIATE_TEST_SUITE_P(Sizes, GemmBlockedCrossValidation,
+                         ::testing::Values(std::size_t{4},    // smaller than tile
+                                           std::size_t{16},   // smaller than tile
+                                           std::size_t{64},   // exactly one tile
+                                           std::size_t{100},  // non-power-of-2, partial tiles
+                                           std::size_t{128},  // two tiles
+                                           std::size_t{256}   // four tiles
+                                           ));
