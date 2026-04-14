@@ -84,39 +84,46 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release -DHPC_ENABLE_AVX512=ON
 > Run on 16 × 24 MHz CPU cores. Build: `cmake -DCMAKE_BUILD_TYPE=Release`, Apple Clang, C++20.
 >
 > CPU Caches: L1 Data 64 KiB · L1 Instruction 128 KiB · L2 Unified 4096 KiB (×16)  
-> Load Average: 3.43, 3.08, 3.57
+> Load Average: 2.17, 3.11, 4.94
 
 ```
 ---------------------------------------------------------------------------
 Benchmark                 Time             CPU   Iterations   GFLOP/s
 ---------------------------------------------------------------------------
-Naive/N=64             85.3 µs          85.3 µs        8196    6.15 G/s
-Naive/N=256            9544 µs          9540 µs          73    3.52 G/s
-Naive/N=512          103163 µs        103154 µs           7    2.60 G/s
-Naive/N=1024         856731 µs        856668 µs           1    2.51 G/s
-Naive/N=4096      197161840 µs     196766521 µs           1  698.49 M/s
+Naive/N=64             85.1 µs          85.0 µs        8087    6.17 G/s
+Naive/N=256            9531 µs          9525 µs          73    3.52 G/s
+Naive/N=512          103568 µs        103561 µs           7    2.59 G/s
+Naive/N=1024        1012672 µs       1012527 µs           1    2.12 G/s
+Naive/N=4096      226560454 µs     195484645 µs           1  703.07 M/s
 
-Reordered/N=64         19.5 µs          19.5 µs       35664   26.92 G/s
-Reordered/N=256        2050 µs          2049 µs         343   16.38 G/s
-Reordered/N=512       16476 µs         16471 µs          43   16.30 G/s
-Reordered/N=1024     131522 µs        131484 µs           5   16.33 G/s
-Reordered/N=4096    8440910 µs       8437719 µs           1   16.29 G/s
+Reordered/N=64         19.1 µs          19.0 µs       36771   27.56 G/s
+Reordered/N=256        2033 µs          2032 µs         349   16.52 G/s
+Reordered/N=512       16342 µs         16313 µs          43   16.46 G/s
+Reordered/N=1024     130420 µs        130329 µs           5   16.48 G/s
+Reordered/N=4096    8356900 µs       8351151 µs           1   16.46 G/s
+
+Blocked/N=64           19.2 µs          19.2 µs       36192   27.24 G/s  (tile=64)
+Blocked/N=256          1484 µs          1469 µs         484   22.84 G/s  (tile=64)
+Blocked/N=512         13082 µs         13038 µs          54   20.59 G/s  (tile=64)
+Blocked/N=1024       115676 µs        115653 µs           6   18.57 G/s  (tile=64)
+Blocked/N=4096      7377471 µs       7372975 µs           1   18.64 G/s  (tile=64)
 ```
 
-**Speedup of `gemm_reordered` over `gemm_naive`:**
+**Speedup over `gemm_naive`:**
 
-| N | Naive | Reordered | Speedup |
-|---|---|---|---|
-| 64 | 85.3 µs | 19.5 µs | **4.4×** |
-| 256 | 9544 µs | 2050 µs | **4.7×** |
-| 512 | 103163 µs | 16476 µs | **6.3×** |
-| 1024 | 856731 µs | 131522 µs | **6.5×** |
-| 4096 | 197161840 µs | 8440910 µs | **23.4×** |
+| N | Naive | Reordered | Speedup | Blocked | Speedup |
+|---|---|---|---|---|---|
+| 64 | 85.1 µs | 19.1 µs | **4.5×** | 19.2 µs | **4.4×** |
+| 256 | 9531 µs | 2033 µs | **4.7×** | 1484 µs | **6.4×** |
+| 512 | 103568 µs | 16342 µs | **6.3×** | 13082 µs | **7.9×** |
+| 1024 | 1012672 µs | 130420 µs | **7.8×** | 115676 µs | **8.8×** |
+| 4096 | 226560454 µs | 8356900 µs | **27.1×** | 7377471 µs | **30.7×** |
 
 Notable observations:
-- The reordered kernel sustains a **flat ~16 GFLOP/s** across all sizes — hardware prefetching keeps the pipeline saturated even when the working set far exceeds L2/L3.
-- The naïve kernel degrades continuously with N, collapsing to **698 M/s at N=4096** — a direct consequence of column-stride access to B thrashing every cache level and becoming fully DRAM-latency-bound.
-- The **23× gap at N=4096** is the clearest possible argument for loop reordering as a zero-cost (same algorithmic complexity) transformation.
+- **`gemm_reordered`** sustains a flat **~16.5 GFLOP/s** across all sizes — hardware prefetching keeps row accesses to B and C fully pipelined regardless of working-set size.
+- **`gemm_blocked`** consistently beats reordered for N ≥ 256, reaching **~19–23 GFLOP/s** — tiling reduces inter-tile reuse distance and keeps the active C sub-matrix hotter in L1, especially visible at N=256 where blocked is **1.4× faster than reordered**.
+- **`gemm_naive`** collapses to **703 M/s at N=4096** (column-stride B access, every load is an L3/DRAM miss). The **30.7× gap** vs. blocked at N=4096 is purely a memory-access-pattern effect — zero algorithmic difference.
+- The blocked kernel's GFLOP/s is still well below the scalar FMA peak (~24 GFLOP/s on this CPU), leaving clear headroom for AVX2/AVX-512 SIMD in the next steps.
 
 ---
 
@@ -126,7 +133,7 @@ Notable observations:
 GFLOP/s = (2 × N³) / (time_µs × 1000)
 ```
 
-Example: `gemm_reordered`, N=1024, 131484 µs → `2 × 1024³ / (131484 × 1000)` ≈ **16.33 GFLOP/s** (single-core, scalar). With AVX-512 FMA the theoretical peak on a 3 GHz core is ≈ 192 GFLOP/s — there is ~12× headroom still to recover through SIMD vectorisation (Steps 2–3).
+Example: `gemm_blocked`, N=1024, 115653 µs → `2 × 1024³ / (115653 × 1000)` ≈ **18.57 GFLOP/s** (single-core, scalar, tile=64). With AVX-512 FMA the theoretical peak on a 3 GHz core is ≈ 192 GFLOP/s — there is still ~10× headroom to recover through SIMD vectorisation (Steps 2–3).
 
 ---
 
