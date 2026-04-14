@@ -116,87 +116,100 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release -DHPC_ENABLE_AVX512=ON
 > `-O3 -march=native -ffast-math -funroll-loops`.
 >
 > CPU Caches: L1 Data 64 KiB · L1 Instruction 128 KiB · L2 Unified 4096 KiB (×16)  
-> Load Average: 2.17, 3.11, 4.94
+> Load Average: 5.45, 5.13, 4.51
 >
 > **Load average** is a Unix metric reported as three numbers: the average number of processes
 > that were either running or waiting for CPU time over the last **1 minute**, **5 minutes**,
 > and **15 minutes** respectively. A value equal to the number of logical CPU cores (here 16)
 > means the machine is exactly fully utilised. Values below that indicate idle capacity;
-> values above indicate a queue of waiting processes. `2.17 / 3.11 / 4.94` on a 16-core machine
-> means ≈14–37% utilisation — the benchmarks had abundant headroom and the numbers are clean.
+> values above indicate a queue of waiting processes. `5.45 / 5.13 / 4.51` on a 16-core machine
+> means ≈28–34% utilisation — moderate background load, numbers are still representative.
 
 ### double (f64)
 
 ```
----------------------------------------------------------------------------
+-------------------------------------------------------------------------------
 Benchmark                     Time             CPU   Iterations   GFLOP/s
----------------------------------------------------------------------------
-Naive/f64/N=64             85.1 µs          85.0 µs        8087    6.17 G/s
-Naive/f64/N=256            9531 µs          9525 µs          73    3.52 G/s
-Naive/f64/N=512          103568 µs        103561 µs           7    2.59 G/s
-Naive/f64/N=1024        1012672 µs       1012527 µs           1    2.12 G/s
-Naive/f64/N=4096      226560454 µs     195484645 µs           1  703.07 M/s
+-------------------------------------------------------------------------------
+Naive/f64/N=64             54.3 µs          54.3 µs       13058    9.66 G/s
+Naive/f64/N=256           12944 µs         12940 µs          55    2.59 G/s
+Naive/f64/N=512          103159 µs        103151 µs           7    2.60 G/s
+Naive/f64/N=1024         887768 µs        887678 µs           1    2.42 G/s
+Naive/f64/N=4096      195990001 µs     195763155 µs           1  702.07 M/s
 
-Reordered/f64/N=64         19.1 µs          19.0 µs       36771   27.56 G/s
-Reordered/f64/N=256        2033 µs          2032 µs         349   16.52 G/s
-Reordered/f64/N=512       16342 µs         16313 µs          43   16.46 G/s
-Reordered/f64/N=1024     130420 µs        130329 µs           5   16.48 G/s
-Reordered/f64/N=4096    8356900 µs       8351151 µs           1   16.46 G/s
+Reordered/f64/N=64         19.7 µs          19.4 µs       36153   27.06 G/s
+Reordered/f64/N=256        2060 µs          2042 µs         342   16.43 G/s
+Reordered/f64/N=512       16171 µs         16163 µs          43   16.61 G/s
+Reordered/f64/N=1024     129521 µs        129467 µs           5   16.59 G/s
+Reordered/f64/N=4096    8355984 µs       8350599 µs           1   16.46 G/s
 
-Blocked/f64/N=64           19.2 µs          19.2 µs       36192   27.24 G/s  (tile=64)
-Blocked/f64/N=256          1484 µs          1469 µs         484   22.84 G/s  (tile=64)
-Blocked/f64/N=512         13082 µs         13038 µs          54   20.59 G/s  (tile=64)
-Blocked/f64/N=1024       115676 µs        115653 µs           6   18.57 G/s  (tile=64)
-Blocked/f64/N=4096      7377471 µs       7372975 µs           1   18.64 G/s  (tile=64)
+Blocked/f64/N=64           19.2 µs          19.2 µs       36216   27.33 G/s  (tile=64)
+Blocked/f64/N=256          1313 µs          1312 µs         535   25.57 G/s  (tile=64)
+Blocked/f64/N=512         12641 µs         12636 µs          55   21.24 G/s  (tile=64)
+Blocked/f64/N=1024       110532 µs        110486 µs           6   19.44 G/s  (tile=64)
+Blocked/f64/N=4096      6778724 µs       6775811 µs           1   20.28 G/s  (tile=64)
 ```
 
-### float (f32)
-
-> *Run `./build/benchmarks/bench_gemm --benchmark_filter="f32"` and paste your results here.*
->
-> Expected behaviour vs f64: `float` matrices are **half the size** (4 B/element vs 8 B), so
-> more data fits in each cache level at the same N. With `-march=native` the auto-vectoriser
-> can also pack **twice as many** floats into a SIMD register (e.g. 8 × f32 vs 4 × f64 in a
-> 256-bit AVX2 register), which can roughly double GFLOP/s on code the compiler vectorises well.
-
-```
----------------------------------------------------------------------------
-Benchmark                     Time             CPU   Iterations   GFLOP/s
----------------------------------------------------------------------------
-Naive/f32/N=64              — µs             — µs          —       — G/s
-Naive/f32/N=256             — µs             — µs          —       — G/s
-Naive/f32/N=512             — µs             — µs          —       — G/s
-Naive/f32/N=1024            — µs             — µs          —       — G/s
-Naive/f32/N=4096            — µs             — µs          —       — G/s
-
-Reordered/f32/N=64          — µs             — µs          —       — G/s
-Reordered/f32/N=256         — µs             — µs          —       — G/s
-Reordered/f32/N=512         — µs             — µs          —       — G/s
-Reordered/f32/N=1024        — µs             — µs          —       — G/s
-Reordered/f32/N=4096        — µs             — µs          —       — G/s
-
-Blocked/f32/N=64            — µs             — µs          —       — G/s  (tile=64)
-Blocked/f32/N=256           — µs             — µs          —       — G/s  (tile=64)
-Blocked/f32/N=512           — µs             — µs          —       — G/s  (tile=64)
-Blocked/f32/N=1024          — µs             — µs          —       — G/s  (tile=64)
-Blocked/f32/N=4096          — µs             — µs          —       — G/s  (tile=64)
-```
-
-**Speedup over `gemm_naive`:**
+**f64 speedup over `gemm_naive`:**
 
 | N | Naive | Reordered | Speedup | Blocked | Speedup |
 |---|---|---|---|---|---|
-| 64 | 85.1 µs | 19.1 µs | **4.5×** | 19.2 µs | **4.4×** |
-| 256 | 9531 µs | 2033 µs | **4.7×** | 1484 µs | **6.4×** |
-| 512 | 103568 µs | 16342 µs | **6.3×** | 13082 µs | **7.9×** |
-| 1024 | 1012672 µs | 130420 µs | **7.8×** | 115676 µs | **8.8×** |
-| 4096 | 226560454 µs | 8356900 µs | **27.1×** | 7377471 µs | **30.7×** |
+| 64 | 54.3 µs | 19.7 µs | **2.8×** | 19.2 µs | **2.8×** |
+| 256 | 12944 µs | 2060 µs | **6.3×** | 1313 µs | **9.9×** |
+| 512 | 103159 µs | 16171 µs | **6.4×** | 12641 µs | **8.2×** |
+| 1024 | 887768 µs | 129521 µs | **6.9×** | 110532 µs | **8.0×** |
+| 4096 | 195990001 µs | 8355984 µs | **23.5×** | 6778724 µs | **28.9×** |
 
-Notable observations:
-- **`gemm_reordered`** sustains a flat **~16.5 GFLOP/s** across all sizes — hardware prefetching keeps row accesses to B and C fully pipelined regardless of working-set size.
-- **`gemm_blocked`** consistently beats reordered for N ≥ 256, reaching **~19–23 GFLOP/s** — tiling reduces inter-tile reuse distance and keeps the active C sub-matrix hotter in L1, especially visible at N=256 where blocked is **1.4× faster than reordered**.
-- **`gemm_naive`** collapses to **703 M/s at N=4096** (column-stride B access, every load is an L3/DRAM miss). The **30.7× gap** vs. blocked at N=4096 is purely a memory-access-pattern effect — zero algorithmic difference.
-- The blocked kernel's GFLOP/s is still well below the scalar FMA peak (~24 GFLOP/s on this CPU), leaving clear headroom for AVX2/AVX-512 SIMD in the next steps.
+### float (f32)
+
+```
+-------------------------------------------------------------------------------
+Benchmark                     Time             CPU   Iterations   GFLOP/s
+-------------------------------------------------------------------------------
+Naive/f32/N=64             55.4 µs          55.4 µs       12586    9.46 G/s
+Naive/f32/N=256           12190 µs         12181 µs          58    2.75 G/s
+Naive/f32/N=512          108410 µs        108352 µs           6    2.48 G/s
+Naive/f32/N=1024         822792 µs        822737 µs           1    2.61 G/s
+Naive/f32/N=4096      204547448 µs     204194893 µs           1  673.08 M/s
+
+Reordered/f32/N=64          6.12 µs          6.11 µs      112443   85.75 G/s
+Reordered/f32/N=256         1052 µs          1052 µs         670   31.89 G/s
+Reordered/f32/N=512         8234 µs          8234 µs          85   32.60 G/s
+Reordered/f32/N=1024       65465 µs         65450 µs          11   32.81 G/s
+Reordered/f32/N=4096     4189995 µs       4189264 µs           1   32.81 G/s
+
+Blocked/f32/N=64            6.12 µs          6.12 µs      111957   85.69 G/s  (tile=64)
+Blocked/f32/N=256            403 µs           403 µs        1738   83.31 G/s  (tile=64)
+Blocked/f32/N=512           5224 µs          5224 µs         128   51.39 G/s  (tile=64)
+Blocked/f32/N=1024         51943 µs         51351 µs          14   41.82 G/s  (tile=64)
+Blocked/f32/N=4096       4382110 µs       4380989 µs           1   31.37 G/s  (tile=64)
+```
+
+**f32 speedup over `gemm_naive`:**
+
+| N | Naive | Reordered | Speedup | Blocked | Speedup |
+|---|---|---|---|---|---|
+| 64 | 55.4 µs | 6.12 µs | **9.1×** | 6.12 µs | **9.1×** |
+| 256 | 12190 µs | 1052 µs | **11.6×** | 403 µs | **30.2×** |
+| 512 | 108410 µs | 8234 µs | **13.2×** | 5224 µs | **20.7×** |
+| 1024 | 822792 µs | 65465 µs | **12.6×** | 51943 µs | **15.8×** |
+| 4096 | 204547448 µs | 4189995 µs | **48.8×** | 4382110 µs | **46.7×** |
+
+### Key observations
+
+**Float vs double:**
+- `gemm_naive` performs nearly identically for f32 and f64 — both are cache-miss-bound on column-stride access to B; the element size doesn't matter when you're waiting on DRAM.
+- `gemm_reordered` delivers **~2× higher GFLOP/s in f32** (32–85 G/s) vs f64 (16–27 G/s). The compiler auto-vectorises the sequential inner j-loop with AVX2: 8 f32 elements per 256-bit register vs 4 f64. This is exactly the predicted SIMD-width doubling.
+- `gemm_blocked` f32 reaches **83 GFLOP/s at N=256** — the entire tile fits in L1, the compiler vectorises fully, and AVX2 FMA runs at near-peak throughput. This is 3× better than the f64 equivalent (25.6 G/s) at the same size.
+- The blocked f32 kernel **drops off at N=4096** (31.4 G/s, below reordered's 32.8 G/s) — with large N the tile is evicted between outer-loop iterations and the tiling benefit is reduced. This is the clearest argument for adding a second level of tiling (L3-blocking) in a future step.
+
+**Headline numbers (best scalar+auto-vectorised throughput):**
+
+| Kernel | f64 peak | f32 peak | f32/f64 ratio |
+|---|---|---|---|
+| `gemm_naive` | 9.66 G/s | 9.46 G/s | 1.0× |
+| `gemm_reordered` | 27.06 G/s | 85.75 G/s | **3.2×** |
+| `gemm_blocked` | 27.33 G/s | 85.69 G/s | **3.1×** |
 
 ---
 
@@ -206,7 +219,7 @@ Notable observations:
 GFLOP/s = (2 × N³) / (time_µs × 1000)
 ```
 
-Example: `gemm_blocked`, N=1024, 115653 µs → `2 × 1024³ / (115653 × 1000)` ≈ **18.57 GFLOP/s** (single-core, scalar, tile=64). With AVX-512 FMA the theoretical peak on a 3 GHz core is ≈ 192 GFLOP/s — there is still ~10× headroom to recover through SIMD vectorisation (Steps 2–3).
+Example: `gemm_blocked` f32, N=256, 403 µs → `2 × 256³ / (403 × 1000)` ≈ **83.3 GFLOP/s** — the entire 3×64×64×4 B = 48 KB tile fits in L1, the compiler auto-vectorises with AVX2 (8 f32/register), and FMA runs at near-peak. With explicit AVX-512 intrinsics (16 f32/register) the theoretical headroom is still ~2×.
 
 ---
 
