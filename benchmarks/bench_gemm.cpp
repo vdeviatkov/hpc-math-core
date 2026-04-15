@@ -82,6 +82,47 @@ constexpr const char* precision_label() {
 }
 
 // ---------------------------------------------------------------------------
+// Compile-time ISA capability flags
+// These are evaluated once at compile time; each SIMD benchmark body calls
+// skip_if_unavailable() which issues state.SkipWithMessage() so the
+// benchmark appears in the output as SKIPPED rather than running a silent
+// fallback scalar kernel.  The scalar Naive/Reordered/Blocked kernels have
+// no such guard — they always run on every target.
+// ---------------------------------------------------------------------------
+
+/// Returns true when AVX2 + FMA are available at compile time.
+static constexpr bool kHaveAvx2 =
+#ifdef __AVX2__
+    true;
+#else
+    false;
+#endif
+
+/// Returns true when AVX-512F is available at compile time.
+static constexpr bool kHaveAvx512 =
+#ifdef __AVX512F__
+    true;
+#else
+    false;
+#endif
+
+/// Returns true when ARM NEON is available at compile time.
+static constexpr bool kHaveNeon =
+#ifdef __ARM_NEON
+    true;
+#else
+    false;
+#endif
+
+/// Returns true when ARM SVE is available at compile time.
+static constexpr bool kHaveSve =
+#ifdef __ARM_FEATURE_SVE
+    true;
+#else
+    false;
+#endif
+
+// ---------------------------------------------------------------------------
 // Benchmark templates — templated on both matrix size N and element type T.
 // ---------------------------------------------------------------------------
 
@@ -162,6 +203,10 @@ static void BM_Blocked(benchmark::State& state) {
  */
 template <std::size_t N, typename T = double>
 static void BM_Avx2Naive(benchmark::State& state) {
+    if (!kHaveAvx2) {
+        state.SkipWithMessage("AVX2 not available on this target");
+        return;
+    }
     hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
     fill_random(A, 1);
     fill_random(B, 2);
@@ -185,6 +230,10 @@ static void BM_Avx2Naive(benchmark::State& state) {
  */
 template <std::size_t N, typename T = double>
 static void BM_Avx2Reordered(benchmark::State& state) {
+    if (!kHaveAvx2) {
+        state.SkipWithMessage("AVX2 not available on this target");
+        return;
+    }
     hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
     fill_random(A, 1);
     fill_random(B, 2);
@@ -208,6 +257,10 @@ static void BM_Avx2Reordered(benchmark::State& state) {
  */
 template <std::size_t N, typename T = double>
 static void BM_Avx2Blocked(benchmark::State& state) {
+    if (!kHaveAvx2) {
+        state.SkipWithMessage("AVX2 not available on this target");
+        return;
+    }
     hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
     fill_random(A, 1);
     fill_random(B, 2);
@@ -347,6 +400,10 @@ BENCHMARK(BM_Avx2Blocked<4096, float>)
  */
 template <std::size_t N, typename T = double>
 static void BM_Avx512Naive(benchmark::State& state) {
+    if (!kHaveAvx512) {
+        state.SkipWithMessage("AVX-512 not available on this target");
+        return;
+    }
     hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
     fill_random(A, 1);
     fill_random(B, 2);
@@ -372,6 +429,10 @@ static void BM_Avx512Naive(benchmark::State& state) {
  */
 template <std::size_t N, typename T = double>
 static void BM_Avx512Reordered(benchmark::State& state) {
+    if (!kHaveAvx512) {
+        state.SkipWithMessage("AVX-512 not available on this target");
+        return;
+    }
     hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
     fill_random(A, 1);
     fill_random(B, 2);
@@ -397,6 +458,10 @@ static void BM_Avx512Reordered(benchmark::State& state) {
  */
 template <std::size_t N, typename T = double>
 static void BM_Avx512Blocked(benchmark::State& state) {
+    if (!kHaveAvx512) {
+        state.SkipWithMessage("AVX-512 not available on this target");
+        return;
+    }
     hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
     fill_random(A, 1);
     fill_random(B, 2);
@@ -494,6 +559,10 @@ BENCHMARK(BM_Avx512Blocked<4096, float>)
  */
 template <std::size_t N, typename T = double>
 static void BM_NeonNaive(benchmark::State& state) {
+    if (!kHaveNeon) {
+        state.SkipWithMessage("NEON not available on this target");
+        return;
+    }
     hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
     fill_random(A, 1);
     fill_random(B, 2);
@@ -519,6 +588,10 @@ static void BM_NeonNaive(benchmark::State& state) {
  */
 template <std::size_t N, typename T = double>
 static void BM_NeonReordered(benchmark::State& state) {
+    if (!kHaveNeon) {
+        state.SkipWithMessage("NEON not available on this target");
+        return;
+    }
     hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
     fill_random(A, 1);
     fill_random(B, 2);
@@ -544,6 +617,10 @@ static void BM_NeonReordered(benchmark::State& state) {
  */
 template <std::size_t N, typename T = double>
 static void BM_NeonBlocked(benchmark::State& state) {
+    if (!kHaveNeon) {
+        state.SkipWithMessage("NEON not available on this target");
+        return;
+    }
     hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
     fill_random(A, 1);
     fill_random(B, 2);
@@ -631,6 +708,10 @@ BENCHMARK(BM_NeonBlocked<4096, float>)
  */
 template <std::size_t N, typename T = double>
 static void BM_SveNaive(benchmark::State& state) {
+    if (!kHaveSve) {
+        state.SkipWithMessage("SVE not available on this target");
+        return;
+    }
     hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
     fill_random(A, 1);
     fill_random(B, 2);
@@ -658,6 +739,10 @@ static void BM_SveNaive(benchmark::State& state) {
  */
 template <std::size_t N, typename T = double>
 static void BM_SveReordered(benchmark::State& state) {
+    if (!kHaveSve) {
+        state.SkipWithMessage("SVE not available on this target");
+        return;
+    }
     hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
     fill_random(A, 1);
     fill_random(B, 2);
@@ -685,6 +770,10 @@ static void BM_SveReordered(benchmark::State& state) {
  */
 template <std::size_t N, typename T = double>
 static void BM_SveBlocked(benchmark::State& state) {
+    if (!kHaveSve) {
+        state.SkipWithMessage("SVE not available on this target");
+        return;
+    }
     hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
     fill_random(A, 1);
     fill_random(B, 2);
