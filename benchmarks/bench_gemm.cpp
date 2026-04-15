@@ -40,6 +40,7 @@
 #include "gemm/blocked.hpp"
 #include "gemm/naive.hpp"
 #include "gemm/neon.hpp"
+#include "gemm/prefetch.hpp"
 #include "gemm/reordered.hpp"
 #include "gemm/sve.hpp"
 #include "hpc/matrix.hpp"
@@ -838,5 +839,245 @@ BENCHMARK(BM_SveBlocked<256, float>)->Unit(benchmark::kMicrosecond)->Name("SveBl
 BENCHMARK(BM_SveBlocked<512, float>)->Unit(benchmark::kMicrosecond)->Name("SveBlocked/f32/N=512");
 BENCHMARK(BM_SveBlocked<1024, float>)->Unit(benchmark::kMicrosecond)->Name("SveBlocked/f32/N=1024");
 BENCHMARK(BM_SveBlocked<4096, float>)->Unit(benchmark::kMicrosecond)->Name("SveBlocked/f32/N=4096");
+
+// ============================================================================
+// Software-prefetch benchmark templates
+//
+// For each SIMD family we benchmark the *blocked* variant only — that is the
+// kernel where prefetch can help.  Naive / Reordered are already either
+// DRAM-bandwidth-bound (cache-miss pattern makes prefetch irrelevant) or
+// fully L1-resident at useful sizes.
+//
+// Naming convention:  <Family>BlockedPf<D>/<prec>/N=<size>
+//   D  = prefetch distance in micro-kernel rows (2, 4, 8, 16)
+//
+// Each template is also ISA-guarded via the same kHave* flags as its base
+// kernel — benchmarks for absent ISAs appear as SKIPPED, not as timing.
+//
+// ============================================================================
+
+// ---------------------------------------------------------------------------
+// Prefetch distance sweep helper — one template per (ISA, PfDist)
+// ---------------------------------------------------------------------------
+
+/// Scalar blocked + prefetch, distance PfDist.
+template <std::size_t N, typename T = double, std::size_t PfDist = hpc::gemm::kDefaultPrefetchDist>
+static void BM_BlockedPf(benchmark::State& state) {
+    hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
+    fill_random(A, 1);
+    fill_random(B, 2);
+    for (auto _ : state) {
+        hpc::gemm::gemm_blocked_prefetch<T, PfDist>(A, B, C);
+        benchmark::DoNotOptimize(C.data());
+        benchmark::ClobberMemory();
+    }
+    state.counters["GFLOP/s"] = benchmark::Counter(
+        flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
+    state.counters["N"]         = static_cast<double>(N);
+    state.counters["pf_dist"]   = static_cast<double>(PfDist);
+    state.counters["precision"] = static_cast<double>(sizeof(T) * 8);
+}
+
+/// AVX2 blocked + prefetch, distance PfDist.
+template <std::size_t N, typename T = double, std::size_t PfDist = hpc::gemm::kDefaultPrefetchDist>
+static void BM_Avx2BlockedPf(benchmark::State& state) {
+    if (!kHaveAvx2) { state.SkipWithMessage("AVX2 not available on this target"); return; }
+    hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
+    fill_random(A, 1);
+    fill_random(B, 2);
+    for (auto _ : state) {
+        hpc::gemm::gemm_avx2_blocked_prefetch<T, PfDist>(A, B, C);
+        benchmark::DoNotOptimize(C.data());
+        benchmark::ClobberMemory();
+    }
+    state.counters["GFLOP/s"] = benchmark::Counter(
+        flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
+    state.counters["N"]         = static_cast<double>(N);
+    state.counters["pf_dist"]   = static_cast<double>(PfDist);
+    state.counters["precision"] = static_cast<double>(sizeof(T) * 8);
+}
+
+/// AVX-512 blocked + prefetch, distance PfDist.
+template <std::size_t N, typename T = double, std::size_t PfDist = hpc::gemm::kDefaultPrefetchDist>
+static void BM_Avx512BlockedPf(benchmark::State& state) {
+    if (!kHaveAvx512) { state.SkipWithMessage("AVX-512 not available on this target"); return; }
+    hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
+    fill_random(A, 1);
+    fill_random(B, 2);
+    for (auto _ : state) {
+        hpc::gemm::gemm_avx512_blocked_prefetch<T, PfDist>(A, B, C);
+        benchmark::DoNotOptimize(C.data());
+        benchmark::ClobberMemory();
+    }
+    state.counters["GFLOP/s"] = benchmark::Counter(
+        flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
+    state.counters["N"]         = static_cast<double>(N);
+    state.counters["pf_dist"]   = static_cast<double>(PfDist);
+    state.counters["precision"] = static_cast<double>(sizeof(T) * 8);
+}
+
+/// NEON blocked + prefetch, distance PfDist.
+template <std::size_t N, typename T = double, std::size_t PfDist = hpc::gemm::kDefaultPrefetchDist>
+static void BM_NeonBlockedPf(benchmark::State& state) {
+    if (!kHaveNeon) { state.SkipWithMessage("NEON not available on this target"); return; }
+    hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
+    fill_random(A, 1);
+    fill_random(B, 2);
+    for (auto _ : state) {
+        hpc::gemm::gemm_neon_blocked_prefetch<T, PfDist>(A, B, C);
+        benchmark::DoNotOptimize(C.data());
+        benchmark::ClobberMemory();
+    }
+    state.counters["GFLOP/s"] = benchmark::Counter(
+        flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
+    state.counters["N"]         = static_cast<double>(N);
+    state.counters["pf_dist"]   = static_cast<double>(PfDist);
+    state.counters["precision"] = static_cast<double>(sizeof(T) * 8);
+}
+
+/// SVE blocked + prefetch, distance PfDist.
+template <std::size_t N, typename T = double, std::size_t PfDist = hpc::gemm::kDefaultPrefetchDist>
+static void BM_SveBlockedPf(benchmark::State& state) {
+    if (!kHaveSve) { state.SkipWithMessage("SVE not available on this target"); return; }
+    hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
+    fill_random(A, 1);
+    fill_random(B, 2);
+    for (auto _ : state) {
+        hpc::gemm::gemm_sve_blocked_prefetch<T, PfDist>(A, B, C);
+        benchmark::DoNotOptimize(C.data());
+        benchmark::ClobberMemory();
+    }
+    state.counters["GFLOP/s"] = benchmark::Counter(
+        flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
+    state.counters["N"]         = static_cast<double>(N);
+    state.counters["pf_dist"]   = static_cast<double>(PfDist);
+    state.counters["precision"] = static_cast<double>(sizeof(T) * 8);
+}
+
+// ---------------------------------------------------------------------------
+// Registrations — distance sweep: D2 / D4 / D8 / D16
+// Focus sizes: 512, 1024, 4096 (working sets >= L2; prefetch most visible)
+// Also N=256 to capture L2-boundary behaviour.
+//
+// To run only this family:
+//   ./build/benchmarks/bench_gemm --benchmark_filter="BlockedPf"
+// ---------------------------------------------------------------------------
+
+// ---- Scalar + prefetch (always runs) ----------------------------------------
+#define HPC_REG_BLOCKED_PF(N, T, D, TNAME, PNAME)                                         \
+    BENCHMARK((BM_BlockedPf<N, T, D>))->Unit(benchmark::kMicrosecond)                     \
+        ->Name("BlockedPf" #D "/" PNAME "/N=" #N);
+
+HPC_REG_BLOCKED_PF(256,  double, 2,  f64, "f64")
+HPC_REG_BLOCKED_PF(256,  double, 4,  f64, "f64")
+HPC_REG_BLOCKED_PF(256,  double, 8,  f64, "f64")
+HPC_REG_BLOCKED_PF(256,  double, 16, f64, "f64")
+HPC_REG_BLOCKED_PF(512,  double, 2,  f64, "f64")
+HPC_REG_BLOCKED_PF(512,  double, 4,  f64, "f64")
+HPC_REG_BLOCKED_PF(512,  double, 8,  f64, "f64")
+HPC_REG_BLOCKED_PF(512,  double, 16, f64, "f64")
+HPC_REG_BLOCKED_PF(1024, double, 2,  f64, "f64")
+HPC_REG_BLOCKED_PF(1024, double, 4,  f64, "f64")
+HPC_REG_BLOCKED_PF(1024, double, 8,  f64, "f64")
+HPC_REG_BLOCKED_PF(1024, double, 16, f64, "f64")
+
+HPC_REG_BLOCKED_PF(256,  float, 2,  f32, "f32")
+HPC_REG_BLOCKED_PF(256,  float, 4,  f32, "f32")
+HPC_REG_BLOCKED_PF(256,  float, 8,  f32, "f32")
+HPC_REG_BLOCKED_PF(256,  float, 16, f32, "f32")
+HPC_REG_BLOCKED_PF(512,  float, 2,  f32, "f32")
+HPC_REG_BLOCKED_PF(512,  float, 4,  f32, "f32")
+HPC_REG_BLOCKED_PF(512,  float, 8,  f32, "f32")
+HPC_REG_BLOCKED_PF(512,  float, 16, f32, "f32")
+HPC_REG_BLOCKED_PF(1024, float, 2,  f32, "f32")
+HPC_REG_BLOCKED_PF(1024, float, 4,  f32, "f32")
+HPC_REG_BLOCKED_PF(1024, float, 8,  f32, "f32")
+HPC_REG_BLOCKED_PF(1024, float, 16, f32, "f32")
+
+#undef HPC_REG_BLOCKED_PF
+
+// ---- AVX2 + prefetch -------------------------------------------------------
+#define HPC_REG_AVX2_PF(N, T, D, PNAME)                                                   \
+    BENCHMARK((BM_Avx2BlockedPf<N, T, D>))->Unit(benchmark::kMicrosecond)                 \
+        ->Name("Avx2BlockedPf" #D "/" PNAME "/N=" #N);
+
+HPC_REG_AVX2_PF(256,  double, 2,  "f64") HPC_REG_AVX2_PF(256,  double, 4,  "f64")
+HPC_REG_AVX2_PF(256,  double, 8,  "f64") HPC_REG_AVX2_PF(256,  double, 16, "f64")
+HPC_REG_AVX2_PF(512,  double, 2,  "f64") HPC_REG_AVX2_PF(512,  double, 4,  "f64")
+HPC_REG_AVX2_PF(512,  double, 8,  "f64") HPC_REG_AVX2_PF(512,  double, 16, "f64")
+HPC_REG_AVX2_PF(1024, double, 2,  "f64") HPC_REG_AVX2_PF(1024, double, 4,  "f64")
+HPC_REG_AVX2_PF(1024, double, 8,  "f64") HPC_REG_AVX2_PF(1024, double, 16, "f64")
+
+HPC_REG_AVX2_PF(256,  float, 2,  "f32") HPC_REG_AVX2_PF(256,  float, 4,  "f32")
+HPC_REG_AVX2_PF(256,  float, 8,  "f32") HPC_REG_AVX2_PF(256,  float, 16, "f32")
+HPC_REG_AVX2_PF(512,  float, 2,  "f32") HPC_REG_AVX2_PF(512,  float, 4,  "f32")
+HPC_REG_AVX2_PF(512,  float, 8,  "f32") HPC_REG_AVX2_PF(512,  float, 16, "f32")
+HPC_REG_AVX2_PF(1024, float, 2,  "f32") HPC_REG_AVX2_PF(1024, float, 4,  "f32")
+HPC_REG_AVX2_PF(1024, float, 8,  "f32") HPC_REG_AVX2_PF(1024, float, 16, "f32")
+
+#undef HPC_REG_AVX2_PF
+
+// ---- AVX-512 + prefetch ----------------------------------------------------
+#define HPC_REG_AVX512_PF(N, T, D, PNAME)                                                 \
+    BENCHMARK((BM_Avx512BlockedPf<N, T, D>))->Unit(benchmark::kMicrosecond)               \
+        ->Name("Avx512BlockedPf" #D "/" PNAME "/N=" #N);
+
+HPC_REG_AVX512_PF(256,  double, 2,  "f64") HPC_REG_AVX512_PF(256,  double, 4,  "f64")
+HPC_REG_AVX512_PF(256,  double, 8,  "f64") HPC_REG_AVX512_PF(256,  double, 16, "f64")
+HPC_REG_AVX512_PF(512,  double, 2,  "f64") HPC_REG_AVX512_PF(512,  double, 4,  "f64")
+HPC_REG_AVX512_PF(512,  double, 8,  "f64") HPC_REG_AVX512_PF(512,  double, 16, "f64")
+HPC_REG_AVX512_PF(1024, double, 2,  "f64") HPC_REG_AVX512_PF(1024, double, 4,  "f64")
+HPC_REG_AVX512_PF(1024, double, 8,  "f64") HPC_REG_AVX512_PF(1024, double, 16, "f64")
+
+HPC_REG_AVX512_PF(256,  float, 2,  "f32") HPC_REG_AVX512_PF(256,  float, 4,  "f32")
+HPC_REG_AVX512_PF(256,  float, 8,  "f32") HPC_REG_AVX512_PF(256,  float, 16, "f32")
+HPC_REG_AVX512_PF(512,  float, 2,  "f32") HPC_REG_AVX512_PF(512,  float, 4,  "f32")
+HPC_REG_AVX512_PF(512,  float, 8,  "f32") HPC_REG_AVX512_PF(512,  float, 16, "f32")
+HPC_REG_AVX512_PF(1024, float, 2,  "f32") HPC_REG_AVX512_PF(1024, float, 4,  "f32")
+HPC_REG_AVX512_PF(1024, float, 8,  "f32") HPC_REG_AVX512_PF(1024, float, 16, "f32")
+
+#undef HPC_REG_AVX512_PF
+
+// ---- NEON + prefetch -------------------------------------------------------
+#define HPC_REG_NEON_PF(N, T, D, PNAME)                                                   \
+    BENCHMARK((BM_NeonBlockedPf<N, T, D>))->Unit(benchmark::kMicrosecond)                 \
+        ->Name("NeonBlockedPf" #D "/" PNAME "/N=" #N);
+
+HPC_REG_NEON_PF(256,  double, 2,  "f64") HPC_REG_NEON_PF(256,  double, 4,  "f64")
+HPC_REG_NEON_PF(256,  double, 8,  "f64") HPC_REG_NEON_PF(256,  double, 16, "f64")
+HPC_REG_NEON_PF(512,  double, 2,  "f64") HPC_REG_NEON_PF(512,  double, 4,  "f64")
+HPC_REG_NEON_PF(512,  double, 8,  "f64") HPC_REG_NEON_PF(512,  double, 16, "f64")
+HPC_REG_NEON_PF(1024, double, 2,  "f64") HPC_REG_NEON_PF(1024, double, 4,  "f64")
+HPC_REG_NEON_PF(1024, double, 8,  "f64") HPC_REG_NEON_PF(1024, double, 16, "f64")
+
+HPC_REG_NEON_PF(256,  float, 2,  "f32") HPC_REG_NEON_PF(256,  float, 4,  "f32")
+HPC_REG_NEON_PF(256,  float, 8,  "f32") HPC_REG_NEON_PF(256,  float, 16, "f32")
+HPC_REG_NEON_PF(512,  float, 2,  "f32") HPC_REG_NEON_PF(512,  float, 4,  "f32")
+HPC_REG_NEON_PF(512,  float, 8,  "f32") HPC_REG_NEON_PF(512,  float, 16, "f32")
+HPC_REG_NEON_PF(1024, float, 2,  "f32") HPC_REG_NEON_PF(1024, float, 4,  "f32")
+HPC_REG_NEON_PF(1024, float, 8,  "f32") HPC_REG_NEON_PF(1024, float, 16, "f32")
+
+#undef HPC_REG_NEON_PF
+
+// ---- SVE + prefetch --------------------------------------------------------
+#define HPC_REG_SVE_PF(N, T, D, PNAME)                                                    \
+    BENCHMARK((BM_SveBlockedPf<N, T, D>))->Unit(benchmark::kMicrosecond)                  \
+        ->Name("SveBlockedPf" #D "/" PNAME "/N=" #N);
+
+HPC_REG_SVE_PF(256,  double, 2,  "f64") HPC_REG_SVE_PF(256,  double, 4,  "f64")
+HPC_REG_SVE_PF(256,  double, 8,  "f64") HPC_REG_SVE_PF(256,  double, 16, "f64")
+HPC_REG_SVE_PF(512,  double, 2,  "f64") HPC_REG_SVE_PF(512,  double, 4,  "f64")
+HPC_REG_SVE_PF(512,  double, 8,  "f64") HPC_REG_SVE_PF(512,  double, 16, "f64")
+HPC_REG_SVE_PF(1024, double, 2,  "f64") HPC_REG_SVE_PF(1024, double, 4,  "f64")
+HPC_REG_SVE_PF(1024, double, 8,  "f64") HPC_REG_SVE_PF(1024, double, 16, "f64")
+
+HPC_REG_SVE_PF(256,  float, 2,  "f32") HPC_REG_SVE_PF(256,  float, 4,  "f32")
+HPC_REG_SVE_PF(256,  float, 8,  "f32") HPC_REG_SVE_PF(256,  float, 16, "f32")
+HPC_REG_SVE_PF(512,  float, 2,  "f32") HPC_REG_SVE_PF(512,  float, 4,  "f32")
+HPC_REG_SVE_PF(512,  float, 8,  "f32") HPC_REG_SVE_PF(512,  float, 16, "f32")
+HPC_REG_SVE_PF(1024, float, 2,  "f32") HPC_REG_SVE_PF(1024, float, 4,  "f32")
+HPC_REG_SVE_PF(1024, float, 8,  "f32") HPC_REG_SVE_PF(1024, float, 16, "f32")
+
+#undef HPC_REG_SVE_PF
 
 BENCHMARK_MAIN();
