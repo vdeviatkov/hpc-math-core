@@ -38,6 +38,7 @@
  */
 
 #include "gemm/blocked.hpp"
+#include "gemm/neon.hpp"
 #include "hpc/matrix.hpp"
 
 #include <benchmark/benchmark.h>
@@ -475,5 +476,138 @@ BENCHMARK(BM_Avx512Blocked<1024, float>)
 BENCHMARK(BM_Avx512Blocked<4096, float>)
     ->Unit(benchmark::kMicrosecond)
     ->Name("Avx512Blocked/f32/N=4096");
+
+// ============================================================================
+// NEON benchmarks
+// On x86 targets each kernel transparently delegates to its AVX2 equivalent,
+// so these registrations are always safe to include in the binary.
+// On Apple Silicon / AArch64 the NEON code path is active.
+// ============================================================================
+
+/**
+ * @brief Benchmark gemm_neon_naive<T> — i-j-k, NEON on k-loop.
+ * Expected: GFLOP/s ≈ scalar naive — column-stride gather is still
+ * cache-miss bound regardless of SIMD width.
+ */
+template <std::size_t N, typename T = double>
+static void BM_NeonNaive(benchmark::State& state) {
+    hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
+    fill_random(A, 1);
+    fill_random(B, 2);
+    for (auto _ : state) {
+        hpc::gemm::gemm_neon_naive(A, B, C);
+        benchmark::DoNotOptimize(C.data());
+        benchmark::ClobberMemory();
+    }
+    state.counters["GFLOP/s"] = benchmark::Counter(
+        flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
+    state.counters["N"]         = static_cast<double>(N);
+    state.counters["precision"] = static_cast<double>(sizeof(T) * 8);
+#ifdef __ARM_NEON
+    state.counters["neon"] = 1;
+#else
+    state.counters["neon"] = 0;
+#endif
+}
+
+/**
+ * @brief Benchmark gemm_neon_reordered<T> — i-k-j, NEON on j-loop.
+ * Expected: ~4× scalar reordered (f32, 4-wide NEON); ~2× (f64, 2-wide NEON).
+ */
+template <std::size_t N, typename T = double>
+static void BM_NeonReordered(benchmark::State& state) {
+    hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
+    fill_random(A, 1);
+    fill_random(B, 2);
+    for (auto _ : state) {
+        hpc::gemm::gemm_neon_reordered(A, B, C);
+        benchmark::DoNotOptimize(C.data());
+        benchmark::ClobberMemory();
+    }
+    state.counters["GFLOP/s"] = benchmark::Counter(
+        flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
+    state.counters["N"]         = static_cast<double>(N);
+    state.counters["precision"] = static_cast<double>(sizeof(T) * 8);
+#ifdef __ARM_NEON
+    state.counters["neon"] = 1;
+#else
+    state.counters["neon"] = 0;
+#endif
+}
+
+/**
+ * @brief Benchmark gemm_neon_blocked<T> — tiled i-k-j + NEON register tile.
+ * Expected: highest GFLOP/s on ARM. L2 tiling + 4×16 f32 C tile in Q registers.
+ */
+template <std::size_t N, typename T = double>
+static void BM_NeonBlocked(benchmark::State& state) {
+    hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
+    fill_random(A, 1);
+    fill_random(B, 2);
+    for (auto _ : state) {
+        hpc::gemm::gemm_neon_blocked(A, B, C);
+        benchmark::DoNotOptimize(C.data());
+        benchmark::ClobberMemory();
+    }
+    state.counters["GFLOP/s"] = benchmark::Counter(
+        flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
+    state.counters["N"]         = static_cast<double>(N);
+    state.counters["precision"] = static_cast<double>(sizeof(T) * 8);
+#ifdef __ARM_NEON
+    state.counters["neon"] = 1;
+#else
+    state.counters["neon"] = 0;
+#endif
+}
+
+// ---- NEON Naive ------------------------------------------------------------
+BENCHMARK(BM_NeonNaive<64>)->Unit(benchmark::kMicrosecond)->Name("NeonNaive/f64/N=64");
+BENCHMARK(BM_NeonNaive<256>)->Unit(benchmark::kMicrosecond)->Name("NeonNaive/f64/N=256");
+BENCHMARK(BM_NeonNaive<512>)->Unit(benchmark::kMicrosecond)->Name("NeonNaive/f64/N=512");
+BENCHMARK(BM_NeonNaive<1024>)->Unit(benchmark::kMicrosecond)->Name("NeonNaive/f64/N=1024");
+BENCHMARK(BM_NeonNaive<4096>)->Unit(benchmark::kMicrosecond)->Name("NeonNaive/f64/N=4096");
+BENCHMARK(BM_NeonNaive<64, float>)->Unit(benchmark::kMicrosecond)->Name("NeonNaive/f32/N=64");
+BENCHMARK(BM_NeonNaive<256, float>)->Unit(benchmark::kMicrosecond)->Name("NeonNaive/f32/N=256");
+BENCHMARK(BM_NeonNaive<512, float>)->Unit(benchmark::kMicrosecond)->Name("NeonNaive/f32/N=512");
+BENCHMARK(BM_NeonNaive<1024, float>)->Unit(benchmark::kMicrosecond)->Name("NeonNaive/f32/N=1024");
+BENCHMARK(BM_NeonNaive<4096, float>)->Unit(benchmark::kMicrosecond)->Name("NeonNaive/f32/N=4096");
+
+// ---- NEON Reordered --------------------------------------------------------
+BENCHMARK(BM_NeonReordered<64>)->Unit(benchmark::kMicrosecond)->Name("NeonReordered/f64/N=64");
+BENCHMARK(BM_NeonReordered<256>)->Unit(benchmark::kMicrosecond)->Name("NeonReordered/f64/N=256");
+BENCHMARK(BM_NeonReordered<512>)->Unit(benchmark::kMicrosecond)->Name("NeonReordered/f64/N=512");
+BENCHMARK(BM_NeonReordered<1024>)->Unit(benchmark::kMicrosecond)->Name("NeonReordered/f64/N=1024");
+BENCHMARK(BM_NeonReordered<4096>)->Unit(benchmark::kMicrosecond)->Name("NeonReordered/f64/N=4096");
+BENCHMARK(BM_NeonReordered<64, float>)
+    ->Unit(benchmark::kMicrosecond)
+    ->Name("NeonReordered/f32/N=64");
+BENCHMARK(BM_NeonReordered<256, float>)
+    ->Unit(benchmark::kMicrosecond)
+    ->Name("NeonReordered/f32/N=256");
+BENCHMARK(BM_NeonReordered<512, float>)
+    ->Unit(benchmark::kMicrosecond)
+    ->Name("NeonReordered/f32/N=512");
+BENCHMARK(BM_NeonReordered<1024, float>)
+    ->Unit(benchmark::kMicrosecond)
+    ->Name("NeonReordered/f32/N=1024");
+BENCHMARK(BM_NeonReordered<4096, float>)
+    ->Unit(benchmark::kMicrosecond)
+    ->Name("NeonReordered/f32/N=4096");
+
+// ---- NEON Blocked ----------------------------------------------------------
+BENCHMARK(BM_NeonBlocked<64>)->Unit(benchmark::kMicrosecond)->Name("NeonBlocked/f64/N=64");
+BENCHMARK(BM_NeonBlocked<256>)->Unit(benchmark::kMicrosecond)->Name("NeonBlocked/f64/N=256");
+BENCHMARK(BM_NeonBlocked<512>)->Unit(benchmark::kMicrosecond)->Name("NeonBlocked/f64/N=512");
+BENCHMARK(BM_NeonBlocked<1024>)->Unit(benchmark::kMicrosecond)->Name("NeonBlocked/f64/N=1024");
+BENCHMARK(BM_NeonBlocked<4096>)->Unit(benchmark::kMicrosecond)->Name("NeonBlocked/f64/N=4096");
+BENCHMARK(BM_NeonBlocked<64, float>)->Unit(benchmark::kMicrosecond)->Name("NeonBlocked/f32/N=64");
+BENCHMARK(BM_NeonBlocked<256, float>)->Unit(benchmark::kMicrosecond)->Name("NeonBlocked/f32/N=256");
+BENCHMARK(BM_NeonBlocked<512, float>)->Unit(benchmark::kMicrosecond)->Name("NeonBlocked/f32/N=512");
+BENCHMARK(BM_NeonBlocked<1024, float>)
+    ->Unit(benchmark::kMicrosecond)
+    ->Name("NeonBlocked/f32/N=1024");
+BENCHMARK(BM_NeonBlocked<4096, float>)
+    ->Unit(benchmark::kMicrosecond)
+    ->Name("NeonBlocked/f32/N=4096");
 
 BENCHMARK_MAIN();

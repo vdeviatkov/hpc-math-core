@@ -17,6 +17,7 @@
 
 #include "gemm/blocked.hpp"
 #include "gemm/naive.hpp"
+#include "gemm/neon.hpp"
 #include "gemm/reordered.hpp"
 #include "hpc/matrix.hpp"
 
@@ -832,3 +833,256 @@ INSTANTIATE_TEST_SUITE_P(Sizes, GemmAvx512BlockedCrossValidation,
                          ::testing::Values(std::size_t{4}, std::size_t{8}, std::size_t{15},
                                            std::size_t{16}, std::size_t{31}, std::size_t{64},
                                            std::size_t{128}, std::size_t{256}));
+
+// ===========================================================================
+// 13. NEON Naive  (i-j-k order, 128-bit SIMD on k-loop)
+//     On x86 falls back to AVX2 naive. On ARM: proves gather still
+//     saturates memory bandwidth regardless of SIMD width.
+// ===========================================================================
+
+TEST(GemmNeonNaive, KnownResult2x2) {
+    MatrixD A(2, 2), B(2, 2), C(2, 2);
+    A(0, 0) = 1;
+    A(0, 1) = 2;
+    A(1, 0) = 3;
+    A(1, 1) = 4;
+    B(0, 0) = 5;
+    B(0, 1) = 6;
+    B(1, 0) = 7;
+    B(1, 1) = 8;
+    hpc::gemm::gemm_neon_naive(A, B, C);
+    EXPECT_NEAR(C(0, 0), 19.0, kEpsD);
+    EXPECT_NEAR(C(0, 1), 22.0, kEpsD);
+    EXPECT_NEAR(C(1, 0), 43.0, kEpsD);
+    EXPECT_NEAR(C(1, 1), 50.0, kEpsD);
+}
+
+TEST(GemmNeonNaive, FloatKnownResult2x2) {
+    hpc::MatrixF A(2, 2), B(2, 2), C(2, 2);
+    A(0, 0) = 1.f;
+    A(0, 1) = 2.f;
+    A(1, 0) = 3.f;
+    A(1, 1) = 4.f;
+    B(0, 0) = 5.f;
+    B(0, 1) = 6.f;
+    B(1, 0) = 7.f;
+    B(1, 1) = 8.f;
+    hpc::gemm::gemm_neon_naive(A, B, C);
+    EXPECT_NEAR(C(0, 0), 19.f, kEpsF);
+    EXPECT_NEAR(C(0, 1), 22.f, kEpsF);
+    EXPECT_NEAR(C(1, 0), 43.f, kEpsF);
+    EXPECT_NEAR(C(1, 1), 50.f, kEpsF);
+}
+
+class GemmNeonNaiveCrossValidation : public ::testing::TestWithParam<std::size_t> {};
+
+TEST_P(GemmNeonNaiveCrossValidation, MatchesNaiveDouble) {
+    const std::size_t N = GetParam();
+    MatrixD A(N, N), B(N, N), C_ref(N, N), C_neon(N, N);
+    fill_random(A, 201);
+    fill_random(B, 202);
+    hpc::gemm::gemm_naive(A, B, C_ref);
+    hpc::gemm::gemm_neon_naive(A, B, C_neon);
+    for (std::size_t i = 0; i < N; ++i)
+        for (std::size_t j = 0; j < N; ++j)
+            EXPECT_NEAR(C_neon(i, j), C_ref(i, j), 1e-8 * (1.0 + std::abs(C_ref(i, j))))
+                << "f64 N=" << N << " (" << i << "," << j << ")";
+}
+
+TEST_P(GemmNeonNaiveCrossValidation, MatchesNaiveFloat) {
+    const std::size_t N = GetParam();
+    hpc::MatrixF A(N, N), B(N, N), C_ref(N, N), C_neon(N, N);
+    fill_random(A, 201);
+    fill_random(B, 202);
+    hpc::gemm::gemm_naive(A, B, C_ref);
+    hpc::gemm::gemm_neon_naive(A, B, C_neon);
+    for (std::size_t i = 0; i < N; ++i)
+        for (std::size_t j = 0; j < N; ++j)
+            EXPECT_NEAR(C_neon(i, j), C_ref(i, j), 1e-4f * (1.0f + std::abs(C_ref(i, j))))
+                << "f32 N=" << N << " (" << i << "," << j << ")";
+}
+
+// N=3: smaller than NEON width (2 f64 / 4 f32) → pure scalar tail.
+// N=5: exercises scalar tail for both f32 and f64.
+INSTANTIATE_TEST_SUITE_P(Sizes, GemmNeonNaiveCrossValidation,
+                         ::testing::Values(std::size_t{3}, std::size_t{4}, std::size_t{5},
+                                           std::size_t{8}, std::size_t{16}, std::size_t{64},
+                                           std::size_t{128}));
+
+// ===========================================================================
+// 14. NEON Reordered  (i-k-j order, 128-bit SIMD on j-loop, no blocking)
+//     Stride-1 B and C access; ~4× scalar f32, ~2× scalar f64.
+// ===========================================================================
+
+TEST(GemmNeonReordered, KnownResult2x2) {
+    MatrixD A(2, 2), B(2, 2), C(2, 2);
+    A(0, 0) = 1;
+    A(0, 1) = 2;
+    A(1, 0) = 3;
+    A(1, 1) = 4;
+    B(0, 0) = 5;
+    B(0, 1) = 6;
+    B(1, 0) = 7;
+    B(1, 1) = 8;
+    hpc::gemm::gemm_neon_reordered(A, B, C);
+    EXPECT_NEAR(C(0, 0), 19.0, kEpsD);
+    EXPECT_NEAR(C(0, 1), 22.0, kEpsD);
+    EXPECT_NEAR(C(1, 0), 43.0, kEpsD);
+    EXPECT_NEAR(C(1, 1), 50.0, kEpsD);
+}
+
+TEST(GemmNeonReordered, FloatKnownResult2x2) {
+    hpc::MatrixF A(2, 2), B(2, 2), C(2, 2);
+    A(0, 0) = 1.f;
+    A(0, 1) = 2.f;
+    A(1, 0) = 3.f;
+    A(1, 1) = 4.f;
+    B(0, 0) = 5.f;
+    B(0, 1) = 6.f;
+    B(1, 0) = 7.f;
+    B(1, 1) = 8.f;
+    hpc::gemm::gemm_neon_reordered(A, B, C);
+    EXPECT_NEAR(C(0, 0), 19.f, kEpsF);
+    EXPECT_NEAR(C(0, 1), 22.f, kEpsF);
+    EXPECT_NEAR(C(1, 0), 43.f, kEpsF);
+    EXPECT_NEAR(C(1, 1), 50.f, kEpsF);
+}
+
+class GemmNeonReorderedCrossValidation : public ::testing::TestWithParam<std::size_t> {};
+
+TEST_P(GemmNeonReorderedCrossValidation, MatchesNaiveDouble) {
+    const std::size_t N = GetParam();
+    MatrixD A(N, N), B(N, N), C_ref(N, N), C_neon(N, N);
+    fill_random(A, 301);
+    fill_random(B, 302);
+    hpc::gemm::gemm_naive(A, B, C_ref);
+    hpc::gemm::gemm_neon_reordered(A, B, C_neon);
+    for (std::size_t i = 0; i < N; ++i)
+        for (std::size_t j = 0; j < N; ++j)
+            EXPECT_NEAR(C_neon(i, j), C_ref(i, j), 1e-8 * (1.0 + std::abs(C_ref(i, j))))
+                << "f64 N=" << N << " (" << i << "," << j << ")";
+}
+
+TEST_P(GemmNeonReorderedCrossValidation, MatchesNaiveFloat) {
+    const std::size_t N = GetParam();
+    hpc::MatrixF A(N, N), B(N, N), C_ref(N, N), C_neon(N, N);
+    fill_random(A, 301);
+    fill_random(B, 302);
+    hpc::gemm::gemm_naive(A, B, C_ref);
+    hpc::gemm::gemm_neon_reordered(A, B, C_neon);
+    for (std::size_t i = 0; i < N; ++i)
+        for (std::size_t j = 0; j < N; ++j)
+            EXPECT_NEAR(C_neon(i, j), C_ref(i, j), 1e-4f * (1.0f + std::abs(C_ref(i, j))))
+                << "f32 N=" << N << " (" << i << "," << j << ")";
+}
+
+INSTANTIATE_TEST_SUITE_P(Sizes, GemmNeonReorderedCrossValidation,
+                         ::testing::Values(std::size_t{3}, std::size_t{4}, std::size_t{5},
+                                           std::size_t{8}, std::size_t{16}, std::size_t{64},
+                                           std::size_t{128}));
+
+// ===========================================================================
+// 15. NEON Blocked  (tiled i-k-j + 128-bit register tile)
+//     Full combination: stride-1 + L2 tiling + 4×16 f32 C tile in Q regs.
+// ===========================================================================
+
+TEST(GemmNeonBlocked, MultiplyByIdentityGivesOriginal) {
+    constexpr std::size_t N = 32;
+    MatrixD A(N, N), I = make_identity(N), C(N, N);
+    fill_random(A, 1);
+    hpc::gemm::gemm_neon_blocked(A, I, C);
+    for (std::size_t i = 0; i < N; ++i)
+        for (std::size_t j = 0; j < N; ++j)
+            EXPECT_NEAR(C(i, j), A(i, j), kEpsD) << "(" << i << "," << j << ")";
+}
+
+TEST(GemmNeonBlocked, MultiplyByZeroGivesZero) {
+    constexpr std::size_t N = 16;
+    MatrixD A(N, N), Z(N, N), C(N, N);
+    fill_random(A, 2);
+    hpc::gemm::gemm_neon_blocked(A, Z, C);
+    for (std::size_t i = 0; i < N; ++i)
+        for (std::size_t j = 0; j < N; ++j)
+            EXPECT_DOUBLE_EQ(C(i, j), 0.0);
+}
+
+TEST(GemmNeonBlocked, KnownResult2x2) {
+    MatrixD A(2, 2), B(2, 2), C(2, 2);
+    A(0, 0) = 1;
+    A(0, 1) = 2;
+    A(1, 0) = 3;
+    A(1, 1) = 4;
+    B(0, 0) = 5;
+    B(0, 1) = 6;
+    B(1, 0) = 7;
+    B(1, 1) = 8;
+    hpc::gemm::gemm_neon_blocked(A, B, C);
+    EXPECT_NEAR(C(0, 0), 19.0, kEpsD);
+    EXPECT_NEAR(C(0, 1), 22.0, kEpsD);
+    EXPECT_NEAR(C(1, 0), 43.0, kEpsD);
+    EXPECT_NEAR(C(1, 1), 50.0, kEpsD);
+}
+
+TEST(GemmNeonBlocked, FloatKnownResult2x2) {
+    hpc::MatrixF A(2, 2), B(2, 2), C(2, 2);
+    A(0, 0) = 1.f;
+    A(0, 1) = 2.f;
+    A(1, 0) = 3.f;
+    A(1, 1) = 4.f;
+    B(0, 0) = 5.f;
+    B(0, 1) = 6.f;
+    B(1, 0) = 7.f;
+    B(1, 1) = 8.f;
+    hpc::gemm::gemm_neon_blocked(A, B, C);
+    EXPECT_NEAR(C(0, 0), 19.f, kEpsF);
+    EXPECT_NEAR(C(0, 1), 22.f, kEpsF);
+    EXPECT_NEAR(C(1, 0), 43.f, kEpsF);
+    EXPECT_NEAR(C(1, 1), 50.f, kEpsF);
+}
+
+TEST(GemmNeonBlocked, RectangularMatrices) {
+    MatrixD A(3, 4), B(4, 2), C(3, 2);
+    fill_random(A, 7);
+    fill_random(B, 8);
+    hpc::gemm::gemm_neon_blocked(A, B, C);
+    double expected = 0.0;
+    for (std::size_t k = 0; k < 4; ++k)
+        expected += A(0, k) * B(k, 0);
+    EXPECT_NEAR(C(0, 0), expected, kEpsD);
+}
+
+class GemmNeonBlockedCrossValidation : public ::testing::TestWithParam<std::size_t> {};
+
+TEST_P(GemmNeonBlockedCrossValidation, MatchesNaiveDouble) {
+    const std::size_t N = GetParam();
+    MatrixD A(N, N), B(N, N), C_ref(N, N), C_neon(N, N);
+    fill_random(A, 401);
+    fill_random(B, 402);
+    hpc::gemm::gemm_naive(A, B, C_ref);
+    hpc::gemm::gemm_neon_blocked(A, B, C_neon);
+    for (std::size_t i = 0; i < N; ++i)
+        for (std::size_t j = 0; j < N; ++j)
+            EXPECT_NEAR(C_neon(i, j), C_ref(i, j), 1e-8 * (1.0 + std::abs(C_ref(i, j))))
+                << "f64 N=" << N << " (" << i << "," << j << ")";
+}
+
+TEST_P(GemmNeonBlockedCrossValidation, MatchesNaiveFloat) {
+    const std::size_t N = GetParam();
+    hpc::MatrixF A(N, N), B(N, N), C_ref(N, N), C_neon(N, N);
+    fill_random(A, 401);
+    fill_random(B, 402);
+    hpc::gemm::gemm_naive(A, B, C_ref);
+    hpc::gemm::gemm_neon_blocked(A, B, C_neon);
+    for (std::size_t i = 0; i < N; ++i)
+        for (std::size_t j = 0; j < N; ++j)
+            EXPECT_NEAR(C_neon(i, j), C_ref(i, j), 1e-4f * (1.0f + std::abs(C_ref(i, j))))
+                << "f32 N=" << N << " (" << i << "," << j << ")";
+}
+
+// N=3: smaller than f64 NEON width (2 lanes) → scalar tail.
+// N=5: exercises tail for f32 (5 % 4 != 0) and f64 (5 % 2 != 0 after 4).
+// N=11: exercises tail for f32 (11 % 16 != 0) and f64 (11 % 4 != 0).
+INSTANTIATE_TEST_SUITE_P(Sizes, GemmNeonBlockedCrossValidation,
+                         ::testing::Values(std::size_t{3}, std::size_t{4}, std::size_t{5},
+                                           std::size_t{8}, std::size_t{11}, std::size_t{16},
+                                           std::size_t{64}, std::size_t{128}, std::size_t{256}));
