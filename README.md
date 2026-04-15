@@ -6,13 +6,14 @@ This repository starts from first principles — readable scalar code — and ad
 
 ---
 
-## Current status: Step 1 — Cache-Blocked GEMM
+## Current status: Step 2 — AVX2 Explicit SIMD GEMM
 
-| Kernel | Loop order | Description |
-|---|---|---|
-| `gemm_naive` | i → j → k | Baseline. Column-stride B access thrashes cache. |
-| `gemm_reordered` | i → k → j | Cache-friendly. Sequential access to both B and C. |
-| `gemm_blocked` | tiled i → k → j | L2-resident tiles. Eliminates reuse-distance problem for large N. |
+| Kernel | Description |
+|---|---|
+| `gemm_naive` | i → j → k baseline. Column-stride B access thrashes cache. |
+| `gemm_reordered` | i → k → j. Cache-friendly sequential access to B and C. |
+| `gemm_blocked` | Tiled i → k → j. L2-resident tiles, reduces reuse distance. |
+| `gemm_avx2` | Blocked + explicit AVX2 FMA micro-kernel. 4×16 f32 / 4×8 f64 register tile. Falls back to `gemm_blocked` on non-AVX2 targets. |
 
 See [src/gemm/README.md](src/gemm/README.md) for per-kernel memory diagrams and [docs/cache-behavior.md](docs/cache-behavior.md) for the full cache analysis.
 
@@ -31,6 +32,7 @@ hpc-math-core/
 │       ├── naive.hpp           i-j-k implementation
 │       ├── reordered.hpp       i-k-j implementation
 │       ├── blocked.hpp         tiled i-k-j implementation (default tile=64)
+│       ├── avx2.hpp            explicit AVX2 FMA micro-kernel (4×16 f32 / 4×8 f64)
 │       └── README.md           Per-kernel documentation with ASCII diagrams
 ├── benchmarks/
 │   ├── CMakeLists.txt
@@ -148,6 +150,12 @@ Blocked/f64/N=256          1313 µs          1312 µs         535   25.57 G/s  (
 Blocked/f64/N=512         12641 µs         12636 µs          55   21.24 G/s  (tile=64)
 Blocked/f64/N=1024       110532 µs        110486 µs           6   19.44 G/s  (tile=64)
 Blocked/f64/N=4096      6778724 µs       6775811 µs           1   20.28 G/s  (tile=64)
+
+Avx2/f64/N=64               — µs             — µs          —       — G/s
+Avx2/f64/N=256              — µs             — µs          —       — G/s
+Avx2/f64/N=512              — µs             — µs          —       — G/s
+Avx2/f64/N=1024             — µs             — µs          —       — G/s
+Avx2/f64/N=4096             — µs             — µs          —       — G/s
 ```
 
 **f64 speedup over `gemm_naive`:**
@@ -183,6 +191,12 @@ Blocked/f32/N=256            403 µs           403 µs        1738   83.31 G/s  
 Blocked/f32/N=512           5224 µs          5224 µs         128   51.39 G/s  (tile=64)
 Blocked/f32/N=1024         51943 µs         51351 µs          14   41.82 G/s  (tile=64)
 Blocked/f32/N=4096       4382110 µs       4380989 µs           1   31.37 G/s  (tile=64)
+
+Avx2/f32/N=64               — µs             — µs          —       — G/s
+Avx2/f32/N=256              — µs             — µs          —       — G/s
+Avx2/f32/N=512              — µs             — µs          —       — G/s
+Avx2/f32/N=1024             — µs             — µs          —       — G/s
+Avx2/f32/N=4096             — µs             — µs          —       — G/s
 ```
 
 **f32 speedup over `gemm_naive`:**
@@ -229,7 +243,7 @@ Example: `gemm_blocked` f32, N=256, 403 µs → `2 × 256³ / (403 × 1000)` ≈
 |---|---|---|
 | ✅ 0 | `gemm_naive` / `gemm_reordered` | Loop reordering, cache-friendly access |
 | ✅ 1 | `gemm_blocked` | Loop tiling (L2-resident tiles) |
-| 🔜 2 | `gemm_avx2` | 256-bit AVX2 FMA intrinsics |
+| ✅ 2 | `gemm_avx2` | Explicit AVX2 FMA intrinsics, 4×16 f32 / 4×8 f64 register tile |
 | 🔜 3 | `gemm_avx512` | 512-bit AVX-512 + software prefetch |
 | 🔜 4 | `gemm_cuda` | Tiled CUDA kernel (shared memory) |
 

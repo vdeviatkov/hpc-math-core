@@ -17,6 +17,7 @@ where A is M×K, B is K×N, and C is M×N (row-major, double-precision).
 | `naive.hpp` | i → j → k | ✅ Baseline |
 | `reordered.hpp` | i → k → j | ✅ Cache-friendly |
 | `blocked.hpp` | tiled i → k → j | ✅ Cache-blocked (L2-resident tiles) |
+| `avx2.hpp` | tiled i → k → j + explicit FMA | ✅ AVX2 micro-kernel (4×16 f32 / 4×8 f64) |
 
 ---
 
@@ -184,11 +185,71 @@ B layout (N=8):
 
 | Kernel | N=64 | N=256 | N=512 | N=1024 | N=4096 |
 |---|---|---|---|---|---|
-| `gemm_naive` | 85.3 µs | 9544 µs | 103163 µs | 856731 µs | 197161840 µs |
-| `gemm_reordered` | 19.5 µs | 2050 µs | 16476 µs | 131522 µs | 8440910 µs |
-| `gemm_blocked` | — | — | — | — | — |
+| `gemm_naive` (f64) | 54.3 µs | 12944 µs | 103159 µs | 887768 µs | 195990001 µs |
+| `gemm_reordered` (f64) | 19.7 µs | 2060 µs | 16171 µs | 129521 µs | 8355984 µs |
+| `gemm_blocked` (f64) | 19.2 µs | 1313 µs | 12641 µs | 110532 µs | 6778724 µs |
+| `gemm_avx2` (f64) | — | — | — | — | — |
+| `gemm_naive` (f32) | 55.4 µs | 12190 µs | 108410 µs | 822792 µs | 204547448 µs |
+| `gemm_reordered` (f32) | 6.12 µs | 1052 µs | 8234 µs | 65465 µs | 4189995 µs |
+| `gemm_blocked` (f32) | 6.12 µs | 403 µs | 5224 µs | 51943 µs | 4382110 µs |
+| `gemm_avx2` (f32) | — | — | — | — | — |
 
-*Run `./build/benchmarks/bench_gemm` to fill in the blocked row with your hardware's numbers.*
+*Run `./build/benchmarks/bench_gemm --benchmark_filter="Avx2"` to fill in the AVX2 rows.*
+
+---
+
+## Algorithm 4 — Explicit AVX2 FMA `gemm_avx2`
+
+### Why explicit intrinsics after auto-vectorisation?
+
+The blocked kernel already achieves ~83 GFLOP/s for f32 at small N via compiler
+auto-vectorisation. However the compiler faces four obstacles:
+
+1. **Alias analysis** — without `__restrict__` it may insert runtime checks or fall back to scalar.
+2. **Register pressure** — the compiler may spill accumulators to the stack across a tile.
+3. **Unroll decisions** — the compiler's cost model may not unroll by exactly the factor needed to keep both FMA ports busy simultaneously.
+4. **Load/store scheduling** — explicit code controls exactly when prefetch hints appear relative to compute.
+
+### AVX2 register file
+
+```
+256-bit YMM register holds:
+  f32: [f0][f1][f2][f3][f4][f5][f6][f7]   ← 8 floats,  4 B each
+  f64: [d0][d1][d2][d3]                   ← 4 doubles, 8 B each
+
+FMA: vfmadd231ps  acc = acc + a * b   (2 FLOP, 0.5 cycle throughput on Skylake)
+Peak single-core:
+  f32: 2 ports × 8 lanes × 2 FLOP/FMA = 32 FLOP/cycle → 96 GFLOP/s @ 3 GHz
+  f64: 2 ports × 4 lanes × 2 FLOP/FMA = 16 FLOP/cycle → 48 GFLOP/s @ 3 GHz
+```
+
+### Micro-kernel register tile (f32, 4×16)
+
+```
+C tile in YMM registers (8 accumulators):
+
+        j+0..7     j+8..15
+  i+0: [c00 YMM] [c01 YMM]
+  i+1: [c10 YMM] [c11 YMM]
+  i+2: [c20 YMM] [c21 YMM]
+  i+3: [c30 YMM] [c31 YMM]
+
+Per k-iteration:
+  broadcast A(i+r, k)  → a0..a3   (4 YMM, each holds 8 copies of one scalar)
+  load B(k, j..j+7)    → b0       (1 YMM)
+  load B(k, j+8..j+15) → b1       (1 YMM)
+  8× vfmadd231ps       → c_rq += a_r * b_q
+
+Total YMM in use: 8 (acc) + 4 (broadcast) + 2 (B) = 14 of 16 available.
+```
+
+### Portability
+
+| Target | `__AVX2__` defined? | Behaviour |
+|---|---|---|
+| Intel Haswell+ / AMD Zen1+ | ✅ (with `-march=native`) | Full AVX2 FMA micro-kernel |
+| Apple Silicon (M1/M2/M3/M4) | ❌ (ARM NEON, not x86) | Falls back to `gemm_blocked` — correct, no SIGILL |
+| Pre-Haswell x86 | ❌ | Falls back to `gemm_blocked` |
 
 ---
 
@@ -198,7 +259,7 @@ B layout (N=8):
 |---|---|---|
 | ✅ 0 | `gemm_naive` / `gemm_reordered` | Loop reordering, cache-friendly access |
 | ✅ 1 | `gemm_blocked` | Loop tiling (L2-resident tiles) |
-| 🔜 2 | `gemm_avx2` | 256-bit AVX2 FMA intrinsics |
+| ✅ 2 | `gemm_avx2` | Explicit AVX2 FMA intrinsics, 4×16 f32 / 4×8 f64 register tile |
 | 🔜 3 | `gemm_avx512` | 512-bit AVX-512 + software prefetch |
 | 🔜 4 | `gemm_cuda` | Tiled CUDA kernel (shared memory) |
 

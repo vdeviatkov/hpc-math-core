@@ -26,6 +26,8 @@
 #include <cstddef>
 #include <random>
 
+#include "gemm/avx2.hpp"
+
 using hpc::MatrixD;
 using hpc::MatrixF;
 
@@ -36,8 +38,8 @@ using hpc::MatrixF;
 /// Relative epsilon for double-precision comparisons.
 static constexpr double kEpsD = 1e-9;
 
-/// Relative epsilon for single-precision comparisons (reserved for Step 2 float benchmarks).
-[[maybe_unused]] static constexpr float kEpsF = 1e-4f;
+/// Relative epsilon for single-precision comparisons.
+static constexpr float kEpsF = 1e-4f;
 
 // ---------------------------------------------------------------------------
 // Utility: fill a matrix with random values using a fixed seed.
@@ -334,3 +336,249 @@ INSTANTIATE_TEST_SUITE_P(Sizes, GemmBlockedCrossValidation,
                                            std::size_t{128},  // two tiles
                                            std::size_t{256}   // four tiles
                                            ));
+
+// ===========================================================================
+// 7. AVX2 Naive  (i-j-k order, SIMD on k-loop)
+//    Demonstrates that SIMD alone cannot fix cache-hostile access patterns.
+// ===========================================================================
+
+TEST(GemmAvx2Naive, KnownResult2x2) {
+    MatrixD A(2, 2), B(2, 2), C(2, 2);
+    A(0, 0) = 1;
+    A(0, 1) = 2;
+    A(1, 0) = 3;
+    A(1, 1) = 4;
+    B(0, 0) = 5;
+    B(0, 1) = 6;
+    B(1, 0) = 7;
+    B(1, 1) = 8;
+    hpc::gemm::gemm_avx2_naive(A, B, C);
+    EXPECT_NEAR(C(0, 0), 19.0, kEpsD);
+    EXPECT_NEAR(C(0, 1), 22.0, kEpsD);
+    EXPECT_NEAR(C(1, 0), 43.0, kEpsD);
+    EXPECT_NEAR(C(1, 1), 50.0, kEpsD);
+}
+
+TEST(GemmAvx2Naive, FloatKnownResult2x2) {
+    hpc::MatrixF A(2, 2), B(2, 2), C(2, 2);
+    A(0, 0) = 1.f;
+    A(0, 1) = 2.f;
+    A(1, 0) = 3.f;
+    A(1, 1) = 4.f;
+    B(0, 0) = 5.f;
+    B(0, 1) = 6.f;
+    B(1, 0) = 7.f;
+    B(1, 1) = 8.f;
+    hpc::gemm::gemm_avx2_naive(A, B, C);
+    EXPECT_NEAR(C(0, 0), 19.f, kEpsF);
+    EXPECT_NEAR(C(0, 1), 22.f, kEpsF);
+    EXPECT_NEAR(C(1, 0), 43.f, kEpsF);
+    EXPECT_NEAR(C(1, 1), 50.f, kEpsF);
+}
+
+class GemmAvx2NaiveCrossValidation : public ::testing::TestWithParam<std::size_t> {};
+
+TEST_P(GemmAvx2NaiveCrossValidation, MatchesNaiveDouble) {
+    const std::size_t N = GetParam();
+    MatrixD A(N, N), B(N, N), C_ref(N, N), C_avx(N, N);
+    fill_random(A, 11);
+    fill_random(B, 22);
+    hpc::gemm::gemm_naive(A, B, C_ref);
+    hpc::gemm::gemm_avx2_naive(A, B, C_avx);
+    for (std::size_t i = 0; i < N; ++i)
+        for (std::size_t j = 0; j < N; ++j)
+            EXPECT_NEAR(C_avx(i, j), C_ref(i, j), 1e-8 * (1.0 + std::abs(C_ref(i, j))))
+                << "f64 N=" << N << " (" << i << "," << j << ")";
+}
+
+TEST_P(GemmAvx2NaiveCrossValidation, MatchesNaiveFloat) {
+    const std::size_t N = GetParam();
+    hpc::MatrixF A(N, N), B(N, N), C_ref(N, N), C_avx(N, N);
+    fill_random(A, 11);
+    fill_random(B, 22);
+    hpc::gemm::gemm_naive(A, B, C_ref);
+    hpc::gemm::gemm_avx2_naive(A, B, C_avx);
+    for (std::size_t i = 0; i < N; ++i)
+        for (std::size_t j = 0; j < N; ++j)
+            EXPECT_NEAR(C_avx(i, j), C_ref(i, j), 1e-4f * (1.0f + std::abs(C_ref(i, j))))
+                << "f32 N=" << N << " (" << i << "," << j << ")";
+}
+
+INSTANTIATE_TEST_SUITE_P(Sizes, GemmAvx2NaiveCrossValidation,
+                         ::testing::Values(std::size_t{4}, std::size_t{8}, std::size_t{13},
+                                           std::size_t{16}, std::size_t{64}, std::size_t{128}));
+
+// ===========================================================================
+// 8. AVX2 Reordered  (i-k-j order, SIMD on j-loop, no blocking)
+//    Cache-friendly access, SIMD width benefit without register tiling.
+// ===========================================================================
+
+TEST(GemmAvx2Reordered, KnownResult2x2) {
+    MatrixD A(2, 2), B(2, 2), C(2, 2);
+    A(0, 0) = 1;
+    A(0, 1) = 2;
+    A(1, 0) = 3;
+    A(1, 1) = 4;
+    B(0, 0) = 5;
+    B(0, 1) = 6;
+    B(1, 0) = 7;
+    B(1, 1) = 8;
+    hpc::gemm::gemm_avx2_reordered(A, B, C);
+    EXPECT_NEAR(C(0, 0), 19.0, kEpsD);
+    EXPECT_NEAR(C(0, 1), 22.0, kEpsD);
+    EXPECT_NEAR(C(1, 0), 43.0, kEpsD);
+    EXPECT_NEAR(C(1, 1), 50.0, kEpsD);
+}
+
+TEST(GemmAvx2Reordered, FloatKnownResult2x2) {
+    hpc::MatrixF A(2, 2), B(2, 2), C(2, 2);
+    A(0, 0) = 1.f;
+    A(0, 1) = 2.f;
+    A(1, 0) = 3.f;
+    A(1, 1) = 4.f;
+    B(0, 0) = 5.f;
+    B(0, 1) = 6.f;
+    B(1, 0) = 7.f;
+    B(1, 1) = 8.f;
+    hpc::gemm::gemm_avx2_reordered(A, B, C);
+    EXPECT_NEAR(C(0, 0), 19.f, kEpsF);
+    EXPECT_NEAR(C(0, 1), 22.f, kEpsF);
+    EXPECT_NEAR(C(1, 0), 43.f, kEpsF);
+    EXPECT_NEAR(C(1, 1), 50.f, kEpsF);
+}
+
+class GemmAvx2ReorderedCrossValidation : public ::testing::TestWithParam<std::size_t> {};
+
+TEST_P(GemmAvx2ReorderedCrossValidation, MatchesNaiveDouble) {
+    const std::size_t N = GetParam();
+    MatrixD A(N, N), B(N, N), C_ref(N, N), C_avx(N, N);
+    fill_random(A, 33);
+    fill_random(B, 44);
+    hpc::gemm::gemm_naive(A, B, C_ref);
+    hpc::gemm::gemm_avx2_reordered(A, B, C_avx);
+    for (std::size_t i = 0; i < N; ++i)
+        for (std::size_t j = 0; j < N; ++j)
+            EXPECT_NEAR(C_avx(i, j), C_ref(i, j), 1e-8 * (1.0 + std::abs(C_ref(i, j))))
+                << "f64 N=" << N << " (" << i << "," << j << ")";
+}
+
+TEST_P(GemmAvx2ReorderedCrossValidation, MatchesNaiveFloat) {
+    const std::size_t N = GetParam();
+    hpc::MatrixF A(N, N), B(N, N), C_ref(N, N), C_avx(N, N);
+    fill_random(A, 33);
+    fill_random(B, 44);
+    hpc::gemm::gemm_naive(A, B, C_ref);
+    hpc::gemm::gemm_avx2_reordered(A, B, C_avx);
+    for (std::size_t i = 0; i < N; ++i)
+        for (std::size_t j = 0; j < N; ++j)
+            EXPECT_NEAR(C_avx(i, j), C_ref(i, j), 1e-4f * (1.0f + std::abs(C_ref(i, j))))
+                << "f32 N=" << N << " (" << i << "," << j << ")";
+}
+
+INSTANTIATE_TEST_SUITE_P(Sizes, GemmAvx2ReorderedCrossValidation,
+                         ::testing::Values(std::size_t{4}, std::size_t{8}, std::size_t{13},
+                                           std::size_t{16}, std::size_t{64}, std::size_t{128}));
+
+// ===========================================================================
+// 9. AVX2 Blocked  (tiled i-k-j + register-tiled micro-kernel)
+//    Full combination: correct cache access + L2 tiling + no C reload.
+// ===========================================================================
+
+TEST(GemmAvx2Blocked, MultiplyByIdentityGivesOriginal) {
+    constexpr std::size_t N = 32;
+    MatrixD A(N, N), I = make_identity(N), C(N, N);
+    fill_random(A, 1);
+    hpc::gemm::gemm_avx2_blocked(A, I, C);
+    for (std::size_t i = 0; i < N; ++i)
+        for (std::size_t j = 0; j < N; ++j)
+            EXPECT_NEAR(C(i, j), A(i, j), kEpsD) << "(" << i << "," << j << ")";
+}
+
+TEST(GemmAvx2Blocked, MultiplyByZeroGivesZero) {
+    constexpr std::size_t N = 16;
+    MatrixD A(N, N), Z(N, N), C(N, N);
+    fill_random(A, 2);
+    hpc::gemm::gemm_avx2_blocked(A, Z, C);
+    for (std::size_t i = 0; i < N; ++i)
+        for (std::size_t j = 0; j < N; ++j)
+            EXPECT_DOUBLE_EQ(C(i, j), 0.0);
+}
+
+TEST(GemmAvx2Blocked, KnownResult2x2) {
+    MatrixD A(2, 2), B(2, 2), C(2, 2);
+    A(0, 0) = 1;
+    A(0, 1) = 2;
+    A(1, 0) = 3;
+    A(1, 1) = 4;
+    B(0, 0) = 5;
+    B(0, 1) = 6;
+    B(1, 0) = 7;
+    B(1, 1) = 8;
+    hpc::gemm::gemm_avx2_blocked(A, B, C);
+    EXPECT_NEAR(C(0, 0), 19.0, kEpsD);
+    EXPECT_NEAR(C(0, 1), 22.0, kEpsD);
+    EXPECT_NEAR(C(1, 0), 43.0, kEpsD);
+    EXPECT_NEAR(C(1, 1), 50.0, kEpsD);
+}
+
+TEST(GemmAvx2Blocked, FloatKnownResult2x2) {
+    hpc::MatrixF A(2, 2), B(2, 2), C(2, 2);
+    A(0, 0) = 1.f;
+    A(0, 1) = 2.f;
+    A(1, 0) = 3.f;
+    A(1, 1) = 4.f;
+    B(0, 0) = 5.f;
+    B(0, 1) = 6.f;
+    B(1, 0) = 7.f;
+    B(1, 1) = 8.f;
+    hpc::gemm::gemm_avx2_blocked(A, B, C);
+    EXPECT_NEAR(C(0, 0), 19.f, kEpsF);
+    EXPECT_NEAR(C(0, 1), 22.f, kEpsF);
+    EXPECT_NEAR(C(1, 0), 43.f, kEpsF);
+    EXPECT_NEAR(C(1, 1), 50.f, kEpsF);
+}
+
+TEST(GemmAvx2Blocked, RectangularMatrices) {
+    MatrixD A(3, 4), B(4, 2), C(3, 2);
+    fill_random(A, 7);
+    fill_random(B, 8);
+    hpc::gemm::gemm_avx2_blocked(A, B, C);
+    double expected = 0.0;
+    for (std::size_t k = 0; k < 4; ++k)
+        expected += A(0, k) * B(k, 0);
+    EXPECT_NEAR(C(0, 0), expected, kEpsD);
+}
+
+class GemmAvx2BlockedCrossValidation : public ::testing::TestWithParam<std::size_t> {};
+
+TEST_P(GemmAvx2BlockedCrossValidation, MatchesNaiveDouble) {
+    const std::size_t N = GetParam();
+    MatrixD A(N, N), B(N, N), C_ref(N, N), C_avx(N, N);
+    fill_random(A, 77);
+    fill_random(B, 88);
+    hpc::gemm::gemm_naive(A, B, C_ref);
+    hpc::gemm::gemm_avx2_blocked(A, B, C_avx);
+    for (std::size_t i = 0; i < N; ++i)
+        for (std::size_t j = 0; j < N; ++j)
+            EXPECT_NEAR(C_avx(i, j), C_ref(i, j), 1e-8 * (1.0 + std::abs(C_ref(i, j))))
+                << "f64 N=" << N << " (" << i << "," << j << ")";
+}
+
+TEST_P(GemmAvx2BlockedCrossValidation, MatchesNaiveFloat) {
+    const std::size_t N = GetParam();
+    hpc::MatrixF A(N, N), B(N, N), C_ref(N, N), C_avx(N, N);
+    fill_random(A, 77);
+    fill_random(B, 88);
+    hpc::gemm::gemm_naive(A, B, C_ref);
+    hpc::gemm::gemm_avx2_blocked(A, B, C_avx);
+    for (std::size_t i = 0; i < N; ++i)
+        for (std::size_t j = 0; j < N; ++j)
+            EXPECT_NEAR(C_avx(i, j), C_ref(i, j), 1e-4f * (1.0f + std::abs(C_ref(i, j))))
+                << "f32 N=" << N << " (" << i << "," << j << ")";
+}
+
+// Include N=13 to exercise the scalar j-tail (13 % 8 != 0, 13 % 16 != 0).
+INSTANTIATE_TEST_SUITE_P(Sizes, GemmAvx2BlockedCrossValidation,
+                         ::testing::Values(std::size_t{4}, std::size_t{8}, std::size_t{13},
+                                           std::size_t{16}, std::size_t{64}, std::size_t{128},
+                                           std::size_t{256}));

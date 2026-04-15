@@ -48,6 +48,8 @@
 #include <random>
 #include <type_traits>
 
+#include "gemm/avx2.hpp"
+
 // ---------------------------------------------------------------------------
 // Utility
 // ---------------------------------------------------------------------------
@@ -148,6 +150,80 @@ static void BM_Blocked(benchmark::State& state) {
     state.counters["precision"] = static_cast<double>(sizeof(T) * 8);
 }
 
+/**
+ * @brief Benchmark gemm_avx2_naive<T> — i-j-k order, SIMD on the k-loop.
+ *
+ * Expected result: similar GFLOP/s to scalar naive — the column-stride B
+ * access pattern is still cache-hostile regardless of SIMD width.
+ * This benchmark answers: "does SIMD alone fix bad memory access?"  (No.)
+ */
+template <std::size_t N, typename T = double>
+static void BM_Avx2Naive(benchmark::State& state) {
+    hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
+    fill_random(A, 1);
+    fill_random(B, 2);
+    for (auto _ : state) {
+        hpc::gemm::gemm_avx2_naive(A, B, C);
+        benchmark::DoNotOptimize(C.data());
+        benchmark::ClobberMemory();
+    }
+    state.counters["GFLOP/s"] = benchmark::Counter(
+        flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
+    state.counters["N"]         = static_cast<double>(N);
+    state.counters["precision"] = static_cast<double>(sizeof(T) * 8);
+}
+
+/**
+ * @brief Benchmark gemm_avx2_reordered<T> — i-k-j order, SIMD on the j-loop.
+ *
+ * Expected result: ~SIMD_WIDTH × scalar reordered. B and C are accessed
+ * stride-1, so every cache line is fully consumed. No blocking — degrades
+ * at large N when C row i is evicted from L1 between k-iterations.
+ */
+template <std::size_t N, typename T = double>
+static void BM_Avx2Reordered(benchmark::State& state) {
+    hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
+    fill_random(A, 1);
+    fill_random(B, 2);
+    for (auto _ : state) {
+        hpc::gemm::gemm_avx2_reordered(A, B, C);
+        benchmark::DoNotOptimize(C.data());
+        benchmark::ClobberMemory();
+    }
+    state.counters["GFLOP/s"] = benchmark::Counter(
+        flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
+    state.counters["N"]         = static_cast<double>(N);
+    state.counters["precision"] = static_cast<double>(sizeof(T) * 8);
+}
+
+/**
+ * @brief Benchmark gemm_avx2_blocked<T> — tiled i-k-j, register-tiled micro-kernel.
+ *
+ * Expected result: highest GFLOP/s of the three. Outer tiling keeps the
+ * working set in L2; the register tile eliminates C reload traffic and
+ * drives both FMA ports at near-peak utilisation.
+ */
+template <std::size_t N, typename T = double>
+static void BM_Avx2Blocked(benchmark::State& state) {
+    hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
+    fill_random(A, 1);
+    fill_random(B, 2);
+    for (auto _ : state) {
+        hpc::gemm::gemm_avx2_blocked(A, B, C);
+        benchmark::DoNotOptimize(C.data());
+        benchmark::ClobberMemory();
+    }
+    state.counters["GFLOP/s"] = benchmark::Counter(
+        flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
+    state.counters["N"]         = static_cast<double>(N);
+    state.counters["precision"] = static_cast<double>(sizeof(T) * 8);
+#ifdef __AVX2__
+    state.counters["avx2"] = 1;
+#else
+    state.counters["avx2"] = 0;
+#endif
+}
+
 // ---------------------------------------------------------------------------
 // Register benchmarks
 //
@@ -202,5 +278,58 @@ BENCHMARK(BM_Blocked<256, float>)->Unit(benchmark::kMicrosecond)->Name("Blocked/
 BENCHMARK(BM_Blocked<512, float>)->Unit(benchmark::kMicrosecond)->Name("Blocked/f32/N=512");
 BENCHMARK(BM_Blocked<1024, float>)->Unit(benchmark::kMicrosecond)->Name("Blocked/f32/N=1024");
 BENCHMARK(BM_Blocked<4096, float>)->Unit(benchmark::kMicrosecond)->Name("Blocked/f32/N=4096");
+
+// ---- AVX2 Naive: SIMD on k-loop, i-j-k order (cache-hostile B access) ------
+BENCHMARK(BM_Avx2Naive<64>)->Unit(benchmark::kMicrosecond)->Name("Avx2Naive/f64/N=64");
+BENCHMARK(BM_Avx2Naive<256>)->Unit(benchmark::kMicrosecond)->Name("Avx2Naive/f64/N=256");
+BENCHMARK(BM_Avx2Naive<512>)->Unit(benchmark::kMicrosecond)->Name("Avx2Naive/f64/N=512");
+BENCHMARK(BM_Avx2Naive<1024>)->Unit(benchmark::kMicrosecond)->Name("Avx2Naive/f64/N=1024");
+BENCHMARK(BM_Avx2Naive<4096>)->Unit(benchmark::kMicrosecond)->Name("Avx2Naive/f64/N=4096");
+
+BENCHMARK(BM_Avx2Naive<64, float>)->Unit(benchmark::kMicrosecond)->Name("Avx2Naive/f32/N=64");
+BENCHMARK(BM_Avx2Naive<256, float>)->Unit(benchmark::kMicrosecond)->Name("Avx2Naive/f32/N=256");
+BENCHMARK(BM_Avx2Naive<512, float>)->Unit(benchmark::kMicrosecond)->Name("Avx2Naive/f32/N=512");
+BENCHMARK(BM_Avx2Naive<1024, float>)->Unit(benchmark::kMicrosecond)->Name("Avx2Naive/f32/N=1024");
+BENCHMARK(BM_Avx2Naive<4096, float>)->Unit(benchmark::kMicrosecond)->Name("Avx2Naive/f32/N=4096");
+
+// ---- AVX2 Reordered: SIMD on j-loop, i-k-j order (cache-friendly, no tiling) ---
+BENCHMARK(BM_Avx2Reordered<64>)->Unit(benchmark::kMicrosecond)->Name("Avx2Reordered/f64/N=64");
+BENCHMARK(BM_Avx2Reordered<256>)->Unit(benchmark::kMicrosecond)->Name("Avx2Reordered/f64/N=256");
+BENCHMARK(BM_Avx2Reordered<512>)->Unit(benchmark::kMicrosecond)->Name("Avx2Reordered/f64/N=512");
+BENCHMARK(BM_Avx2Reordered<1024>)->Unit(benchmark::kMicrosecond)->Name("Avx2Reordered/f64/N=1024");
+BENCHMARK(BM_Avx2Reordered<4096>)->Unit(benchmark::kMicrosecond)->Name("Avx2Reordered/f64/N=4096");
+
+BENCHMARK(BM_Avx2Reordered<64, float>)
+    ->Unit(benchmark::kMicrosecond)
+    ->Name("Avx2Reordered/f32/N=64");
+BENCHMARK(BM_Avx2Reordered<256, float>)
+    ->Unit(benchmark::kMicrosecond)
+    ->Name("Avx2Reordered/f32/N=256");
+BENCHMARK(BM_Avx2Reordered<512, float>)
+    ->Unit(benchmark::kMicrosecond)
+    ->Name("Avx2Reordered/f32/N=512");
+BENCHMARK(BM_Avx2Reordered<1024, float>)
+    ->Unit(benchmark::kMicrosecond)
+    ->Name("Avx2Reordered/f32/N=1024");
+BENCHMARK(BM_Avx2Reordered<4096, float>)
+    ->Unit(benchmark::kMicrosecond)
+    ->Name("Avx2Reordered/f32/N=4096");
+
+// ---- AVX2 Blocked: register-tiled micro-kernel + outer L2 tiling (full) ----
+BENCHMARK(BM_Avx2Blocked<64>)->Unit(benchmark::kMicrosecond)->Name("Avx2Blocked/f64/N=64");
+BENCHMARK(BM_Avx2Blocked<256>)->Unit(benchmark::kMicrosecond)->Name("Avx2Blocked/f64/N=256");
+BENCHMARK(BM_Avx2Blocked<512>)->Unit(benchmark::kMicrosecond)->Name("Avx2Blocked/f64/N=512");
+BENCHMARK(BM_Avx2Blocked<1024>)->Unit(benchmark::kMicrosecond)->Name("Avx2Blocked/f64/N=1024");
+BENCHMARK(BM_Avx2Blocked<4096>)->Unit(benchmark::kMicrosecond)->Name("Avx2Blocked/f64/N=4096");
+
+BENCHMARK(BM_Avx2Blocked<64, float>)->Unit(benchmark::kMicrosecond)->Name("Avx2Blocked/f32/N=64");
+BENCHMARK(BM_Avx2Blocked<256, float>)->Unit(benchmark::kMicrosecond)->Name("Avx2Blocked/f32/N=256");
+BENCHMARK(BM_Avx2Blocked<512, float>)->Unit(benchmark::kMicrosecond)->Name("Avx2Blocked/f32/N=512");
+BENCHMARK(BM_Avx2Blocked<1024, float>)
+    ->Unit(benchmark::kMicrosecond)
+    ->Name("Avx2Blocked/f32/N=1024");
+BENCHMARK(BM_Avx2Blocked<4096, float>)
+    ->Unit(benchmark::kMicrosecond)
+    ->Name("Avx2Blocked/f32/N=4096");
 
 BENCHMARK_MAIN();
