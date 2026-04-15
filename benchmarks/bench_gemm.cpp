@@ -38,8 +38,6 @@
  */
 
 #include "gemm/blocked.hpp"
-#include "gemm/naive.hpp"
-#include "gemm/reordered.hpp"
 #include "hpc/matrix.hpp"
 
 #include <benchmark/benchmark.h>
@@ -49,6 +47,7 @@
 #include <type_traits>
 
 #include "gemm/avx2.hpp"
+#include "gemm/avx512.hpp"
 
 // ---------------------------------------------------------------------------
 // Utility
@@ -331,5 +330,150 @@ BENCHMARK(BM_Avx2Blocked<1024, float>)
 BENCHMARK(BM_Avx2Blocked<4096, float>)
     ->Unit(benchmark::kMicrosecond)
     ->Name("Avx2Blocked/f32/N=4096");
+
+// ============================================================================
+// AVX-512 benchmarks
+// On non-AVX-512 targets each kernel transparently delegates to its AVX2
+// equivalent, so these registrations are always safe to include.
+// ============================================================================
+
+/**
+ * @brief Benchmark gemm_avx512_naive<T> — i-j-k, 512-bit SIMD on k-loop.
+ * Expected: GFLOP/s ≈ scalar naive — gather is still cache-miss bound.
+ */
+template <std::size_t N, typename T = double>
+static void BM_Avx512Naive(benchmark::State& state) {
+    hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
+    fill_random(A, 1);
+    fill_random(B, 2);
+    for (auto _ : state) {
+        hpc::gemm::gemm_avx512_naive(A, B, C);
+        benchmark::DoNotOptimize(C.data());
+        benchmark::ClobberMemory();
+    }
+    state.counters["GFLOP/s"] = benchmark::Counter(
+        flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
+    state.counters["N"]         = static_cast<double>(N);
+    state.counters["precision"] = static_cast<double>(sizeof(T) * 8);
+#ifdef __AVX512F__
+    state.counters["avx512"] = 1;
+#else
+    state.counters["avx512"] = 0;
+#endif
+}
+
+/**
+ * @brief Benchmark gemm_avx512_reordered<T> — i-k-j, 512-bit SIMD on j-loop.
+ * Expected: ~2× AVX2 reordered (16 vs 8 f32 per FMA, stride-1 access).
+ */
+template <std::size_t N, typename T = double>
+static void BM_Avx512Reordered(benchmark::State& state) {
+    hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
+    fill_random(A, 1);
+    fill_random(B, 2);
+    for (auto _ : state) {
+        hpc::gemm::gemm_avx512_reordered(A, B, C);
+        benchmark::DoNotOptimize(C.data());
+        benchmark::ClobberMemory();
+    }
+    state.counters["GFLOP/s"] = benchmark::Counter(
+        flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
+    state.counters["N"]         = static_cast<double>(N);
+    state.counters["precision"] = static_cast<double>(sizeof(T) * 8);
+#ifdef __AVX512F__
+    state.counters["avx512"] = 1;
+#else
+    state.counters["avx512"] = 0;
+#endif
+}
+
+/**
+ * @brief Benchmark gemm_avx512_blocked<T> — tiled i-k-j + 512-bit register tile.
+ * Expected: highest GFLOP/s. L2 tiling + 4×32 f32 C tile held in ZMM registers.
+ */
+template <std::size_t N, typename T = double>
+static void BM_Avx512Blocked(benchmark::State& state) {
+    hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
+    fill_random(A, 1);
+    fill_random(B, 2);
+    for (auto _ : state) {
+        hpc::gemm::gemm_avx512_blocked(A, B, C);
+        benchmark::DoNotOptimize(C.data());
+        benchmark::ClobberMemory();
+    }
+    state.counters["GFLOP/s"] = benchmark::Counter(
+        flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
+    state.counters["N"]         = static_cast<double>(N);
+    state.counters["precision"] = static_cast<double>(sizeof(T) * 8);
+#ifdef __AVX512F__
+    state.counters["avx512"] = 1;
+#else
+    state.counters["avx512"] = 0;
+#endif
+}
+
+// ---- AVX-512 Naive ----------------------------------------------------------
+BENCHMARK(BM_Avx512Naive<64>)->Unit(benchmark::kMicrosecond)->Name("Avx512Naive/f64/N=64");
+BENCHMARK(BM_Avx512Naive<256>)->Unit(benchmark::kMicrosecond)->Name("Avx512Naive/f64/N=256");
+BENCHMARK(BM_Avx512Naive<512>)->Unit(benchmark::kMicrosecond)->Name("Avx512Naive/f64/N=512");
+BENCHMARK(BM_Avx512Naive<1024>)->Unit(benchmark::kMicrosecond)->Name("Avx512Naive/f64/N=1024");
+BENCHMARK(BM_Avx512Naive<4096>)->Unit(benchmark::kMicrosecond)->Name("Avx512Naive/f64/N=4096");
+BENCHMARK(BM_Avx512Naive<64, float>)->Unit(benchmark::kMicrosecond)->Name("Avx512Naive/f32/N=64");
+BENCHMARK(BM_Avx512Naive<256, float>)->Unit(benchmark::kMicrosecond)->Name("Avx512Naive/f32/N=256");
+BENCHMARK(BM_Avx512Naive<512, float>)->Unit(benchmark::kMicrosecond)->Name("Avx512Naive/f32/N=512");
+BENCHMARK(BM_Avx512Naive<1024, float>)
+    ->Unit(benchmark::kMicrosecond)
+    ->Name("Avx512Naive/f32/N=1024");
+BENCHMARK(BM_Avx512Naive<4096, float>)
+    ->Unit(benchmark::kMicrosecond)
+    ->Name("Avx512Naive/f32/N=4096");
+
+// ---- AVX-512 Reordered ------------------------------------------------------
+BENCHMARK(BM_Avx512Reordered<64>)->Unit(benchmark::kMicrosecond)->Name("Avx512Reordered/f64/N=64");
+BENCHMARK(BM_Avx512Reordered<256>)->Unit(benchmark::kMicrosecond)->Name("Avx512Reordered/f64/N=256");
+BENCHMARK(BM_Avx512Reordered<512>)->Unit(benchmark::kMicrosecond)->Name("Avx512Reordered/f64/N=512");
+BENCHMARK(BM_Avx512Reordered<1024>)
+    ->Unit(benchmark::kMicrosecond)
+    ->Name("Avx512Reordered/f64/N=1024");
+BENCHMARK(BM_Avx512Reordered<4096>)
+    ->Unit(benchmark::kMicrosecond)
+    ->Name("Avx512Reordered/f64/N=4096");
+BENCHMARK(BM_Avx512Reordered<64, float>)
+    ->Unit(benchmark::kMicrosecond)
+    ->Name("Avx512Reordered/f32/N=64");
+BENCHMARK(BM_Avx512Reordered<256, float>)
+    ->Unit(benchmark::kMicrosecond)
+    ->Name("Avx512Reordered/f32/N=256");
+BENCHMARK(BM_Avx512Reordered<512, float>)
+    ->Unit(benchmark::kMicrosecond)
+    ->Name("Avx512Reordered/f32/N=512");
+BENCHMARK(BM_Avx512Reordered<1024, float>)
+    ->Unit(benchmark::kMicrosecond)
+    ->Name("Avx512Reordered/f32/N=1024");
+BENCHMARK(BM_Avx512Reordered<4096, float>)
+    ->Unit(benchmark::kMicrosecond)
+    ->Name("Avx512Reordered/f32/N=4096");
+
+// ---- AVX-512 Blocked --------------------------------------------------------
+BENCHMARK(BM_Avx512Blocked<64>)->Unit(benchmark::kMicrosecond)->Name("Avx512Blocked/f64/N=64");
+BENCHMARK(BM_Avx512Blocked<256>)->Unit(benchmark::kMicrosecond)->Name("Avx512Blocked/f64/N=256");
+BENCHMARK(BM_Avx512Blocked<512>)->Unit(benchmark::kMicrosecond)->Name("Avx512Blocked/f64/N=512");
+BENCHMARK(BM_Avx512Blocked<1024>)->Unit(benchmark::kMicrosecond)->Name("Avx512Blocked/f64/N=1024");
+BENCHMARK(BM_Avx512Blocked<4096>)->Unit(benchmark::kMicrosecond)->Name("Avx512Blocked/f64/N=4096");
+BENCHMARK(BM_Avx512Blocked<64, float>)
+    ->Unit(benchmark::kMicrosecond)
+    ->Name("Avx512Blocked/f32/N=64");
+BENCHMARK(BM_Avx512Blocked<256, float>)
+    ->Unit(benchmark::kMicrosecond)
+    ->Name("Avx512Blocked/f32/N=256");
+BENCHMARK(BM_Avx512Blocked<512, float>)
+    ->Unit(benchmark::kMicrosecond)
+    ->Name("Avx512Blocked/f32/N=512");
+BENCHMARK(BM_Avx512Blocked<1024, float>)
+    ->Unit(benchmark::kMicrosecond)
+    ->Name("Avx512Blocked/f32/N=1024");
+BENCHMARK(BM_Avx512Blocked<4096, float>)
+    ->Unit(benchmark::kMicrosecond)
+    ->Name("Avx512Blocked/f32/N=4096");
 
 BENCHMARK_MAIN();
