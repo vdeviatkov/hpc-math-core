@@ -19,6 +19,7 @@
 #include "gemm/naive.hpp"
 #include "gemm/neon.hpp"
 #include "gemm/reordered.hpp"
+#include "gemm/sve.hpp"
 #include "hpc/matrix.hpp"
 
 #include <gtest/gtest.h>
@@ -1086,3 +1087,209 @@ INSTANTIATE_TEST_SUITE_P(Sizes, GemmNeonBlockedCrossValidation,
                          ::testing::Values(std::size_t{3}, std::size_t{4}, std::size_t{5},
                                            std::size_t{8}, std::size_t{11}, std::size_t{16},
                                            std::size_t{64}, std::size_t{128}, std::size_t{256}));
+
+// ===========================================================================
+// 16. SVE Naive  (i-j-k order, VLA SIMD on k-loop)
+//     Key insight: VL is runtime-determined (svcntw/svcntd).
+//     On non-SVE targets falls back to NEON → AVX2 → scalar chain.
+//     Confirms that wider/scalable SIMD still cannot fix gather bottleneck.
+// ===========================================================================
+
+TEST(GemmSveNaive, KnownResult2x2) {
+    MatrixD A(2, 2), B(2, 2), C(2, 2);
+    A(0, 0) = 1; A(0, 1) = 2; A(1, 0) = 3; A(1, 1) = 4;
+    B(0, 0) = 5; B(0, 1) = 6; B(1, 0) = 7; B(1, 1) = 8;
+    hpc::gemm::gemm_sve_naive(A, B, C);
+    EXPECT_NEAR(C(0, 0), 19.0, kEpsD); EXPECT_NEAR(C(0, 1), 22.0, kEpsD);
+    EXPECT_NEAR(C(1, 0), 43.0, kEpsD); EXPECT_NEAR(C(1, 1), 50.0, kEpsD);
+}
+
+TEST(GemmSveNaive, FloatKnownResult2x2) {
+    hpc::MatrixF A(2, 2), B(2, 2), C(2, 2);
+    A(0, 0) = 1.f; A(0, 1) = 2.f; A(1, 0) = 3.f; A(1, 1) = 4.f;
+    B(0, 0) = 5.f; B(0, 1) = 6.f; B(1, 0) = 7.f; B(1, 1) = 8.f;
+    hpc::gemm::gemm_sve_naive(A, B, C);
+    EXPECT_NEAR(C(0, 0), 19.f, kEpsF); EXPECT_NEAR(C(0, 1), 22.f, kEpsF);
+    EXPECT_NEAR(C(1, 0), 43.f, kEpsF); EXPECT_NEAR(C(1, 1), 50.f, kEpsF);
+}
+
+class GemmSveNaiveCrossValidation : public ::testing::TestWithParam<std::size_t> {};
+
+TEST_P(GemmSveNaiveCrossValidation, MatchesNaiveDouble) {
+    const std::size_t N = GetParam();
+    MatrixD A(N, N), B(N, N), C_ref(N, N), C_sve(N, N);
+    fill_random(A, 501); fill_random(B, 502);
+    hpc::gemm::gemm_naive(A, B, C_ref);
+    hpc::gemm::gemm_sve_naive(A, B, C_sve);
+    for (std::size_t i = 0; i < N; ++i)
+        for (std::size_t j = 0; j < N; ++j)
+            EXPECT_NEAR(C_sve(i, j), C_ref(i, j), 1e-8 * (1.0 + std::abs(C_ref(i, j))))
+                << "f64 N=" << N << " (" << i << "," << j << ")";
+}
+
+TEST_P(GemmSveNaiveCrossValidation, MatchesNaiveFloat) {
+    const std::size_t N = GetParam();
+    hpc::MatrixF A(N, N), B(N, N), C_ref(N, N), C_sve(N, N);
+    fill_random(A, 501); fill_random(B, 502);
+    hpc::gemm::gemm_naive(A, B, C_ref);
+    hpc::gemm::gemm_sve_naive(A, B, C_sve);
+    for (std::size_t i = 0; i < N; ++i)
+        for (std::size_t j = 0; j < N; ++j)
+            EXPECT_NEAR(C_sve(i, j), C_ref(i, j), 1e-4f * (1.0f + std::abs(C_ref(i, j))))
+                << "f32 N=" << N << " (" << i << "," << j << ")";
+}
+
+// N=3 / N=7 exercise scalar tails for both precisions on all SVE VL variants.
+INSTANTIATE_TEST_SUITE_P(Sizes, GemmSveNaiveCrossValidation,
+                         ::testing::Values(std::size_t{3},  std::size_t{4},
+                                           std::size_t{7},  std::size_t{8},
+                                           std::size_t{16}, std::size_t{64},
+                                           std::size_t{128}));
+
+// ===========================================================================
+// 17. SVE Reordered  (i-k-j, VLA j-loop with predicated tail)
+//     Key SVE property: NO scalar j-tail — svwhilelt handles remainder lanes.
+//     Demonstrates "vector-length agnostic" loop: correct on 128..2048-bit SVE.
+// ===========================================================================
+
+TEST(GemmSveReordered, KnownResult2x2) {
+    MatrixD A(2, 2), B(2, 2), C(2, 2);
+    A(0, 0) = 1; A(0, 1) = 2; A(1, 0) = 3; A(1, 1) = 4;
+    B(0, 0) = 5; B(0, 1) = 6; B(1, 0) = 7; B(1, 1) = 8;
+    hpc::gemm::gemm_sve_reordered(A, B, C);
+    EXPECT_NEAR(C(0, 0), 19.0, kEpsD); EXPECT_NEAR(C(0, 1), 22.0, kEpsD);
+    EXPECT_NEAR(C(1, 0), 43.0, kEpsD); EXPECT_NEAR(C(1, 1), 50.0, kEpsD);
+}
+
+TEST(GemmSveReordered, FloatKnownResult2x2) {
+    hpc::MatrixF A(2, 2), B(2, 2), C(2, 2);
+    A(0, 0) = 1.f; A(0, 1) = 2.f; A(1, 0) = 3.f; A(1, 1) = 4.f;
+    B(0, 0) = 5.f; B(0, 1) = 6.f; B(1, 0) = 7.f; B(1, 1) = 8.f;
+    hpc::gemm::gemm_sve_reordered(A, B, C);
+    EXPECT_NEAR(C(0, 0), 19.f, kEpsF); EXPECT_NEAR(C(0, 1), 22.f, kEpsF);
+    EXPECT_NEAR(C(1, 0), 43.f, kEpsF); EXPECT_NEAR(C(1, 1), 50.f, kEpsF);
+}
+
+class GemmSveReorderedCrossValidation : public ::testing::TestWithParam<std::size_t> {};
+
+TEST_P(GemmSveReorderedCrossValidation, MatchesNaiveDouble) {
+    const std::size_t N = GetParam();
+    MatrixD A(N, N), B(N, N), C_ref(N, N), C_sve(N, N);
+    fill_random(A, 601); fill_random(B, 602);
+    hpc::gemm::gemm_naive(A, B, C_ref);
+    hpc::gemm::gemm_sve_reordered(A, B, C_sve);
+    for (std::size_t i = 0; i < N; ++i)
+        for (std::size_t j = 0; j < N; ++j)
+            EXPECT_NEAR(C_sve(i, j), C_ref(i, j), 1e-8 * (1.0 + std::abs(C_ref(i, j))))
+                << "f64 N=" << N << " (" << i << "," << j << ")";
+}
+
+TEST_P(GemmSveReorderedCrossValidation, MatchesNaiveFloat) {
+    const std::size_t N = GetParam();
+    hpc::MatrixF A(N, N), B(N, N), C_ref(N, N), C_sve(N, N);
+    fill_random(A, 601); fill_random(B, 602);
+    hpc::gemm::gemm_naive(A, B, C_ref);
+    hpc::gemm::gemm_sve_reordered(A, B, C_sve);
+    for (std::size_t i = 0; i < N; ++i)
+        for (std::size_t j = 0; j < N; ++j)
+            EXPECT_NEAR(C_sve(i, j), C_ref(i, j), 1e-4f * (1.0f + std::abs(C_ref(i, j))))
+                << "f32 N=" << N << " (" << i << "," << j << ")";
+}
+
+// N=7 / N=13 are not multiples of any common VL (4, 8, 16) → exercises the
+// predicated tail on every known SVE implementation width.
+INSTANTIATE_TEST_SUITE_P(Sizes, GemmSveReorderedCrossValidation,
+                         ::testing::Values(std::size_t{3},  std::size_t{4},
+                                           std::size_t{7},  std::size_t{8},
+                                           std::size_t{13}, std::size_t{16},
+                                           std::size_t{64}, std::size_t{128}));
+
+// ===========================================================================
+// 18. SVE Blocked  (tiled i-k-j + VLA register tile)
+//     Tile width = kSveRegCols × svcntw/d() — scales automatically with VL.
+//     All tail handling done via predicates — no scalar j-tail loop.
+// ===========================================================================
+
+TEST(GemmSveBlocked, MultiplyByIdentityGivesOriginal) {
+    constexpr std::size_t N = 32;
+    MatrixD A(N, N), I = make_identity(N), C(N, N);
+    fill_random(A, 1);
+    hpc::gemm::gemm_sve_blocked(A, I, C);
+    for (std::size_t i = 0; i < N; ++i)
+        for (std::size_t j = 0; j < N; ++j)
+            EXPECT_NEAR(C(i, j), A(i, j), kEpsD) << "(" << i << "," << j << ")";
+}
+
+TEST(GemmSveBlocked, MultiplyByZeroGivesZero) {
+    constexpr std::size_t N = 16;
+    MatrixD A(N, N), Z(N, N), C(N, N);
+    fill_random(A, 2);
+    hpc::gemm::gemm_sve_blocked(A, Z, C);
+    for (std::size_t i = 0; i < N; ++i)
+        for (std::size_t j = 0; j < N; ++j)
+            EXPECT_DOUBLE_EQ(C(i, j), 0.0);
+}
+
+TEST(GemmSveBlocked, KnownResult2x2) {
+    MatrixD A(2, 2), B(2, 2), C(2, 2);
+    A(0, 0) = 1; A(0, 1) = 2; A(1, 0) = 3; A(1, 1) = 4;
+    B(0, 0) = 5; B(0, 1) = 6; B(1, 0) = 7; B(1, 1) = 8;
+    hpc::gemm::gemm_sve_blocked(A, B, C);
+    EXPECT_NEAR(C(0, 0), 19.0, kEpsD); EXPECT_NEAR(C(0, 1), 22.0, kEpsD);
+    EXPECT_NEAR(C(1, 0), 43.0, kEpsD); EXPECT_NEAR(C(1, 1), 50.0, kEpsD);
+}
+
+TEST(GemmSveBlocked, FloatKnownResult2x2) {
+    hpc::MatrixF A(2, 2), B(2, 2), C(2, 2);
+    A(0, 0) = 1.f; A(0, 1) = 2.f; A(1, 0) = 3.f; A(1, 1) = 4.f;
+    B(0, 0) = 5.f; B(0, 1) = 6.f; B(1, 0) = 7.f; B(1, 1) = 8.f;
+    hpc::gemm::gemm_sve_blocked(A, B, C);
+    EXPECT_NEAR(C(0, 0), 19.f, kEpsF); EXPECT_NEAR(C(0, 1), 22.f, kEpsF);
+    EXPECT_NEAR(C(1, 0), 43.f, kEpsF); EXPECT_NEAR(C(1, 1), 50.f, kEpsF);
+}
+
+TEST(GemmSveBlocked, RectangularMatrices) {
+    MatrixD A(3, 4), B(4, 2), C(3, 2);
+    fill_random(A, 7); fill_random(B, 8);
+    hpc::gemm::gemm_sve_blocked(A, B, C);
+    double expected = 0.0;
+    for (std::size_t k = 0; k < 4; ++k) expected += A(0, k) * B(k, 0);
+    EXPECT_NEAR(C(0, 0), expected, kEpsD);
+}
+
+class GemmSveBlockedCrossValidation : public ::testing::TestWithParam<std::size_t> {};
+
+TEST_P(GemmSveBlockedCrossValidation, MatchesNaiveDouble) {
+    const std::size_t N = GetParam();
+    MatrixD A(N, N), B(N, N), C_ref(N, N), C_sve(N, N);
+    fill_random(A, 701); fill_random(B, 702);
+    hpc::gemm::gemm_naive(A, B, C_ref);
+    hpc::gemm::gemm_sve_blocked(A, B, C_sve);
+    for (std::size_t i = 0; i < N; ++i)
+        for (std::size_t j = 0; j < N; ++j)
+            EXPECT_NEAR(C_sve(i, j), C_ref(i, j), 1e-8 * (1.0 + std::abs(C_ref(i, j))))
+                << "f64 N=" << N << " (" << i << "," << j << ")";
+}
+
+TEST_P(GemmSveBlockedCrossValidation, MatchesNaiveFloat) {
+    const std::size_t N = GetParam();
+    hpc::MatrixF A(N, N), B(N, N), C_ref(N, N), C_sve(N, N);
+    fill_random(A, 701); fill_random(B, 702);
+    hpc::gemm::gemm_naive(A, B, C_ref);
+    hpc::gemm::gemm_sve_blocked(A, B, C_sve);
+    for (std::size_t i = 0; i < N; ++i)
+        for (std::size_t j = 0; j < N; ++j)
+            EXPECT_NEAR(C_sve(i, j), C_ref(i, j), 1e-4f * (1.0f + std::abs(C_ref(i, j))))
+                << "f32 N=" << N << " (" << i << "," << j << ")";
+}
+
+// N=7 / N=13 / N=17 — not multiples of 4, 8, or 16 → predicated tail on every
+// SVE VL variant (128, 256, 512-bit).
+INSTANTIATE_TEST_SUITE_P(Sizes, GemmSveBlockedCrossValidation,
+                         ::testing::Values(std::size_t{3},  std::size_t{4},
+                                           std::size_t{7},  std::size_t{8},
+                                           std::size_t{13}, std::size_t{16},
+                                           std::size_t{17}, std::size_t{64},
+                                           std::size_t{128}, std::size_t{256}));
+
+

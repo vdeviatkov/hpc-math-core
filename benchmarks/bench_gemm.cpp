@@ -38,7 +38,10 @@
  */
 
 #include "gemm/blocked.hpp"
+#include "gemm/naive.hpp"
 #include "gemm/neon.hpp"
+#include "gemm/reordered.hpp"
+#include "gemm/sve.hpp"
 #include "hpc/matrix.hpp"
 
 #include <benchmark/benchmark.h>
@@ -609,5 +612,142 @@ BENCHMARK(BM_NeonBlocked<1024, float>)
 BENCHMARK(BM_NeonBlocked<4096, float>)
     ->Unit(benchmark::kMicrosecond)
     ->Name("NeonBlocked/f32/N=4096");
+
+// ============================================================================
+// SVE / SVE2 benchmarks
+// On non-SVE targets (x86, Apple Silicon) each kernel delegates to its NEON
+// (or AVX2) equivalent, so these registrations are always safe to include.
+// On SVE hardware (Graviton3, A64FX, Neoverse V1/V2) the VLA SVE path runs.
+//
+// The "vl" counter reports the actual SVE vector length at runtime:
+//   128-bit SVE: vl=4 (f32) / vl=2 (f64)
+//   256-bit SVE: vl=8 (f32) / vl=4 (f64)  ← Graviton3, Neoverse V1
+//   512-bit SVE: vl=16(f32) / vl=8 (f64)  ← A64FX (Fugaku)
+// ============================================================================
+
+/**
+ * @brief Benchmark gemm_sve_naive<T> — i-j-k, SVE on k-loop (VLA gather).
+ * Expected: GFLOP/s ≈ scalar naive — column gather is bandwidth-bound.
+ */
+template <std::size_t N, typename T = double>
+static void BM_SveNaive(benchmark::State& state) {
+    hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
+    fill_random(A, 1);
+    fill_random(B, 2);
+    for (auto _ : state) {
+        hpc::gemm::gemm_sve_naive(A, B, C);
+        benchmark::DoNotOptimize(C.data());
+        benchmark::ClobberMemory();
+    }
+    state.counters["GFLOP/s"] = benchmark::Counter(
+        flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
+    state.counters["N"]         = static_cast<double>(N);
+    state.counters["precision"] = static_cast<double>(sizeof(T) * 8);
+#ifdef __ARM_FEATURE_SVE
+    state.counters["sve"] = 1;
+    state.counters["vl"]  = static_cast<double>((sizeof(T) == 4) ? svcntw() : svcntd());
+#else
+    state.counters["sve"] = 0;
+    state.counters["vl"]  = 0;
+#endif
+}
+
+/**
+ * @brief Benchmark gemm_sve_reordered<T> — i-k-j, VLA SVE on j-loop.
+ * Expected: ~svcntw/d() × scalar reordered. Predicated tail — no scalar fallback.
+ */
+template <std::size_t N, typename T = double>
+static void BM_SveReordered(benchmark::State& state) {
+    hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
+    fill_random(A, 1);
+    fill_random(B, 2);
+    for (auto _ : state) {
+        hpc::gemm::gemm_sve_reordered(A, B, C);
+        benchmark::DoNotOptimize(C.data());
+        benchmark::ClobberMemory();
+    }
+    state.counters["GFLOP/s"] = benchmark::Counter(
+        flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
+    state.counters["N"]         = static_cast<double>(N);
+    state.counters["precision"] = static_cast<double>(sizeof(T) * 8);
+#ifdef __ARM_FEATURE_SVE
+    state.counters["sve"] = 1;
+    state.counters["vl"]  = static_cast<double>((sizeof(T) == 4) ? svcntw() : svcntd());
+#else
+    state.counters["sve"] = 0;
+    state.counters["vl"]  = 0;
+#endif
+}
+
+/**
+ * @brief Benchmark gemm_sve_blocked<T> — tiled i-k-j + VLA register tile.
+ * Expected: highest GFLOP/s on SVE. Tile width scales with hardware VL.
+ */
+template <std::size_t N, typename T = double>
+static void BM_SveBlocked(benchmark::State& state) {
+    hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
+    fill_random(A, 1);
+    fill_random(B, 2);
+    for (auto _ : state) {
+        hpc::gemm::gemm_sve_blocked(A, B, C);
+        benchmark::DoNotOptimize(C.data());
+        benchmark::ClobberMemory();
+    }
+    state.counters["GFLOP/s"] = benchmark::Counter(
+        flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
+    state.counters["N"]         = static_cast<double>(N);
+    state.counters["precision"] = static_cast<double>(sizeof(T) * 8);
+#ifdef __ARM_FEATURE_SVE
+    state.counters["sve"] = 1;
+    state.counters["vl"]  = static_cast<double>((sizeof(T) == 4) ? svcntw() : svcntd());
+#else
+    state.counters["sve"] = 0;
+    state.counters["vl"]  = 0;
+#endif
+}
+
+// ---- SVE Naive -------------------------------------------------------------
+BENCHMARK(BM_SveNaive<64>)->Unit(benchmark::kMicrosecond)->Name("SveNaive/f64/N=64");
+BENCHMARK(BM_SveNaive<256>)->Unit(benchmark::kMicrosecond)->Name("SveNaive/f64/N=256");
+BENCHMARK(BM_SveNaive<512>)->Unit(benchmark::kMicrosecond)->Name("SveNaive/f64/N=512");
+BENCHMARK(BM_SveNaive<1024>)->Unit(benchmark::kMicrosecond)->Name("SveNaive/f64/N=1024");
+BENCHMARK(BM_SveNaive<4096>)->Unit(benchmark::kMicrosecond)->Name("SveNaive/f64/N=4096");
+BENCHMARK(BM_SveNaive<64, float>)->Unit(benchmark::kMicrosecond)->Name("SveNaive/f32/N=64");
+BENCHMARK(BM_SveNaive<256, float>)->Unit(benchmark::kMicrosecond)->Name("SveNaive/f32/N=256");
+BENCHMARK(BM_SveNaive<512, float>)->Unit(benchmark::kMicrosecond)->Name("SveNaive/f32/N=512");
+BENCHMARK(BM_SveNaive<1024, float>)->Unit(benchmark::kMicrosecond)->Name("SveNaive/f32/N=1024");
+BENCHMARK(BM_SveNaive<4096, float>)->Unit(benchmark::kMicrosecond)->Name("SveNaive/f32/N=4096");
+
+// ---- SVE Reordered ---------------------------------------------------------
+BENCHMARK(BM_SveReordered<64>)->Unit(benchmark::kMicrosecond)->Name("SveReordered/f64/N=64");
+BENCHMARK(BM_SveReordered<256>)->Unit(benchmark::kMicrosecond)->Name("SveReordered/f64/N=256");
+BENCHMARK(BM_SveReordered<512>)->Unit(benchmark::kMicrosecond)->Name("SveReordered/f64/N=512");
+BENCHMARK(BM_SveReordered<1024>)->Unit(benchmark::kMicrosecond)->Name("SveReordered/f64/N=1024");
+BENCHMARK(BM_SveReordered<4096>)->Unit(benchmark::kMicrosecond)->Name("SveReordered/f64/N=4096");
+BENCHMARK(BM_SveReordered<64, float>)->Unit(benchmark::kMicrosecond)->Name("SveReordered/f32/N=64");
+BENCHMARK(BM_SveReordered<256, float>)
+    ->Unit(benchmark::kMicrosecond)
+    ->Name("SveReordered/f32/N=256");
+BENCHMARK(BM_SveReordered<512, float>)
+    ->Unit(benchmark::kMicrosecond)
+    ->Name("SveReordered/f32/N=512");
+BENCHMARK(BM_SveReordered<1024, float>)
+    ->Unit(benchmark::kMicrosecond)
+    ->Name("SveReordered/f32/N=1024");
+BENCHMARK(BM_SveReordered<4096, float>)
+    ->Unit(benchmark::kMicrosecond)
+    ->Name("SveReordered/f32/N=4096");
+
+// ---- SVE Blocked -----------------------------------------------------------
+BENCHMARK(BM_SveBlocked<64>)->Unit(benchmark::kMicrosecond)->Name("SveBlocked/f64/N=64");
+BENCHMARK(BM_SveBlocked<256>)->Unit(benchmark::kMicrosecond)->Name("SveBlocked/f64/N=256");
+BENCHMARK(BM_SveBlocked<512>)->Unit(benchmark::kMicrosecond)->Name("SveBlocked/f64/N=512");
+BENCHMARK(BM_SveBlocked<1024>)->Unit(benchmark::kMicrosecond)->Name("SveBlocked/f64/N=1024");
+BENCHMARK(BM_SveBlocked<4096>)->Unit(benchmark::kMicrosecond)->Name("SveBlocked/f64/N=4096");
+BENCHMARK(BM_SveBlocked<64, float>)->Unit(benchmark::kMicrosecond)->Name("SveBlocked/f32/N=64");
+BENCHMARK(BM_SveBlocked<256, float>)->Unit(benchmark::kMicrosecond)->Name("SveBlocked/f32/N=256");
+BENCHMARK(BM_SveBlocked<512, float>)->Unit(benchmark::kMicrosecond)->Name("SveBlocked/f32/N=512");
+BENCHMARK(BM_SveBlocked<1024, float>)->Unit(benchmark::kMicrosecond)->Name("SveBlocked/f32/N=1024");
+BENCHMARK(BM_SveBlocked<4096, float>)->Unit(benchmark::kMicrosecond)->Name("SveBlocked/f32/N=4096");
 
 BENCHMARK_MAIN();
