@@ -8,8 +8,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 #  build-linux-x86   Ubuntu 24.04 · GCC 14 · x86-64
 #                    Flags: -march=native  (AVX2 + FMA on GitHub runners)
-#                    Tests: scalar, AVX2, prefetch; AVX-512 skipped (runner
-#                           CPUs don't expose it); NEON/SVE/CUDA skipped.
+#                    Tests: scalar, AVX2, prefetch; AVX-512/NEON/SVE/CUDA skipped.
 #
 #  build-linux-arm   Ubuntu 24.04 · GCC 14 · aarch64 (native ARM runner)
 #                    Flags: -march=native  (NEON always present on aarch64)
@@ -19,20 +18,25 @@
 #                    Flags: -march=native  (NEON always present)
 #                    Tests: same as linux-arm; matches local developer machine.
 #
-#  build-cuda        Runs only on self-hosted runners tagged `cuda`.
-#                    Skipped automatically when no GPU is present (the bench
-#                    and test binaries call cuda_device_count() and skip).
-#                    Uses the standard GitHub ubuntu-24.04 runner when no
-#                    self-hosted GPU runner is registered — the CUDA toolkit
-#                    is installed but cudaGetDeviceCount() returns 0, so all
-#                    CUDA tests/benchmarks are skipped cleanly.
+#  build-cuda-stub   Ubuntu 24.04 hosted runner — NO CUDA toolkit installed.
+#                    CMake finds no nvcc → compiles gemm_kernels_stub.cpp.
+#                    bench_gemm_cuda and hpc_tests_cuda are built and run;
+#                    every CUDA entry prints SKIPPED (cuda_device_count()=0).
+#                    Purpose: proves the stub path compiles and links on CI
+#                    without requiring a GPU or the NVIDIA toolkit.
+#
+#  build-cuda-gpu    Self-hosted runner with label `cuda` — CUDA toolkit is
+#                    pre-installed on the machine. CMake finds nvcc, compiles
+#                    gemm_kernels.cu, runs real GPU tests.
+#                    This job is skipped entirely when no self-hosted runner
+#                    with the `cuda` label is registered.
 #
 # Caching
 # ─────────────────────────────────────────────────────────────────────────────
 #  ccache reduces repeat compile times from ~3 min → ~20 s on cache hit.
-#  Cache key: runner OS + compiler + branch + CMakeLists hash.
-#  The CMake FetchContent dependencies (GoogleTest, Google Benchmark) are
-#  cached separately under a stable key so they are not re-cloned on every run.
+#  Cache key: runner OS + compiler + source hash.
+#  FetchContent deps (GoogleTest, Google Benchmark) are cached separately
+#  so they are not re-cloned on every run.
 #
 # Artifacts
 # ─────────────────────────────────────────────────────────────────────────────
@@ -60,7 +64,6 @@ env:
   CMAKE_BUILD_TYPE: Release
   CCACHE_DIR: ${{ github.workspace }}/.ccache
   CCACHE_MAXSIZE: 500M
-  # Makes CTest output visible in the GitHub Actions log without -V flag.
   CTEST_OUTPUT_ON_FAILURE: "1"
 
 # =============================================================================
@@ -72,20 +75,16 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-      # ── Checkout ──────────────────────────────────────────────────────────
       - uses: actions/checkout@v4
 
-      # ── Toolchain ─────────────────────────────────────────────────────────
       - name: Install GCC 14 & ccache
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             gcc-14 g++-14 ccache ninja-build
-          # Make gcc-14 the default cc/c++ in this job.
           sudo update-alternatives --install /usr/bin/cc  cc  /usr/bin/gcc-14 100
           sudo update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++-14 100
 
-      # ── ccache ────────────────────────────────────────────────────────────
       - name: Restore ccache
         uses: actions/cache@v4
         with:
@@ -93,7 +92,6 @@ jobs:
           key: ccache-linux-x86-gcc14-${{ hashFiles('CMakeLists.txt', 'src/**', 'include/**') }}
           restore-keys: ccache-linux-x86-gcc14-
 
-      # ── FetchContent dependency cache ─────────────────────────────────────
       - name: Restore FetchContent cache
         uses: actions/cache@v4
         with:
@@ -101,7 +99,6 @@ jobs:
           key: fetchcontent-linux-${{ hashFiles('CMakeLists.txt') }}
           restore-keys: fetchcontent-linux-
 
-      # ── Configure ─────────────────────────────────────────────────────────
       - name: CMake configure
         run: |
           cmake -B build -G Ninja \
@@ -109,20 +106,16 @@ jobs:
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
-      # ── Build ─────────────────────────────────────────────────────────────
       - name: Build
         run: cmake --build build --parallel
 
-      # ── Test ──────────────────────────────────────────────────────────────
-      - name: Run CPU tests (ctest)
+      - name: Run tests
         working-directory: build
         run: ctest --output-junit ../test-results-linux-x86.xml
 
-      # ── ccache stats ──────────────────────────────────────────────────────
       - name: ccache stats
         run: ccache --show-stats
 
-      # ── Upload test results ───────────────────────────────────────────────
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
@@ -172,7 +165,7 @@ jobs:
       - name: Build
         run: cmake --build build --parallel
 
-      - name: Run CPU tests (ctest)
+      - name: Run tests
         working-directory: build
         run: ctest --output-junit ../test-results-linux-arm.xml
 
@@ -187,7 +180,7 @@ jobs:
           path: test-results-linux-arm.xml
 
   # =============================================================================
-  # Job 3: macOS (Apple Clang, Apple M runner)
+  # Job 3: macOS 14 (Apple Clang, Apple M runner)
   # =============================================================================
   build-macos:
     name: "macOS 14 · Apple Clang · arm64"
@@ -223,7 +216,7 @@ jobs:
       - name: Build
         run: cmake --build build --parallel
 
-      - name: Run CPU tests (ctest)
+      - name: Run tests
         working-directory: build
         run: ctest --output-junit ../test-results-macos.xml
 
@@ -238,42 +231,23 @@ jobs:
           path: test-results-macos.xml
 
   # =============================================================================
-  # Job 4: CUDA (self-hosted runner with NVIDIA GPU, or hosted runner as stub)
+  # Job 4: CUDA stub — hosted runner, no toolkit, stub library only.
   #
-  # Strategy:
-  #   • If you have a self-hosted runner registered with the label `cuda`,
-  #     this job runs on it and the real CUDA kernels are exercised.
-  #   • Without a self-hosted runner, fall back to ubuntu-24.04 where the
-  #     CUDA toolkit is installed but cudaGetDeviceCount() returns 0 — all
-  #     CUDA tests/benchmarks print SKIPPED, the job still passes.
+  # CMake's check_language(CUDA) finds no nvcc → builds gemm_kernels_stub.cpp.
+  # bench_gemm_cuda and hpc_tests_cuda compile against the stub.
+  # All CUDA tests/benchmarks print SKIPPED at runtime (cuda_device_count()=0).
   #
-  # To register a self-hosted runner:
-  #   Settings → Actions → Runners → New self-hosted runner
-  #   Add the label: cuda
+  # Purpose: validate that the no-CUDA code path builds and links correctly
+  # on every push without needing a GPU runner.
   # =============================================================================
-  build-cuda:
-    name: "CUDA kernels (GPU if available, stub otherwise)"
-    # Use self-hosted GPU runner when available; fall back to hosted ubuntu.
-    runs-on: ${{ github.repository_owner != '' && 'ubuntu-24.04' || 'ubuntu-24.04' }}
+  build-cuda-stub:
+    name: "CUDA stub (no toolkit) · Linux x86-64"
+    runs-on: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@v4
 
-      # ── Detect and install CUDA toolkit (hosted runner path) ──────────────
-      # On a self-hosted GPU runner, the toolkit is typically pre-installed.
-      # On the GitHub-hosted runner we install the toolkit so that the .cu
-      # files can be compiled by nvcc; cudaGetDeviceCount() will return 0
-      # at runtime (no physical GPU) → all CUDA tests skip gracefully.
-      - name: Install CUDA toolkit (12.x)
-        uses: Jimver/cuda-toolkit@v0.2.19
-        id: cuda-toolkit
-        with:
-          cuda: "12.4.0"
-          method: network
-          # Only the compiler and runtime are needed — skip large SDK samples.
-          sub-packages: '["nvcc", "cudart-dev"]'
-
-      - name: Install build tools
+      - name: Install GCC 14 & ccache
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
@@ -285,38 +259,43 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache-cuda-gcc14-${{ hashFiles('CMakeLists.txt', 'src/**', 'include/**') }}
-          restore-keys: ccache-cuda-gcc14-
+          key: ccache-cuda-stub-gcc14-${{ hashFiles('CMakeLists.txt', 'src/**', 'include/**') }}
+          restore-keys: ccache-cuda-stub-gcc14-
 
       - name: Restore FetchContent cache
         uses: actions/cache@v4
         with:
           path: build/_deps
-          key: fetchcontent-cuda-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: fetchcontent-cuda-
+          key: fetchcontent-cuda-stub-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: fetchcontent-cuda-stub-
 
-      # ── Configure — CUDA toolkit path from the installer action ───────────
-      - name: CMake configure (with CUDA)
+      # No CUDA toolkit installed — CMake will detect no nvcc and use the stub.
+      - name: CMake configure (stub path)
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=${{ env.CMAKE_BUILD_TYPE }} \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_CUDA_COMPILER="${{ steps.cuda-toolkit.outputs.CUDA_PATH }}/bin/nvcc"
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
-      - name: Build (all targets including CUDA)
+      - name: Build (stub + all CPU targets)
         run: cmake --build build --parallel
 
-      # ── Run all tests — CUDA tests skip if no GPU present ─────────────────
-      - name: Run tests (CUDA tests skip when no device)
+      - name: Run tests (CUDA tests print SKIPPED — expected)
         working-directory: build
+        run: ctest --output-junit ../test-results-cuda-stub.xml
+
+      - name: Smoke-test bench_gemm_cuda (all rows must say SKIPPED)
         run: |
-          ctest --output-junit ../test-results-cuda.xml
-          echo "--- CUDA device summary ---"
-          ./benchmarks/cuda/bench_gemm_cuda \
+          ./build/benchmarks/cuda/bench_gemm_cuda \
             --benchmark_filter="N=64" \
-            --benchmark_min_time=0.01s \
-            2>&1 || true   # non-zero exit from benchmark is OK (SKIPPED rows)
+            --benchmark_min_time=0.01s 2>&1 \
+          | tee /tmp/cuda_bench_out.txt
+          # Fail if any row ran instead of being skipped.
+          if grep -qP "^\s+\d" /tmp/cuda_bench_out.txt; then
+            echo "ERROR: a CUDA benchmark ran on a no-GPU runner"
+            exit 1
+          fi
+          echo "OK — all CUDA benchmarks correctly skipped"
 
       - name: ccache stats
         run: ccache --show-stats
@@ -325,6 +304,79 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-results-cuda
-          path: test-results-cuda.xml
+          name: test-results-cuda-stub
+          path: test-results-cuda-stub.xml
+
+  # =============================================================================
+  # Job 5: CUDA GPU — self-hosted runner with label `cuda`.
+  #
+  # This job is only picked up when a self-hosted runner tagged `cuda` is
+  # registered in the repository.  If no such runner exists the job simply
+  # stays queued and is eventually cancelled by the concurrency group on the
+  # next push — it does NOT block the overall workflow status.
+  #
+  # The runner is expected to have:
+  #   - CUDA toolkit (nvcc) pre-installed and on PATH
+  #   - At least one NVIDIA GPU visible to cudaGetDeviceCount()
+  #   - GCC, CMake, Ninja, ccache
+  #
+  # Register a runner:
+  #   https://github.com/vdeviatkov/hpc-math-core/settings/actions/runners/new
+  #   Labels: cuda
+  # =============================================================================
+  build-cuda-gpu:
+    name: "CUDA GPU · self-hosted"
+    runs-on: [self-hosted, cuda]
+    # Don't block the overall workflow if no GPU runner is available.
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-cuda-gpu-${{ hashFiles('CMakeLists.txt', 'src/**', 'include/**') }}
+          restore-keys: ccache-cuda-gpu-
+
+      - name: Restore FetchContent cache
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: fetchcontent-cuda-gpu-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: fetchcontent-cuda-gpu-
+
+      - name: Show CUDA version
+        run: nvcc --version
+
+      - name: CMake configure (real CUDA)
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ env.CMAKE_BUILD_TYPE }} \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build (real CUDA kernels)
+        run: cmake --build build --parallel
+
+      - name: Run all tests (CUDA tests execute on GPU)
+        working-directory: build
+        run: ctest --output-junit ../test-results-cuda-gpu.xml
+
+      - name: Smoke-test bench_gemm_cuda
+        run: |
+          ./build/benchmarks/cuda/bench_gemm_cuda \
+            --benchmark_filter="CudaBlocked.*N=256" \
+            --benchmark_min_time=0.5s 2>&1
+
+      - name: ccache stats
+        run: ccache --show-stats
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-cuda-gpu
+          path: test-results-cuda-gpu.xml
 
