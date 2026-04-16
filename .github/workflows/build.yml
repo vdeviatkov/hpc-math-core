@@ -89,22 +89,32 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache-linux-x86-gcc14-${{ hashFiles('CMakeLists.txt', 'src/**', 'include/**') }}
-          restore-keys: ccache-linux-x86-gcc14-
+          # Include runner.arch so ARM and x86 builds never share cached objects.
+          key: ccache-linux-x86-gcc14-${{ runner.arch }}-${{ hashFiles('CMakeLists.txt', 'src/**', 'include/**') }}
+          restore-keys: ccache-linux-x86-gcc14-${{ runner.arch }}-
 
       - name: Restore FetchContent cache
         uses: actions/cache@v4
         with:
           path: build/_deps
-          key: fetchcontent-linux-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: fetchcontent-linux-
+          # FetchContent sources are arch-independent, but the key still
+          # includes runner.arch to avoid any cmake cache file cross-contamination.
+          key: fetchcontent-linux-x86-${{ runner.arch }}-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: fetchcontent-linux-x86-${{ runner.arch }}-
 
       - name: CMake configure
         run: |
+          # Override -march=native with -march=x86-64-v3 (AVX2 + FMA + POPCNT).
+          # GitHub-hosted ubuntu-24.04 runners land on various Intel/AMD CPUs;
+          # -march=native could emit AVX-512 on some hosts which then causes
+          # SIGILL when ctest runs the binary on a runner that lacks AVX-512.
+          # x86-64-v3 is the highest baseline guaranteed across all runners.
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=${{ env.CMAKE_BUILD_TYPE }} \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_FLAGS="-march=x86-64-v3" \
+            -DCMAKE_C_FLAGS="-march=x86-64-v3"
 
       - name: Build
         run: cmake --build build --parallel
@@ -145,15 +155,15 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache-linux-arm-gcc14-${{ hashFiles('CMakeLists.txt', 'src/**', 'include/**') }}
-          restore-keys: ccache-linux-arm-gcc14-
+          key: ccache-linux-arm-gcc14-${{ runner.arch }}-${{ hashFiles('CMakeLists.txt', 'src/**', 'include/**') }}
+          restore-keys: ccache-linux-arm-gcc14-${{ runner.arch }}-
 
       - name: Restore FetchContent cache
         uses: actions/cache@v4
         with:
           path: build/_deps
-          key: fetchcontent-linux-arm-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: fetchcontent-linux-arm-
+          key: fetchcontent-linux-arm-${{ runner.arch }}-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: fetchcontent-linux-arm-${{ runner.arch }}-
 
       - name: CMake configure
         run: |
@@ -196,15 +206,15 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache-macos14-appleclang-${{ hashFiles('CMakeLists.txt', 'src/**', 'include/**') }}
-          restore-keys: ccache-macos14-appleclang-
+          key: ccache-macos14-appleclang-${{ runner.arch }}-${{ hashFiles('CMakeLists.txt', 'src/**', 'include/**') }}
+          restore-keys: ccache-macos14-appleclang-${{ runner.arch }}-
 
       - name: Restore FetchContent cache
         uses: actions/cache@v4
         with:
           path: build/_deps
-          key: fetchcontent-macos-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: fetchcontent-macos-
+          key: fetchcontent-macos-${{ runner.arch }}-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: fetchcontent-macos-${{ runner.arch }}-
 
       - name: CMake configure
         run: |
@@ -259,15 +269,15 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache-cuda-stub-gcc14-${{ hashFiles('CMakeLists.txt', 'src/**', 'include/**') }}
-          restore-keys: ccache-cuda-stub-gcc14-
+          key: ccache-cuda-stub-gcc14-${{ runner.arch }}-${{ hashFiles('CMakeLists.txt', 'src/**', 'include/**') }}
+          restore-keys: ccache-cuda-stub-gcc14-${{ runner.arch }}-
 
       - name: Restore FetchContent cache
         uses: actions/cache@v4
         with:
           path: build/_deps
-          key: fetchcontent-cuda-stub-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: fetchcontent-cuda-stub-
+          key: fetchcontent-cuda-stub-${{ runner.arch }}-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: fetchcontent-cuda-stub-${{ runner.arch }}-
 
       # No CUDA toolkit installed — CMake will detect no nvcc and use the stub.
       - name: CMake configure (stub path)
@@ -275,7 +285,9 @@ jobs:
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=${{ env.CMAKE_BUILD_TYPE }} \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_FLAGS="-march=x86-64-v3" \
+            -DCMAKE_C_FLAGS="-march=x86-64-v3"
 
       - name: Build (stub + all CPU targets)
         run: cmake --build build --parallel
