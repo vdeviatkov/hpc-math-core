@@ -1,5 +1,7 @@
 # hpc-math-core
 
+[![CI — Build & Test](https://github.com/vdeviatkov/hpc-math-core/actions/workflows/build.yml/badge.svg)](https://github.com/vdeviatkov/hpc-math-core/actions/workflows/build.yml)
+
 A progressive benchmark suite demonstrating **hardware-aware optimisations for linear algebra**, targeting quantitative engineering and high-frequency trading performance standards.
 
 This repository starts from first principles — readable scalar code — and adds successive layers of hardware exploitation: cache-friendly access patterns, SIMD vectorisation (AVX2 · AVX-512 · NEON · SVE), software prefetch, and CUDA. Every step is fully benchmarked, cross-validated by a Google Test suite, and documented with ASCII memory diagrams and cache analysis.
@@ -30,6 +32,9 @@ See [src/gemm/README.md](src/gemm/README.md) for per-kernel memory diagrams and 
 
 ```
 hpc-math-core/
+├── .github/
+│   └── workflows/
+│       └── build.yml               CI: build + ctest on Linux x86, Linux ARM, macOS, CUDA
 ├── CMakeLists.txt
 ├── include/
 │   └── hpc/
@@ -101,6 +106,55 @@ cd build && ctest --output-on-failure
 ./build/benchmarks/cuda/bench_gemm_cuda --benchmark_filter="f32"
 ./build/benchmarks/cuda/bench_gemm_cuda --benchmark_filter="N=1024"
 ```
+
+---
+
+## Continuous Integration
+
+The workflow lives at `.github/workflows/build.yml` and runs on every push and pull request.
+
+### Jobs
+
+| Job | Runner | Compiler | What runs |
+|---|---|---|---|
+| **Linux x86-64** | `ubuntu-24.04` | GCC 14 | All CPU tests (scalar, AVX2, prefetch); CUDA/NEON/SVE skipped |
+| **Linux aarch64** | `ubuntu-24.04-arm` | GCC 14 | All CPU tests (scalar, NEON, prefetch); AVX2/AVX-512/CUDA skipped |
+| **macOS 14** | `macos-14` (Apple M) | Apple Clang | All CPU tests (scalar, NEON, prefetch); AVX2/AVX-512/CUDA skipped |
+| **CUDA** | `ubuntu-24.04` + CUDA 12.4 | GCC 14 + nvcc | All CPU tests + CUDA stub (CUDA tests skip — no GPU on hosted runner) |
+
+All four jobs:
+1. Restore **ccache** (key: OS + compiler + source hash) — warm builds finish in ~20 s.
+2. Restore **FetchContent cache** (`build/_deps`) — avoids re-cloning GoogleTest + Google Benchmark.
+3. Configure with `cmake -G Ninja -DCMAKE_BUILD_TYPE=Release`.
+4. Build all targets in parallel.
+5. Run `ctest --output-junit` — uploads JUnit XML as a job artifact (visible in the Actions UI).
+
+### CUDA on CI
+
+The CUDA job installs the full NVIDIA toolkit via [`Jimver/cuda-toolkit`](https://github.com/Jimver/cuda-toolkit) so that `.cu` files are compiled by nvcc. On the hosted runner `cudaGetDeviceCount()` returns 0 — no physical GPU is present — so all CUDA tests and benchmarks print `SKIPPED` and the job still passes (EXIT=0).
+
+To run CUDA tests against a real GPU, register a **self-hosted runner** with the label `cuda`:
+
+```
+https://github.com/vdeviatkov/hpc-math-core/settings/actions/runners/new
+Labels: cuda
+```
+
+Then change the `runs-on` in the `build-cuda` job:
+
+```yaml
+runs-on: [self-hosted, cuda]
+```
+
+### Adding a status badge
+
+The badge is already active at the top of this README. The URL is:
+
+```markdown
+[![CI](https://github.com/vdeviatkov/hpc-math-core/actions/workflows/build.yml/badge.svg)](https://github.com/vdeviatkov/hpc-math-core/actions/workflows/build.yml)
+```
+
+---
 
 ### Optimisation flags (applied automatically in Release mode)
 
