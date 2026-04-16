@@ -25,12 +25,6 @@
 #                    Purpose: proves the stub path compiles and links on CI
 #                    without requiring a GPU or the NVIDIA toolkit.
 #
-#  build-cuda-gpu    Self-hosted runner with label `cuda` — CUDA toolkit is
-#                    pre-installed on the machine. CMake finds nvcc, compiles
-#                    gemm_kernels.cu, runs real GPU tests.
-#                    This job is skipped entirely when no self-hosted runner
-#                    with the `cuda` label is registered.
-#
 # Caching
 # ─────────────────────────────────────────────────────────────────────────────
 #  ccache reduces repeat compile times from ~3 min → ~20 s on cache hit.
@@ -319,76 +313,4 @@ jobs:
           name: test-results-cuda-stub
           path: test-results-cuda-stub.xml
 
-  # =============================================================================
-  # Job 5: CUDA GPU — self-hosted runner with label `cuda`.
-  #
-  # This job is only picked up when a self-hosted runner tagged `cuda` is
-  # registered in the repository.  If no such runner exists the job simply
-  # stays queued and is eventually cancelled by the concurrency group on the
-  # next push — it does NOT block the overall workflow status.
-  #
-  # The runner is expected to have:
-  #   - CUDA toolkit (nvcc) pre-installed and on PATH
-  #   - At least one NVIDIA GPU visible to cudaGetDeviceCount()
-  #   - GCC, CMake, Ninja, ccache
-  #
-  # Register a runner:
-  #   https://github.com/vdeviatkov/hpc-math-core/settings/actions/runners/new
-  #   Labels: cuda
-  # =============================================================================
-  build-cuda-gpu:
-    name: "CUDA GPU · self-hosted"
-    runs-on: [self-hosted, cuda]
-    # Don't block the overall workflow if no GPU runner is available.
-    continue-on-error: true
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Restore ccache
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.CCACHE_DIR }}
-          key: ccache-cuda-gpu-${{ hashFiles('CMakeLists.txt', 'src/**', 'include/**') }}
-          restore-keys: ccache-cuda-gpu-
-
-      - name: Restore FetchContent cache
-        uses: actions/cache@v4
-        with:
-          path: build/_deps
-          key: fetchcontent-cuda-gpu-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: fetchcontent-cuda-gpu-
-
-      - name: Show CUDA version
-        run: nvcc --version
-
-      - name: CMake configure (real CUDA)
-        run: |
-          cmake -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=${{ env.CMAKE_BUILD_TYPE }} \
-            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-
-      - name: Build (real CUDA kernels)
-        run: cmake --build build --parallel
-
-      - name: Run all tests (CUDA tests execute on GPU)
-        working-directory: build
-        run: ctest --output-junit ../test-results-cuda-gpu.xml
-
-      - name: Smoke-test bench_gemm_cuda
-        run: |
-          ./build/benchmarks/cuda/bench_gemm_cuda \
-            --benchmark_filter="CudaBlocked.*N=256" \
-            --benchmark_min_time=0.5s 2>&1
-
-      - name: ccache stats
-        run: ccache --show-stats
-
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-results-cuda-gpu
-          path: test-results-cuda-gpu.xml
 

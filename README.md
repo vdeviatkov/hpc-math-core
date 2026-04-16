@@ -121,12 +121,10 @@ The workflow lives at `.github/workflows/build.yml` and runs on every push and p
 | **`build-linux-arm`** | `ubuntu-24.04-arm` | GCC 14 | All CPU tests (scalar, NEON, prefetch); AVX2/AVX-512/CUDA skipped |
 | **`build-macos`** | `macos-14` (Apple M) | Apple Clang | All CPU tests (scalar, NEON, prefetch); AVX2/AVX-512/CUDA skipped |
 | **`build-cuda-stub`** | `ubuntu-24.04` | GCC 14 (no nvcc) | CMake finds no nvcc → stub library; CUDA bench + tests built and run; every CUDA row prints `SKIPPED` |
-| **`build-cuda-gpu`** | `[self-hosted, cuda]` | GCC 14 + nvcc | Real `.cu` kernels compiled; all 265 tests execute including CUDA; `continue-on-error: true` so a missing GPU runner never blocks CI |
 
-The split between `build-cuda-stub` and `build-cuda-gpu` means:
+The split between CPU and CUDA-stub jobs means:
 - **No CUDA toolkit is ever installed on a hosted runner** — no slow apt installs, no package conflicts.
 - The stub build proves the no-GPU code path compiles and links on every push.
-- The GPU build only runs when you have a self-hosted runner with a physical GPU.
 
 All four jobs:
 1. Restore **ccache** (key: OS + compiler + source hash) — warm builds finish in ~20 s.
@@ -137,18 +135,7 @@ All four jobs:
 
 ### CUDA on CI
 
-Two separate jobs handle CUDA:
-
-**`build-cuda-stub`** runs on the standard `ubuntu-24.04` hosted runner with **no CUDA toolkit installed**. CMake's `check_language(CUDA)` finds no `nvcc` and automatically falls back to compiling `gemm_kernels_stub.cpp`. The resulting `bench_gemm_cuda` and `hpc_tests_cuda` binaries build cleanly; at runtime every CUDA entry prints `SKIPPED: 'No CUDA device available'` and the job passes. This runs on every push at zero cost.
-
-**`build-cuda-gpu`** runs only on a **self-hosted runner tagged `cuda`** where the CUDA toolkit and a physical GPU are pre-installed. CMake finds `nvcc`, compiles the real `.cu` kernels, and all 265 tests (including CUDA) execute against the GPU. `continue-on-error: true` ensures a missing GPU runner never turns the overall workflow red.
-
-To register a self-hosted GPU runner:
-
-```
-https://github.com/vdeviatkov/hpc-math-core/settings/actions/runners/new
-Labels: cuda
-```
+The **`build-cuda-stub`** job runs on the standard `ubuntu-24.04` hosted runner with **no CUDA toolkit installed**. CMake's `check_language(CUDA)` finds no `nvcc` and automatically falls back to compiling `gemm_kernels_stub.cpp`. The resulting `bench_gemm_cuda` and `hpc_tests_cuda` binaries build cleanly; at runtime every CUDA entry prints `SKIPPED: 'No CUDA device available'` and the job passes. This runs on every push at zero cost.
 
 ---
 
