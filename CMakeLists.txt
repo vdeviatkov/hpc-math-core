@@ -55,9 +55,23 @@ add_compile_options(
 #   compiler can inline and optimise across translation-unit boundaries.
 #   Increases link time significantly for large projects.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# -march target selection
+#
+# Default: -march=native — emit instructions for the exact build CPU.
+#   Maximises performance locally and in CI on self-hosted runners.
+#   ⚠ Binary is NOT portable to other CPUs.
+#
+# Override for CI / cross-compilation:
+#   cmake -DHPC_MARCH=x86-64-v3 ..   → AVX2 + FMA (safe on all GitHub x86 runners)
+#   cmake -DHPC_MARCH=armv8-a+simd .. → baseline AArch64
+#   cmake -DHPC_MARCH=      ..       → empty string disables the flag entirely
+# ---------------------------------------------------------------------------
+set(HPC_MARCH "native" CACHE STRING "Value passed to -march=. Set to x86-64-v3 for portable x86 CI builds.")
+
 add_compile_options(
     $<$<AND:$<CXX_COMPILER_ID:GNU,Clang,AppleClang>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>:-O3>
-    $<$<AND:$<CXX_COMPILER_ID:GNU,Clang,AppleClang>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>:-march=native>
+    $<$<AND:$<BOOL:${HPC_MARCH}>,$<CXX_COMPILER_ID:GNU,Clang,AppleClang>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>:-march=${HPC_MARCH}>
     $<$<AND:$<CXX_COMPILER_ID:GNU,Clang,AppleClang>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>:-ffast-math>
     $<$<AND:$<CXX_COMPILER_ID:GNU,Clang,AppleClang>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>:-funroll-loops>
     $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-fno-omit-frame-pointer>
