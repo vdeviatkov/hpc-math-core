@@ -235,7 +235,6 @@ void gemm_avx2_naive(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
     const std::size_t N   = B.cols();
     const std::size_t lda = K;
     const std::size_t ldb = N;
-    const std::size_t ldc = N;
 
     assert(B.rows() == K && C.rows() == M && C.cols() == N);
     C.zero();
@@ -247,11 +246,6 @@ void gemm_avx2_naive(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
         for (std::size_t j = 0; j < N; ++j) {
             // Accumulate over k using SIMD.
             // B(k, j) is accessed with stride ldb — a column walk.
-            // We must gather: load B[0*ldb+j], B[1*ldb+j], ... manually.
-            // There is no efficient gather for this in AVX2 without _mm256_i32gather,
-            // so we use the scalar-broadcast approach: load A row and scatter-mul.
-            // In practice the compiler will scalarize this inner loop too when
-            // it sees the non-unit stride — which is exactly the point.
 
             if constexpr (sizeof(T) == 4) {
                 __m256 acc    = _mm256_setzero_ps();

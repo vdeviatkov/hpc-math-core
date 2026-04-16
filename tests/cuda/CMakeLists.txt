@@ -19,5 +19,9 @@ target_link_libraries(hpc_tests_cuda
 )
 
 include(GoogleTest)
-gtest_discover_tests(hpc_tests_cuda)
+# DISCOVERY_MODE PRE_TEST: defer --gtest_list_tests to ctest run-time so the
+# binary is never executed on the build machine during CMake's link step.
+# Prevents SIGILL when the binary contains ISA instructions not present on
+# the machine running cmake --build (e.g. cross-architecture CI runners).
+gtest_discover_tests(hpc_tests_cuda DISCOVERY_MODE PRE_TEST)
 
