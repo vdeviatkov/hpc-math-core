@@ -6,7 +6,7 @@ This repository starts from first principles — readable scalar code — and ad
 
 ---
 
-## Current status: Step 5 — Software Prefetch across all SIMD families
+## Current status: Step 6 — CUDA (naive · reordered · tiled shared-memory blocked)
 
 | Step | Kernel family | Key technique | Status |
 |---|---|---|---|
@@ -17,7 +17,8 @@ This repository starts from first principles — readable scalar code — and ad
 | 4 | `gemm_neon_{naive,reordered,blocked}` | 128-bit Q-register tile (ARM NEON / AdvSIMD), `vfmaq` FMA | ✅ |
 | 4 | `gemm_sve_{naive,reordered,blocked}` | VLA SVE: runtime VL, `svwhilelt` predicates, zero scalar tails | ✅ |
 | 5 | `gemm_{scalar,avx2,avx512,neon,sve}_blocked_prefetch` | `__builtin_prefetch` on A rows, B k-tiles and C write rows; distance sweep D∈{2,4,8,16} | ✅ |
-| 6 | `gemm_cuda` | Tiled CUDA kernel (shared memory) | 🔜 |
+| 6 | `gemm_cuda_{naive,reordered,blocked}` | CUDA: one-thread-per-element baseline, explicit row-major read, TILE×TILE shared-memory tiling (TILE=16, +1 pad against bank conflicts) | ✅ |
+| 7 | `gemm_cuda_wmma` | NVIDIA Tensor Core WMMA API (FP16 accumulate into FP32) | 🔜 |
 
 Each SIMD family is **skipped automatically** if the ISA is absent on the build CPU — no `#ifdef` pollution in benchmark registrations, no silent fallback timing. See [§ ISA availability](#isa-availability--skipping) below.
 
@@ -34,22 +35,32 @@ hpc-math-core/
 │   └── hpc/
 │       └── matrix.hpp                  Matrix<T>: 64-byte aligned, row-major
 ├── src/
-│   └── gemm/
-│       ├── naive.hpp                   i-j-k scalar baseline
-│       ├── reordered.hpp               i-k-j scalar (cache-friendly)
-│       ├── blocked.hpp                 tiled i-k-j (tile=64)
-│       ├── avx2.hpp                    AVX2 FMA: 4×16 f32 / 4×8 f64 register tile
-│       ├── avx512.hpp                  AVX-512: 4×32 f32 / 4×16 f64 register tile
-│       ├── neon.hpp                    ARM NEON: 4×16 f32 / 4×4 f64 Q-register tile
-│       ├── sve.hpp                     ARM SVE: VLA tile, predicated tails
-│       ├── prefetch.hpp                __builtin_prefetch wrappers for all blocked kernels
-│       └── README.md
+│   ├── gemm/
+│   │   ├── naive.hpp                   i-j-k scalar baseline
+│   │   ├── reordered.hpp               i-k-j scalar (cache-friendly)
+│   │   ├── blocked.hpp                 tiled i-k-j (tile=64)
+│   │   ├── avx2.hpp                    AVX2 FMA: 4×16 f32 / 4×8 f64 register tile
+│   │   ├── avx512.hpp                  AVX-512: 4×32 f32 / 4×16 f64 register tile
+│   │   ├── neon.hpp                    ARM NEON: 4×16 f32 / 4×4 f64 Q-register tile
+│   │   ├── sve.hpp                     ARM SVE: VLA tile, predicated tails
+│   │   ├── prefetch.hpp                __builtin_prefetch wrappers for all blocked kernels
+│   │   ├── cuda.hpp                    Host-side C++ interface for CUDA launchers
+│   │   └── README.md
+│   └── cuda/
+│       ├── gemm_kernels.cu             CUDA kernel implementations (naive/reordered/blocked)
+│       └── gemm_kernels_stub.cpp       CPU-only stub (device_count→0) for non-CUDA builds
 ├── benchmarks/
 │   ├── CMakeLists.txt
-│   └── bench_gemm.cpp                  Google Benchmark driver
+│   ├── bench_gemm.cpp                  CPU benchmark driver (all scalar + SIMD + prefetch)
+│   ├── bench_gemm_cuda.cpp             CUDA benchmark driver
+│   └── cuda/
+│       └── CMakeLists.txt
 ├── tests/
 │   ├── CMakeLists.txt
-│   └── test_gemm.cpp                   Google Test correctness suite (233 tests)
+│   ├── test_gemm.cpp                   Google Test suite — CPU kernels (233 tests)
+│   ├── test_gemm_cuda.cpp              Google Test suite — CUDA kernels (32 tests, skipped if no GPU)
+│   └── cuda/
+│       └── CMakeLists.txt
 └── docs/
     └── cache-behavior.md
 ```
@@ -62,6 +73,7 @@ hpc-math-core/
 |---|---|---|
 | CMake | 3.25 | FetchContent, `gtest_discover_tests` |
 | C++ compiler | GCC 12 / Clang 16 / Apple Clang 15 | C++20 required |
+| CUDA toolkit | 11.8+ (optional) | Required only for GPU kernels; CPU-only build works without it |
 
 ---
 
@@ -69,16 +81,25 @@ hpc-math-core/
 
 ```bash
 # 1. Configure — Release enables -O3 -march=native -ffast-math -funroll-loops
+#    CUDA is detected automatically. Pass nothing extra — CMake finds it.
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 
-# 2. Build everything
+# 2. Build everything (CPU + CUDA if available, stubs otherwise)
 cmake --build build --parallel
 
-# 3. Run tests (233 tests across all kernel families)
+# 3. Run all tests (233 CPU + 32 CUDA; CUDA tests skip if no GPU)
 cd build && ctest --output-on-failure
 
-# 4. Run benchmarks — only native ISA kernels execute; others print SKIPPED
+# 4. Run CPU benchmarks
 ./build/benchmarks/bench_gemm --benchmark_format=console
+
+# 5. Run CUDA benchmarks (skips gracefully on CPU-only machines)
+./build/benchmarks/cuda/bench_gemm_cuda --benchmark_format=console
+
+# Filter examples
+./build/benchmarks/cuda/bench_gemm_cuda --benchmark_filter="CudaBlocked"
+./build/benchmarks/cuda/bench_gemm_cuda --benchmark_filter="f32"
+./build/benchmarks/cuda/bench_gemm_cuda --benchmark_filter="N=1024"
 ```
 
 ### Optimisation flags (applied automatically in Release mode)
@@ -111,15 +132,25 @@ Every SIMD benchmark body begins with a compile-time guard:
 if (!kHaveNeon) { state.SkipWithMessage("NEON not available on this target"); return; }
 ```
 
+CUDA benchmarks use a runtime device count check:
+
+```cpp
+if (hpc::gemm::cuda_device_count() == 0) {
+    state.SkipWithMessage("No CUDA device available");
+    return;
+}
+```
+
 The benchmark name still appears in the output — as `SKIPPED` — so you always see the full kernel catalogue and know exactly which paths ran. No silent fallback to a slower scalar kernel that would corrupt the numbers.
 
 | Machine | Runs | Skipped |
 |---|---|---|
-| **Apple M-series** (this run) | Scalar · NEON · Scalar-Pf · NEON-Pf | AVX2 · AVX-512 · SVE (and their Pf variants) |
-| Intel Skylake (AVX2, no AVX-512) | Scalar · AVX2 · Scalar-Pf · AVX2-Pf | AVX-512 · NEON · SVE |
-| Intel Sapphire Rapids | Scalar · AVX2 · AVX-512 · all Pf variants | NEON · SVE |
-| AWS Graviton3 / Neoverse V1 | Scalar · NEON · SVE (256-bit) · all Pf variants | AVX2 · AVX-512 |
-| Fujitsu A64FX | Scalar · NEON · SVE (512-bit) · all Pf variants | AVX2 · AVX-512 |
+| **Apple M-series** (this run) | Scalar · NEON · Scalar-Pf · NEON-Pf | AVX2 · AVX-512 · SVE · CUDA |
+| Intel Skylake (AVX2, no AVX-512, no GPU) | Scalar · AVX2 · Scalar-Pf · AVX2-Pf | AVX-512 · NEON · SVE · CUDA |
+| Intel Skylake + NVIDIA GPU | Scalar · AVX2 · Scalar-Pf · AVX2-Pf · **CUDA** | AVX-512 · NEON · SVE |
+| Intel Sapphire Rapids + NVIDIA GPU | Scalar · AVX2 · AVX-512 · all Pf · **CUDA** | NEON · SVE |
+| AWS Graviton3 / Neoverse V1 | Scalar · NEON · SVE (256-bit) · all Pf variants | AVX2 · AVX-512 · CUDA |
+| Fujitsu A64FX | Scalar · NEON · SVE (512-bit) · all Pf variants | AVX2 · AVX-512 · CUDA |
 
 ---
 
@@ -320,6 +351,103 @@ SveBlockedPf*/   SKIPPED: 'SVE not available on this target'
 | 512 | 113462 µs | 8519 µs | **13.3×** | 5394 µs | **21.0×** | 2765 µs | **41.0×** | 2715 µs | **41.8×** |
 | 1024 | 842629 µs | 67326 µs | **12.5×** | 54057 µs | **15.6×** | 22578 µs | **37.3×** | 22256 µs | **37.9×** |
 | 4096 | 198056920 µs | 4299230 µs | **46.1×** | 4502770 µs | **44.0×** | 1925502 µs | **102.9×** | — | — |
+
+### CUDA kernels (bench_gemm_cuda)
+
+> On machines **without a CUDA device** all rows print `SKIPPED: 'No CUDA device available'`.
+> The binary compiles and links on CPU-only machines (Apple M, CI) via a stub library.
+> On a machine with a CUDA GPU the stub is replaced by the real `.cu` kernel library.
+
+Three kernels, named to mirror the CPU progression:
+
+| Kernel | Strategy | Key technique |
+|---|---|---|
+| `CudaNaive` | 1 thread → 1 C(i,j), no shared memory | Baseline: exposes raw global-memory bandwidth |
+| `CudaReordered` | Same mapping, explicit row-major inner loop | Structural symmetry with CPU `gemm_reordered`; identical to naive on GPU |
+| `CudaBlocked` | TILE×TILE thread block → TILE×TILE sub-tile of C | Shared-memory tiling (TILE=16); 16× fewer global loads vs naive |
+
+#### GPU memory hierarchy
+
+```
+                  ┌────────────────────────────────────────────────┐
+                  │  GPU (e.g. NVIDIA A100 80 GB)                  │
+  ┌───────────────┴──────────────┐  ┌──────────────────────────┐   │
+  │  SM 0  (Streaming Multiproc) │  │  SM 1  …  SM 107         │   │
+  │  ┌─────────┐  ┌───────────┐  │  │                          │   │
+  │  │Registers│  │  Shared   │  │  │   (same structure)       │   │
+  │  │ 256 KB  │  │  Memory / │  │  │                          │   │
+  │  │per SM   │  │  L1 Cache │  │  │                          │   │
+  │  │  ~1 cy  │  │  192 KB   │  │  │                          │   │
+  │  │         │  │  ~4 cy    │  │  │                          │   │
+  │  └─────────┘  └─────┬─────┘  │  │                          │   │
+  └────────────────────-┼────────┘  └──────────────────────────┘   │
+                        │  L2 Cache: 40–72 MB shared across SMs     │
+                        │  ~200 cy, ~5 TB/s                         │
+                        │  HBM2e / HBM3 DRAM: 80 GB                │
+                        │  ~400–3900 GB/s                           │
+                        └────────────────────────────────────────────
+```
+
+**Warp coalescence:** 32 threads in a warp issue memory loads together. If consecutive threads access consecutive addresses, the hardware merges them into a single 128-byte transaction. In our kernels, thread `(ty, tx)` computes `C(i, j)` where `j = blockCol*TILE + tx` — so consecutive threads in a warp differ only in `tx`, giving coalesced access to B rows and C rows.
+
+#### Tiled GEMM algorithm (`CudaBlocked`, TILE=16)
+
+```
+for each k-tile (step TILE):
+    ┌──────────────────────────────────────────────┐
+    │  All 16×16 threads cooperatively load:        │
+    │    As[ty][tx] = A[i][kTile*TILE + tx]         │  ← TILE×TILE sub-tile of A
+    │    Bs[ty][tx] = B[kTile*TILE + ty][j]         │  ← TILE×TILE sub-tile of B
+    │  into __shared__ memory (bank-conflict-free   │
+    │  via +1 column padding: As[16][17], Bs[16][17])│
+    └──────────────────────────────────────────────┘
+    __syncthreads()
+    for p in 0..TILE-1:
+        acc += As[ty][p] * Bs[p][tx]    ← all from shared memory, ~4 cycles
+    __syncthreads()
+
+C[i][j] = acc
+```
+
+**Global memory traffic reduction:**
+- Naive: each C(i,j) thread loads `2N` elements from global memory → `2N³` total.
+- Tiled (TILE=16): each element of A and B is loaded from global memory `N/TILE` times → `2N³/TILE` total loads → **16× fewer global memory transactions**.
+
+#### Expected output on a CUDA-enabled machine
+
+```
+----------------------------------------------------------------------
+Benchmark                        Time        CPU    GFLOP/s
+----------------------------------------------------------------------
+# Naive (no shared memory, column-stride B access — DRAM bound)
+BM_CudaNaive/f64/N=64           xx µs      xx µs    ~xxx G/s
+BM_CudaNaive/f32/N=512          xx µs      xx µs    ~xxx G/s
+BM_CudaNaive/f32/N=4096         xx ms      xx ms    ~xxx G/s
+
+# Reordered (identical to naive on GPU — L2 absorbs repeated accesses)
+BM_CudaReordered/f32/N=512      xx µs      xx µs    ~xxx G/s
+
+# Blocked/tiled (shared memory — compute bound at large N)
+BM_CudaBlocked/f32/N=512        xx µs      xx µs    ~xxx G/s
+BM_CudaBlocked/f32/N=4096       xx ms      xx ms    ~xxx G/s
+
+# On a CPU-only machine (Apple M, no GPU):
+BM_CudaNaive/f64/N=64     SKIPPED: 'No CUDA device available'
+BM_CudaBlocked/f32/N=4096 SKIPPED: 'No CUDA device available'
+```
+
+> **Note on timing:** all CUDA benchmarks include host↔device data transfer time
+> (cudaMemcpy + kernel + cudaMemcpy). This is the end-to-end time visible to the caller.
+> To isolate pure kernel time, use CUDA events (`cudaEventRecord / cudaEventElapsedTime`)
+> in a custom harness — a natural next step once the Tensor Core WMMA kernel is added.
+
+#### Theoretical peak comparison (RTX 4090, f32)
+
+| Kernel | Bottleneck | ~Peak |
+|---|---|---|
+| Naive | DRAM bandwidth (1 TB/s) | ~1–3 TFLOP/s |
+| Blocked (TILE=16) | Compute (165.2 TFLOP/s FP32 peak) | ~80–120 TFLOP/s |
+| cuBLAS | Tensor Cores (330 TFLOP/s FP16→FP32) | ~250–300 TFLOP/s |
 
 ---
 

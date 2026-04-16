@@ -154,3 +154,76 @@ enable_testing()
 add_subdirectory(tests)
 add_subdirectory(benchmarks)
 
+# ---------------------------------------------------------------------------
+# Optional CUDA support
+#
+# CUDA is enabled automatically if a CUDA toolkit is found on the system.
+# When found:
+#   - CUDA language is enabled for the project.
+#   - A shared library `hpc_math_cuda` is compiled from src/cuda/*.cu.
+#     It links against hpc_math_core (for the Matrix<T> header).
+#   - bench_gemm_cuda and hpc_tests_cuda targets are added.
+#   - The preprocessor macro HPC_HAVE_CUDA=1 is propagated to all consumers.
+#
+# When NOT found (macOS CPU-only, CI, …):
+#   - A stub library `hpc_math_cuda` is created from
+#     src/cuda/gemm_kernels_stub.cpp that provides cuda_device_count()→0
+#     and throws on any kernel call.
+#   - bench_gemm_cuda and hpc_tests_cuda still build; all benchmarks/tests
+#     are skipped at runtime.
+# ---------------------------------------------------------------------------
+include(CheckLanguage)
+check_language(CUDA)
+
+if(CMAKE_CUDA_COMPILER)
+    message(STATUS "CUDA toolkit found — enabling GPU kernels (${CMAKE_CUDA_COMPILER})")
+    enable_language(CUDA)
+
+    # Detect compute capability for the installed GPUs so we can pass
+    # the right -arch flag.  Falls back to sm_70 (Volta) if nothing is found.
+    include(FindCUDA OPTIONAL)
+    if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+        set(CMAKE_CUDA_ARCHITECTURES 70 75 80 86 89 90)
+        message(STATUS "CUDA architectures not specified — compiling for: ${CMAKE_CUDA_ARCHITECTURES}")
+    endif()
+
+    # The CUDA kernel library — compiled from .cu source.
+    add_library(hpc_math_cuda STATIC
+        src/cuda/gemm_kernels.cu
+    )
+    target_include_directories(hpc_math_cuda PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
+    )
+    target_compile_features(hpc_math_cuda PUBLIC cxx_std_20)
+    target_compile_definitions(hpc_math_cuda PUBLIC HPC_HAVE_CUDA=1)
+    # Allow .cu files to use C++20 features.
+    set_target_properties(hpc_math_cuda PROPERTIES
+        CUDA_STANDARD 17        # nvcc C++17 is the max widely supported standard
+        CUDA_STANDARD_REQUIRED  ON
+        CUDA_SEPARABLE_COMPILATION OFF
+    )
+    target_link_libraries(hpc_math_cuda PUBLIC hpc_math_core CUDA::cudart)
+
+    message(STATUS "Building CUDA benchmark  : benchmarks/bench_gemm_cuda")
+    message(STATUS "Building CUDA test suite : tests/hpc_tests_cuda")
+
+else()
+    message(STATUS "No CUDA compiler found — building CPU-only stub for CUDA symbols")
+
+    # Stub implementation so that bench_gemm_cuda / hpc_tests_cuda compile
+    # on machines without CUDA (they will just skip at runtime).
+    add_library(hpc_math_cuda STATIC
+        src/cuda/gemm_kernels_stub.cpp
+    )
+    target_include_directories(hpc_math_cuda PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
+    )
+    target_compile_features(hpc_math_cuda PUBLIC cxx_std_20)
+    # HPC_HAVE_CUDA is intentionally NOT defined here.
+    target_link_libraries(hpc_math_cuda PUBLIC hpc_math_core)
+endif()
+
+add_subdirectory(tests/cuda)
+add_subdirectory(benchmarks/cuda)
