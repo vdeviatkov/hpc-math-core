@@ -74,7 +74,8 @@
  *  Kernel 1 — gemm_sve_naive
  *    Loop order: i → j → k
  *    SIMD on k-loop: accumulate A row × B column using VL-wide FMA.
- *    B access: stride-N column gather — cache-hostile at large N.
+ *    B access: stride-N column gather — fill a vl-element heap buffer
+ *    (B(k,j)..B(k+vl-1,j)) then load as a contiguous SVE vector.
  *    No scalar tail: svaddv reduces the final accumulator to a scalar.
  *    Expected: GFLOP/s ≈ scalar naive (bandwidth-bound from gather).
  *
@@ -131,6 +132,7 @@
 #include <cassert>
 #include <cstddef>
 #include <type_traits>
+#include <vector>
 
 namespace hpc::gemm {
 
@@ -327,6 +329,9 @@ void gemm_sve_naive(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
 
     if constexpr (sizeof(T) == 4) {
         const std::size_t vl = svcntw();  // elements per SVE vector (runtime)
+        // VLA stack buffer: vl floats for gathering one B column segment.
+        // Using std::vector avoids a VLA (which is a GCC extension, not C++20).
+        std::vector<float> b_col(vl);
         for (std::size_t i = 0; i < M; ++i) {
             for (std::size_t j = 0; j < N; ++j) {
                 svfloat32_t acc = svdup_n_f32(0.f);
@@ -334,19 +339,11 @@ void gemm_sve_naive(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
                 for (; k + vl <= K; k += vl) {
                     // A(i, k..k+vl): sequential load — cache friendly.
                     const svfloat32_t a_vec = svld1_f32(svptrue_b32(), A.data() + i * lda + k);
-                    // Gather B column j: VL elements spaced ldb apart.
-                    // Build into a temporary VLA buffer, then load as a vector.
-                    // svld1_gather_index_f32 could be used here but the
-                    // cache behaviour is identical — explicit for clarity.
-                    svfloat32_t b_vec = svdup_n_f32(0.f);
-                    for (std::size_t lane = 0; lane < vl; ++lane) {
-                        // svext-based per-lane insert is not available portably;
-                        // use a VLA stack buffer as the assembly bridge.
-                        // This is intentionally sub-optimal to isolate
-                        // the memory-access bottleneck in the benchmark.
-                        const float val = B.data()[(k + lane) * ldb + j];
-                        b_vec = svsel_f32(svwhilelt_b32(lane, lane + 1), svdup_n_f32(val), b_vec);
-                    }
+                    // Gather B column j: fill buffer element by element,
+                    // then load as a contiguous SVE vector.
+                    for (std::size_t lane = 0; lane < vl; ++lane)
+                        b_col[lane] = B.data()[(k + lane) * ldb + j];
+                    const svfloat32_t b_vec = svld1_f32(svptrue_b32(), b_col.data());
                     acc = svmla_f32_x(svptrue_b32(), acc, a_vec, b_vec);
                 }
                 // Horizontal reduce the SVE accumulator to a scalar.
@@ -359,17 +356,16 @@ void gemm_sve_naive(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
         }
     } else {
         const std::size_t vl = svcntd();
+        std::vector<double> b_col(vl);
         for (std::size_t i = 0; i < M; ++i) {
             for (std::size_t j = 0; j < N; ++j) {
                 svfloat64_t acc = svdup_n_f64(0.0);
                 std::size_t k   = 0;
                 for (; k + vl <= K; k += vl) {
                     const svfloat64_t a_vec = svld1_f64(svptrue_b64(), A.data() + i * lda + k);
-                    svfloat64_t b_vec       = svdup_n_f64(0.0);
-                    for (std::size_t lane = 0; lane < vl; ++lane) {
-                        const double val = B.data()[(k + lane) * ldb + j];
-                        b_vec = svsel_f64(svwhilelt_b64(lane, lane + 1), svdup_n_f64(val), b_vec);
-                    }
+                    for (std::size_t lane = 0; lane < vl; ++lane)
+                        b_col[lane] = B.data()[(k + lane) * ldb + j];
+                    const svfloat64_t b_vec = svld1_f64(svptrue_b64(), b_col.data());
                     acc = svmla_f64_x(svptrue_b64(), acc, a_vec, b_vec);
                 }
                 double s = svaddv_f64(svptrue_b64(), acc);
@@ -378,6 +374,7 @@ void gemm_sve_naive(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
                 C(i, j) = static_cast<T>(s);
             }
         }
+
     }
 #endif
 }
