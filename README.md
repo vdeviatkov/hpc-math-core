@@ -150,14 +150,6 @@ https://github.com/vdeviatkov/hpc-math-core/settings/actions/runners/new
 Labels: cuda
 ```
 
-### Adding a status badge
-
-The badge is already active at the top of this README. The URL is:
-
-```markdown
-[![CI](https://github.com/vdeviatkov/hpc-math-core/actions/workflows/build.yml/badge.svg)](https://github.com/vdeviatkov/hpc-math-core/actions/workflows/build.yml)
-```
-
 ---
 
 ### Optimisation flags (applied automatically in Release mode)
