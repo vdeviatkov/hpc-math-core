@@ -83,13 +83,9 @@
 #include "hpc/matrix.hpp"
 
 #include <cuda_runtime.h>
-
-// WMMA requires sm_70+; guard so it compiles on all CUDA installations
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 700
-  #include <mma.h>
-  using namespace nvcuda;
-  #define HPC_HAVE_WMMA 1
-#endif
+#include <cuda_fp16.h>
+#include <mma.h>
+using namespace nvcuda;
 
 // cp.async requires sm_80+ (Ampere)
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
@@ -321,31 +317,43 @@ kernel_reg_tile(const T* __restrict__ A,
 //   The double-buffer structure is preserved for code clarity, but the
 //   overlap benefit requires the hardware async copy support.
 // ============================================================================
+// For double, halve BM to stay within 48 KB shared memory limit.
+// f32: 2 * 16 * (128+1+128+1) * 4 = 33,024 B ✓
+// f64: 2 * 16 * (128+1+128+1) * 8 = 66,048 B ✗  →  use BM=64:
+//      2 * 16 * (64+1+128+1) * 8   = 49,664 B ✗  →  use BM=64,BN=64:
+//      2 * 16 * (64+1+64+1) * 8    = 33,280 B ✓
+template <typename T>
+static constexpr int kDBufBM = (sizeof(T) == 8) ? 64 : kBM;
+template <typename T>
+static constexpr int kDBufBN = (sizeof(T) == 8) ? 64 : kBN;
+
 template <typename T>
 __global__ void __launch_bounds__(256)
 kernel_double_buf(const T* __restrict__ A,
                   const T* __restrict__ B,
                   T* __restrict__ C,
                   int M, int K, int N) {
+    constexpr int LBM = kDBufBM<T>;
+    constexpr int LBN = kDBufBN<T>;
     const int blockRow = blockIdx.y;
     const int blockCol = blockIdx.x;
-    const int threadRow = threadIdx.x / (kBN / kTN);
-    const int threadCol = threadIdx.x % (kBN / kTN);
-    const int cRow = blockRow * kBM + threadRow * kTM;
-    const int cCol = blockCol * kBN + threadCol * kTN;
+    const int threadRow = threadIdx.x / (LBN / kTN);
+    const int threadCol = threadIdx.x % (LBN / kTN);
+    const int cRow = blockRow * LBM + threadRow * kTM;
+    const int cCol = blockCol * LBN + threadCol * kTN;
 
     // Double-buffered shared memory: index 0 and 1 alternate.
-    __shared__ T As[2][kBK][kBM + 1];
-    __shared__ T Bs[2][kBK][kBN + 1];
+    __shared__ T As[2][kBK][LBM + 1];
+    __shared__ T Bs[2][kBK][LBN + 1];
 
     T reg_C[kTM][kTN] = {};
     T reg_A[kTM] = {};
     T reg_B[kTN] = {};
 
-    const int loadARow = threadIdx.x / kBM;
-    const int loadACol = threadIdx.x % kBM;
-    const int loadBRow = threadIdx.x / kBN;
-    const int loadBCol = threadIdx.x % kBN;
+    const int loadARow = threadIdx.x / LBM;
+    const int loadACol = threadIdx.x % LBM;
+    const int loadBRow = threadIdx.x / LBN;
+    const int loadBCol = threadIdx.x % LBN;
 
     const int nTilesK = (K + kBK - 1) / kBK;
 
@@ -355,12 +363,12 @@ kernel_double_buf(const T* __restrict__ A,
     // On older:   copies synchronously and issues __syncthreads.
     // -------------------------------------------------------------------
     auto load_tile = [&](int tileK, int buf) {
-        const int aRow = blockRow * kBM + loadACol;
+        const int aRow = blockRow * LBM + loadACol;
         const int aCol = tileK * kBK + loadARow;
         const T a_val  = (aRow < M && aCol < K) ? A[aRow * K + aCol] : T{0};
 
         const int bRow = tileK * kBK + loadBRow;
-        const int bCol = blockCol * kBN + loadBCol;
+        const int bCol = blockCol * LBN + loadBCol;
         const T b_val  = (bRow < K && bCol < N) ? B[bRow * N + bCol] : T{0};
 
 #ifdef HPC_HAVE_CP_ASYNC
@@ -461,7 +469,6 @@ static constexpr int kBlockM = kWarpM * kWMMA_M;  // 64
 static constexpr int kBlockN = kWarpN * kWMMA_N;  // 64
 static constexpr int kBlockK = kWMMA_K;            // 16 (k-step)
 
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 700
 
 __global__ void __launch_bounds__(512)
 kernel_wmma(const float* __restrict__ A,
@@ -545,7 +552,6 @@ kernel_wmma(const float* __restrict__ A,
     }
 }
 
-#endif  // __CUDA_ARCH__ >= 700
 
 // ============================================================================
 // Host-side device count query
@@ -631,37 +637,33 @@ static void launch(GemmKind kind, const Matrix<T>& A, const Matrix<T>& B, Matrix
         kernel_reg_tile<T><<<grid, block>>>(dA.ptr, dB.ptr, dC.ptr, M, K, N);
 
     } else if (kind == GemmKind::DoubleBuf) {
+        constexpr int LBM = kDBufBM<T>;
+        constexpr int LBN = kDBufBN<T>;
         const dim3 block(256);
-        const dim3 grid((N + kBN-1)/kBN, (M + kBM-1)/kBM);
+        const dim3 grid((N + LBN-1)/LBN, (M + LBM-1)/LBM);
         kernel_double_buf<T><<<grid, block>>>(dA.ptr, dB.ptr, dC.ptr, M, K, N);
 
     } else if (kind == GemmKind::Wmma) {
         // WMMA is fp32-only in this implementation (converts to fp16 internally).
-        static_assert(std::is_same_v<T, float>,
-                      "gemm_cuda_wmma is only supported for float");
-        const dim3 block(kWarpM * kWarpN * 32);  // 4*4*32 = 512 threads
-        const dim3 grid((N + kBlockN-1)/kBlockN, (M + kBlockM-1)/kBlockM);
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 700
-        kernel_wmma<<<grid, block>>>(
-            reinterpret_cast<const float*>(dA.ptr),
-            reinterpret_cast<const float*>(dB.ptr),
-            reinterpret_cast<float*>(dC.ptr), M, K, N);
-#else
-        // Host side: if Tensor Cores are available at runtime, run WMMA kernel.
-        // The kernel was compiled for the target arch by nvcc; if sm_70+ is
-        // the target, it is available. We check at runtime for safety.
-        if (cuda_has_tensor_cores()) {
-            kernel_wmma<<<grid, block>>>(
-                reinterpret_cast<const float*>(dA.ptr),
-                reinterpret_cast<const float*>(dB.ptr),
-                reinterpret_cast<float*>(dC.ptr), M, K, N);
+        if constexpr (!std::is_same_v<T, float>) {
+            throw std::runtime_error("gemm_cuda_wmma is only supported for float");
         } else {
-            // Fallback: use double-buf kernel (always correct).
-            const dim3 block2(256);
-            const dim3 grid2((N + kBN-1)/kBN, (M + kBM-1)/kBM);
-            kernel_double_buf<T><<<grid2, block2>>>(dA.ptr, dB.ptr, dC.ptr, M, K, N);
+            const dim3 block(kWarpM * kWarpN * 32);  // 4*4*32 = 512 threads
+            const dim3 grid((N + kBlockN-1)/kBlockN, (M + kBlockM-1)/kBlockM);
+            if (cuda_has_tensor_cores()) {
+                kernel_wmma<<<grid, block>>>(
+                    reinterpret_cast<const float*>(dA.ptr),
+                    reinterpret_cast<const float*>(dB.ptr),
+                    reinterpret_cast<float*>(dC.ptr), M, K, N);
+            } else {
+                // Fallback: use double-buf kernel (always correct).
+                constexpr int FLBM = kDBufBM<float>;
+                constexpr int FLBN = kDBufBN<float>;
+                const dim3 block2(256);
+                const dim3 grid2((N + FLBN-1)/FLBN, (M + FLBM-1)/FLBM);
+                kernel_double_buf<T><<<grid2, block2>>>(dA.ptr, dB.ptr, dC.ptr, M, K, N);
+            }
         }
-#endif
     }
 
     CUDA_CHECK(cudaGetLastError());

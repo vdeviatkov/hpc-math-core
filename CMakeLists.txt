@@ -195,9 +195,9 @@ if(CMAKE_CUDA_COMPILER)
 
     # Detect compute capability for the installed GPUs so we can pass
     # the right -arch flag.  Falls back to sm_70 (Volta) if nothing is found.
-    include(FindCUDA OPTIONAL)
+    find_package(CUDAToolkit REQUIRED)
     if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-        set(CMAKE_CUDA_ARCHITECTURES 70 75 80 86 89 90)
+        set(CMAKE_CUDA_ARCHITECTURES native)
         message(STATUS "CUDA architectures not specified — compiling for: ${CMAKE_CUDA_ARCHITECTURES}")
     endif()
 
