@@ -54,7 +54,13 @@ inline constexpr std::size_t kCacheLineBytes = 64;
  * the storage was obtained from aligned_alloc / posix_memalign.
  */
 struct AlignedDeleter {
-    void operator()(void* ptr) const noexcept { std::free(ptr); }
+    void operator()(void* ptr) const noexcept {
+#if defined(_MSC_VER)
+        ::_aligned_free(ptr);
+#else
+        std::free(ptr);
+#endif
+    }
 };
 
 // ---------------------------------------------------------------------------
@@ -193,7 +199,11 @@ class Matrix {
         // Round up to the nearest multiple of kCacheLineBytes.
         bytes = (bytes + kCacheLineBytes - 1) & ~(kCacheLineBytes - 1);
 
+#if defined(_MSC_VER)
+        void* raw = ::_aligned_malloc(bytes, kCacheLineBytes);
+#else
         void* raw = std::aligned_alloc(kCacheLineBytes, bytes);
+#endif
         if (!raw)
             throw std::bad_alloc{};
 

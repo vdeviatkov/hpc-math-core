@@ -62,6 +62,10 @@
 #include <cstddef>
 #include <type_traits>
 
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
+
 namespace hpc::gemm {
 
 /// Default prefetch distance in micro-kernel rows.
@@ -69,8 +73,17 @@ inline constexpr std::size_t kDefaultPrefetchDist = 4;
 
 /// Prefetch helper. rw: 0=read, 1=write. loc: 2=L2, 3=L1.
 template <int Rw = 0, int Loc = 2>
-[[gnu::always_inline]] inline void pf(const void* addr) noexcept {
+inline void pf(const void* addr) noexcept {
+#if defined(_MSC_VER)
+    // _MM_HINT_T0=1 (L1), _MM_HINT_T1=2 (L2), _MM_HINT_T2=3 (L3), _MM_HINT_NTA=0
+    constexpr int hint = (Loc == 3) ? _MM_HINT_T0
+                       : (Loc == 2) ? _MM_HINT_T1
+                       : (Loc == 1) ? _MM_HINT_T2
+                       :              _MM_HINT_NTA;
+    _mm_prefetch(static_cast<const char*>(addr), hint);
+#else
     __builtin_prefetch(addr, Rw, Loc);
+#endif
 }
 
 // ============================================================================
