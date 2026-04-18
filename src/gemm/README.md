@@ -17,7 +17,7 @@ All kernels compute **C = A × B** where A is M×K, B is K×N, C is M×N (row-ma
 | `neon.hpp` | `gemm_neon_naive` · `gemm_neon_reordered` · `gemm_neon_blocked` | `__ARM_NEON` |
 | `sve.hpp` | `gemm_sve_naive` · `gemm_sve_reordered` · `gemm_sve_blocked` | `__ARM_FEATURE_SVE` |
 | `prefetch.hpp` | `gemm_blocked_prefetch` · `gemm_avx2_blocked_prefetch` · `gemm_avx512_blocked_prefetch` · `gemm_neon_blocked_prefetch` · `gemm_sve_blocked_prefetch` | per ISA |
-| `cuda.hpp` | `gemm_cuda_naive` · `gemm_cuda_reordered` · `gemm_cuda_blocked` | `HPC_HAVE_CUDA` |
+| `cuda.hpp` | `gemm_cuda_naive` (L0) · `gemm_cuda_reordered` (L0b) · `gemm_cuda_blocked` (L1) · `gemm_cuda_reg_tile` (L2) · `gemm_cuda_double_buf` (L3) · `gemm_cuda_wmma` (L4, fp32) | `HPC_HAVE_CUDA` |
 
 Each kernel gracefully degrades at runtime: if the required ISA is not present the benchmark prints
 `SKIPPED` and the test calls `GTEST_SKIP()` — no SIGILL, no silent wrong answer.
@@ -294,45 +294,173 @@ Five variants: `gemm_blocked_prefetch` · `gemm_avx2_blocked_prefetch` ·
 
 ## Algorithm 9 — CUDA Kernels (`cuda.hpp` + `src/cuda/gemm_kernels.cu`)
 
-Three GPU kernels compiled by nvcc. On CPU-only machines a stub is compiled instead;
-all CUDA benchmarks/tests print `SKIPPED: 'No CUDA device available'` at runtime.
+Six GPU kernels across five optimization levels, compiled by nvcc.
+On CPU-only machines a stub is compiled; all CUDA benchmarks/tests print
+`SKIPPED: 'No CUDA device available'` at runtime.
 
-### `gemm_cuda_naive` — 1 thread per C(i,j), global memory only
+---
 
-Each thread reads A row i and B column j directly from HBM. Non-coalesced B access.
-**DRAM-bound** at all sizes. Baseline to demonstrate the memory wall.
+### Level 0 — `gemm_cuda_naive` — global memory, 1 thread per C(i,j)
 
-### `gemm_cuda_reordered` — same thread mapping, explicit row-major inner loop
-
-Mirrors `gemm_reordered` structurally. On GPU the L2 absorbs repeated accesses at small N;
-still DRAM-bound at large N. Shows that loop reorder alone is insufficient on GPU.
-
-### `gemm_cuda_blocked` — TILE×TILE shared-memory tiling (TILE=16, +1 column pad)
+One thread computes one output element. All A and B data fetched from HBM
+on every access. Non-coalesced B column access.
 
 ```
-For each k-tile (step TILE):
-  16×16 thread block cooperatively loads:
-    As[ty][tx] = A[i][kTile*TILE + tx]     shared memory (As[16][17])
-    Bs[ty][tx] = B[kTile*TILE + ty][j]     shared memory (Bs[16][17])
+Thread (ty, tx): acc = 0
+  for k in [0, K): acc += A[i][k] * B[k][j]
+C[i][j] = acc
+```
+
+**Bottleneck:** HBM bandwidth (~1 TB/s on A100). DRAM-bound at all sizes.
+**Typical:** 500 GFLOP/s on RTX 4090 (0.3% of peak).
+
+---
+
+### Level 0b — `gemm_cuda_reordered` — same mapping, explicit row-major inner loop
+
+Mirrors `gemm_reordered` on CPU for naming symmetry. Structurally identical
+to naive on GPU. L2 cache absorbs repeated warp accesses at small N; still
+DRAM-bound at large N. Included as a CPU-comparison baseline.
+
+---
+
+### Level 1 — `gemm_cuda_blocked` — TILE=16 shared-memory tiling
+
+```
+For each k-tile (step TILE=16):
+  Block of 16x16 threads cooperatively loads:
+    As[ty][tx] = A[i][kTile*16 + tx]   __shared__ As[16][17]  (+1 col padding)
+    Bs[ty][tx] = B[kTile*16 + ty][j]   __shared__ Bs[16][17]
   __syncthreads()
-  for p in 0..15: acc += As[ty][p] * Bs[p][tx]   ← L1/shared, ~4 cycles
+  for p in 0..15: acc += As[ty][p] * Bs[p][tx]   <- shared memory (~4 cycle latency)
   __syncthreads()
 C[i][j] = acc
 ```
 
-**+1 column padding** eliminates shared-memory bank conflicts on Bs accesses.
-**Global memory reduction:** `2N³/TILE` loads vs `2N³` naive → **16× fewer transactions**.
-**Warp coalescence:** consecutive threads differ only in `tx` → coalesced row access to B and C.
+**+1 column padding** eliminates 16-way shared-memory bank conflicts.
+**Global memory reduction:** 2*N^3 / TILE loads vs 2*N^3 for naive = **16x fewer HBM transactions**.
+**Bottleneck:** `__syncthreads` overhead + low arithmetic intensity (~2 FLOP/byte).
+Each thread owns only 1 output — sync cost amortised over 16 FMAs.
+**Typical:** 5-15 TFLOP/s (3-9% of peak).
 
-#### Theoretical peak (RTX 4090, f32)
+---
 
-| Kernel | Bottleneck | ~GFLOP/s |
-|---|---|---|
-| `gemm_cuda_naive` | HBM bandwidth (1 TB/s) | 1–3 T |
-| `gemm_cuda_blocked` TILE=16 | FP32 compute (165 TFLOP/s) | 80–120 T |
-| cuBLAS | Tensor Cores (330 TFLOP/s FP16→FP32) | 250–300 T |
+### Level 2 — `gemm_cuda_reg_tile` — 128x128 thread block, 8x8 register tile
 
-All timing includes host↔device `cudaMemcpy` + kernel + `cudaMemcpy`.
+**Key insight:** each thread should own many output elements, not just one.
+This amortises `__syncthreads` and shared-memory bandwidth over many FMAs.
+
+```
+Thread block: 256 threads -> 128x128 output tile of C
+Each thread owns: TM=8 rows x TN=8 cols = 64 register accumulators
+
+Shared memory:
+  As[BK=16][BM=128]  (A sub-tile, transposed for column access)
+  Bs[BK=16][BN=128]  (B sub-tile, row-major)
+
+Per k-step (BK=16):
+  Load 128x16 of A into As (all 256 threads participate)
+  Load 16x128 of B into Bs (all 256 threads participate)
+  __syncthreads()
+  for k in 0..15:               <- inner loop over k-step
+    reg_A[0..7] = As[k][threadRow*8 .. +8]   <- load 8 A values to registers
+    reg_B[0..7] = Bs[k][threadCol*8 .. +8]   <- load 8 B values to registers
+    for m in 0..7:
+      for n in 0..7:
+        reg_C[m][n] += reg_A[m] * reg_B[n]   <- 64 FMAs from registers only
+  __syncthreads()
+```
+
+**Arithmetic intensity:** ~32 FLOP/byte (vs ~2 for Level 1) -> compute-bound.
+**Typical:** 80-120 TFLOP/s (50-75% of peak).
+
+---
+
+### Level 3 — `gemm_cuda_double_buf` — double-buffered register tile
+
+Same register tiling as Level 2, but eliminates the `__syncthreads` bubble
+by using two ping-pong shared-memory buffers:
+
+```
+As[2][BK][BM], Bs[2][BK][BN]   <- ping-pong buffers
+
+While computing tile k from buffer[cur]:
+    Prefetch tile k+1 into buffer[1-cur]
+Swap buffers, repeat.
+```
+
+**On Ampere+ (sm_80+):** `__pipeline_memcpy_async` / `cp.async` performs
+asynchronous global->shared DMA — the copy executes in parallel with FMA
+computation, completely hiding memory latency.
+
+**On older GPUs (sm_70..79):** falls back to synchronous loads with
+`__syncthreads`; the double-buffer structure is preserved but the overlap
+benefit requires hardware async copy support.
+
+**Typical:** 120-140 TFLOP/s (75-85% of peak).
+
+---
+
+### Level 4 — `gemm_cuda_wmma` — Tensor Cores via WMMA (fp32 only, sm_70+)
+
+NVIDIA Tensor Cores (Volta+, SM70+) perform a 16x16x16 matrix-multiply in
+a single warp-synchronous instruction — ~8x the throughput of SIMT FP32.
+
+```
+// WMMA fragment API (fp16 input, fp32 accumulate):
+wmma::fragment<wmma::matrix_a, 16,16,16, half, wmma::row_major> a_frag;
+wmma::fragment<wmma::matrix_b, 16,16,16, half, wmma::col_major> b_frag;
+wmma::fragment<wmma::accumulator, 16,16,16, float> c_frag;
+
+wmma::fill_fragment(c_frag, 0.0f);
+for each k-tile:
+    // Load fp32 A/B tiles into shared memory as fp16 (convert on-the-fly)
+    wmma::load_matrix_sync(a_frag, As_ptr, stride);
+    wmma::load_matrix_sync(b_frag, Bs_ptr, stride);
+    wmma::mma_sync(c_frag, a_frag, b_frag, c_frag);  // 16x16x16 = 4096 ops
+wmma::store_matrix_sync(C_ptr, c_frag, N, wmma::mem_row_major);
+```
+
+**Thread block:** 4x4 warps = 512 threads, 64x64 output tile.
+**fp16 conversion:** introduces ~1e-3 relative error (test uses relaxed tolerance).
+**Falls back** to `gemm_cuda_double_buf` on pre-Volta hardware at runtime.
+
+---
+
+### Performance ladder (RTX 4090, f32, N=4096)
+
+| Kernel | Level | Bottleneck | ~TFLOP/s | % of SIMT peak |
+|---|---|---|---|---|
+| `gemm_cuda_naive` | 0 | HBM bandwidth | 0.0005 | 0.3% |
+| `gemm_cuda_blocked` TILE=16 | 1 | `__syncthreads` + low AI | 5-15 | 3-9% |
+| `gemm_cuda_reg_tile` 128x128 | 2 | Compute-bound | 80-120 | 50-75% |
+| `gemm_cuda_double_buf` | 3 | Latency hidden | 120-140 | 75-85% |
+| `gemm_cuda_wmma` (fp16 TC) | 4 | Tensor Core bound | 250-300 | — (TC peak) |
+| cuBLAS SGEMM | ref | All of the above | 140-165 | 85-100% |
+| cuBLAS TF32 TC | ref | Tensor Core bound | 300-330 | — |
+
+> **Summary:** Going from Level 1 to Level 2 (register tiling) is the biggest
+> single jump — from 3-9% to 50-75% of peak. Level 3 (double buffering + cp.async)
+> closes the gap to cuBLAS SIMT. Level 4 (Tensor Cores) requires accepting fp16
+> precision in the matrix multiply and achieves 2-3x beyond any SIMT kernel.
+
+---
+
+### Runtime guards
+
+```cpp
+// All CUDA kernels:
+if (hpc::gemm::cuda_device_count() == 0) { state.SkipWithMessage("No CUDA device"); }
+
+// WMMA only (additionally):
+if (!hpc::gemm::cuda_has_tensor_cores()) { state.SkipWithMessage("sm_70+ required"); }
+
+// Double-buf reports whether cp.async is active:
+state.counters["ampere_async"] = hpc::gemm::cuda_has_ampere() ? 1.0 : 0.0;
+```
+
+All timing includes host<->device `cudaMemcpy` + kernel + `cudaMemcpy`.
+For pure kernel throughput, use CUDA events and subtract transfer overhead.
 
 ---
 
@@ -348,7 +476,7 @@ All timing includes host↔device `cudaMemcpy` + kernel + `cudaMemcpy`.
 | ✅ 4 | `neon.hpp` | `gemm_neon_{naive,reordered,blocked}` | ✅ | `__ARM_NEON` |
 | ✅ 5 | `sve.hpp` | `gemm_sve_{naive,reordered,blocked}` | ✅ | `__ARM_FEATURE_SVE` |
 | ✅ 6 | `prefetch.hpp` | `gemm_{scalar,avx2,avx512,neon,sve}_blocked_prefetch` | ✅ | per ISA |
-| ✅ 7 | `cuda.hpp` + `gemm_kernels.cu` | `gemm_cuda_{naive,reordered,blocked}` | ✅ | `HPC_HAVE_CUDA` |
+| ✅ 7 | `cuda.hpp` + `gemm_kernels.cu` | `gemm_cuda_naive` (L0) · `gemm_cuda_reordered` (L0b) · `gemm_cuda_blocked` (L1) · `gemm_cuda_reg_tile` (L2) · `gemm_cuda_double_buf` (L3) · `gemm_cuda_wmma` (L4, fp32) | ✅ (wmma: fp32 only) | `HPC_HAVE_CUDA` |
 
 ---
 
@@ -419,6 +547,8 @@ All timing includes host↔device `cudaMemcpy` + kernel + `cudaMemcpy`.
 7. **NEON blocked f32 at ~97 GFLOP/s** approaches the theoretical peak for a single
    Apple M performance core.
 
-8. **CUDA tiled (TILE=16) provides 16× fewer global memory transactions** vs naive.
-   On GPU hardware the blocked kernel approaches the compute-bound regime;
-   naive is firmly memory-bound at all sizes.
+8. **`gemm_cuda_blocked` TILE=16 achieves only ~3–9% of GPU peak** (5–15 TFLOP/s on RTX 4090).
+   The bottleneck shifts from HBM bandwidth to `__syncthreads__` overhead and low arithmetic
+   intensity — each thread owns just 1 output element. Reaching 50%+ of peak requires
+   register tiling (each thread owns an 8×8 output tile), and 85%+ requires double buffering
+   + async copy. Tensor Cores (cuBLAS TF32) deliver 2–3× beyond any SIMT kernel.
