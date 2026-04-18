@@ -77,12 +77,14 @@ hpc-math-core/
 | Tool | Minimum version | Notes |
 |---|---|---|
 | CMake | 3.25 | FetchContent, `gtest_discover_tests` |
-| C++ compiler | GCC 12 / Clang 16 / Apple Clang 15 | C++20 required |
+| C++ compiler | GCC 12 / Clang 16 / Apple Clang 15 / MSVC 19.35+ | C++20 required |
 | CUDA toolkit | 11.8+ (optional) | Required only for GPU kernels; CPU-only build works without it |
 
 ---
 
 ## Build & run
+
+### Linux / macOS
 
 ```bash
 # 1. Configure — Release enables -O3 -march=native -ffast-math -funroll-loops
@@ -105,6 +107,30 @@ cd build && ctest --output-on-failure
 ./build/benchmarks/cuda/bench_gemm_cuda --benchmark_filter="CudaBlocked"
 ./build/benchmarks/cuda/bench_gemm_cuda --benchmark_filter="f32"
 ./build/benchmarks/cuda/bench_gemm_cuda --benchmark_filter="N=1024"
+```
+
+### Windows (MSVC)
+
+```powershell
+# 1. Configure (MSVC uses a multi-config generator — no CMAKE_BUILD_TYPE needed)
+cmake -B build
+
+# 2. Build in Release mode (--config Release is essential for optimised numbers)
+cmake --build build --config Release --parallel
+
+# 3. Run all tests
+cd build; ctest --build-config Release --output-on-failure
+
+# 4. Run CPU benchmarks
+.\build\benchmarks\Release\bench_gemm.exe --benchmark_format=console
+
+# 5. Run CUDA benchmarks (skips gracefully if no GPU)
+.\build\benchmarks\cuda\Release\bench_gemm_cuda.exe --benchmark_format=console
+
+# Filter examples
+.\build\benchmarks\Release\bench_gemm.exe --benchmark_filter="f32"
+.\build\benchmarks\Release\bench_gemm.exe --benchmark_filter="Blocked"
+.\build\benchmarks\Release\bench_gemm.exe --benchmark_filter="N=1024"
 ```
 
 ---
