@@ -26,6 +26,12 @@ add_compile_options(
     $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wpedantic>
 )
 
+# MSVC uses __restrict instead of __restrict__ (GCC/Clang extension).
+# Only apply to C++ sources — nvcc handles __restrict__ natively.
+if(MSVC)
+    add_compile_definitions($<$<COMPILE_LANGUAGE:CXX>:__restrict__=__restrict>)
+endif()
+
 # ---------------------------------------------------------------------------
 # Aggressive optimisation flags (Release / RelWithDebInfo builds only)
 #
@@ -70,12 +76,24 @@ add_compile_options(
 set(HPC_MARCH "native" CACHE STRING "Value passed to -march=. Set to x86-64-v3 for portable x86 CI builds.")
 
 add_compile_options(
+    # --- GCC / Clang / AppleClang ---
     $<$<AND:$<CXX_COMPILER_ID:GNU,Clang,AppleClang>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>:-O3>
     $<$<AND:$<BOOL:${HPC_MARCH}>,$<CXX_COMPILER_ID:GNU,Clang,AppleClang>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>:-march=${HPC_MARCH}>
     $<$<AND:$<CXX_COMPILER_ID:GNU,Clang,AppleClang>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>:-ffast-math>
     $<$<AND:$<CXX_COMPILER_ID:GNU,Clang,AppleClang>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>:-funroll-loops>
     $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-fno-omit-frame-pointer>
+    # --- MSVC ---
+    # /O2          : Full optimisation (equivalent to -O2/-O3)
+    # /fp:fast     : Fast floating-point model (equivalent to -ffast-math)
+    # /Oy-         : Preserve frame pointers for profiling
+    # NOTE: /arch flag is added below after AVX-512 detection.
+    $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>:/O2>
+    $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>:/fp:fast>
+    $<$<CXX_COMPILER_ID:MSVC>:/Oy->
 )
+
+# Default MSVC SIMD arch — may be overridden to /arch:AVX512 below.
+set(HPC_MSVC_ARCH "AVX2" CACHE INTERNAL "")
 
 option(HPC_ENABLE_LTO "Enable Link-Time Optimisation (increases link time)" OFF)
 if(HPC_ENABLE_LTO)
@@ -101,16 +119,38 @@ endif()
 option(HPC_ENABLE_AVX512 "Enable AVX-512 instruction set extensions" OFF)
 
 if(HPC_ENABLE_AVX512)
-    include(CheckCXXCompilerFlag)
-    foreach(FLAG -mavx512f -mavx512dq -mavx512bw -mavx512vl)
-        string(MAKE_C_IDENTIFIER "HAS_${FLAG}" FLAG_VAR)
-        check_cxx_compiler_flag(${FLAG} ${FLAG_VAR})
-        if(${FLAG_VAR})
-            add_compile_options(${FLAG})
+    if(MSVC)
+        # MSVC 17.8+ supports /arch:AVX512 which defines __AVX512F__ etc.
+        # /arch:AVX512 implies AVX2, so it supersedes /arch:AVX2.
+        include(CheckCXXCompilerFlag)
+        check_cxx_compiler_flag("/arch:AVX512" HAS_MSVC_AVX512)
+        if(HAS_MSVC_AVX512)
+            set(HPC_MSVC_ARCH "AVX512" CACHE INTERNAL "" FORCE)
+            message(STATUS "AVX-512 enabled via MSVC /arch:AVX512")
+        else()
+            message(WARNING "MSVC does not support /arch:AVX512 — upgrade to VS 2022 17.8+")
         endif()
-    endforeach()
+    else()
+        include(CheckCXXCompilerFlag)
+        foreach(FLAG -mavx512f -mavx512dq -mavx512bw -mavx512vl)
+            string(MAKE_C_IDENTIFIER "HAS_${FLAG}" FLAG_VAR)
+            check_cxx_compiler_flag(${FLAG} ${FLAG_VAR})
+            if(${FLAG_VAR})
+                add_compile_options(${FLAG})
+            endif()
+        endforeach()
+    endif()
     add_compile_definitions(HPC_HAS_AVX512)
     message(STATUS "AVX-512 extensions enabled")
+endif()
+
+# Apply the chosen MSVC SIMD architecture flag (AVX2 or AVX512).
+# Use COMPILE_LANGUAGE:CXX so nvcc doesn't receive conflicting /arch flags.
+if(MSVC)
+    add_compile_options(
+        $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>:/arch:${HPC_MSVC_ARCH}>
+    )
+    message(STATUS "MSVC SIMD architecture: /arch:${HPC_MSVC_ARCH}")
 endif()
 
 # ---------------------------------------------------------------------------
