@@ -76,9 +76,9 @@ hpc-math-core/
 
 | Tool | Minimum version | Notes |
 |---|---|---|
-| CMake | 3.25 | FetchContent, `gtest_discover_tests` |
+| CMake | 3.25 | |
 | C++ compiler | GCC 12 / Clang 16 / Apple Clang 15 / MSVC 19.35+ | C++20 required |
-| CUDA toolkit | 11.8+ (optional) | Required only for GPU kernels; CPU-only build works without it |
+| CUDA toolkit | 11.8+ (optional) | GPU kernels only; CPU-only build works without it |
 
 ---
 
@@ -137,10 +137,6 @@ cd build; ctest --build-config Release --output-on-failure
 
 ## Continuous Integration
 
-The workflow lives at `.github/workflows/build.yml` and runs on every push and pull request.
-
-### Jobs
-
 | Job | Runner | Compiler | What runs |
 |---|---|---|---|
 | **`build-linux-x86`** | `ubuntu-24.04` | GCC 14 | All CPU tests (scalar, AVX2, prefetch); CUDA/NEON/SVE skipped |
@@ -148,20 +144,9 @@ The workflow lives at `.github/workflows/build.yml` and runs on every push and p
 | **`build-macos`** | `macos-14` (Apple M) | Apple Clang | All CPU tests (scalar, NEON, prefetch); AVX2/AVX-512/CUDA skipped |
 | **`build-cuda-stub`** | `ubuntu-24.04` | GCC 14 (no nvcc) | CMake finds no nvcc → stub library; CUDA bench + tests built and run; every CUDA row prints `SKIPPED` |
 
-The split between CPU and CUDA-stub jobs means:
-- **No CUDA toolkit is ever installed on a hosted runner** — no slow apt installs, no package conflicts.
-- The stub build proves the no-GPU code path compiles and links on every push.
+Each job restores **ccache** and the **FetchContent cache** (`build/_deps`), configures with `cmake -G Ninja -DCMAKE_BUILD_TYPE=Release`, builds in parallel, and uploads JUnit XML from `ctest --output-junit`.
 
-All four jobs:
-1. Restore **ccache** (key: OS + compiler + source hash) — warm builds finish in ~20 s.
-2. Restore **FetchContent cache** (`build/_deps`) — avoids re-cloning GoogleTest + Google Benchmark.
-3. Configure with `cmake -G Ninja -DCMAKE_BUILD_TYPE=Release`.
-4. Build all targets in parallel.
-5. Run `ctest --output-junit` — uploads JUnit XML as a job artifact (visible in the Actions UI).
-
-### CUDA on CI
-
-The **`build-cuda-stub`** job runs on the standard `ubuntu-24.04` hosted runner with **no CUDA toolkit installed**. CMake's `check_language(CUDA)` finds no `nvcc` and automatically falls back to compiling `gemm_kernels_stub.cpp`. The resulting `bench_gemm_cuda` and `hpc_tests_cuda` binaries build cleanly; at runtime every CUDA entry prints `SKIPPED: 'No CUDA device available'` and the job passes. This runs on every push at zero cost.
+The **`build-cuda-stub`** job has no CUDA toolkit installed — `check_language(CUDA)` falls back to `gemm_kernels_stub.cpp`. The CUDA binaries build and link cleanly; every entry prints `SKIPPED: 'No CUDA device available'` at runtime.
 
 ---
 
@@ -541,17 +526,8 @@ CudaRegTile/f32/N=1024           1483 µs    1046 µs   2052.4     (2.05 TFLOP/s
 CudaRegTile/f32/N=4096          22494 µs   21973 µs   6255.0     (6.26 TFLOP/s)  block=128
 ```
 
-##### On a CPU-only machine (Apple M, no GPU):
 
-```
-BM_CudaNaive/f64/N=64     SKIPPED: 'No CUDA device available'
-BM_CudaBlocked/f32/N=4096 SKIPPED: 'No CUDA device available'
-```
-
-> **Note on timing:** all CUDA benchmarks include host↔device data transfer time
-> (cudaMemcpy + kernel + cudaMemcpy). This is the end-to-end time visible to the caller.
-> To isolate pure kernel time, use CUDA events (`cudaEventRecord / cudaEventElapsedTime`)
-> in a custom harness — a natural next step once the Tensor Core WMMA kernel is added.
+> **Note:** all CUDA benchmarks include host↔device transfer time (`cudaMemcpy` + kernel + `cudaMemcpy`).
 
 ##### CUDA speedup summary (f32, N=4096)
 
@@ -808,7 +784,7 @@ optimal D ≈ ceil(L2_latency_cycles / cycles_per_micro_kernel_call)
 GFLOP/s = (2 × N³) / (time_µs × 1000)
 ```
 
-A square N×N GEMM performs exactly `2 × N³` floating-point operations (N³ multiplications + N³ additions, fused into FMA). Dividing by wall-clock time in nanoseconds gives GFLOP/s.
+A square N×N GEMM performs `2 × N³` floating-point operations. Dividing by wall-clock time in nanoseconds gives GFLOP/s.
 
 Example: `NeonBlockedPf2/f32/N=512`, 2715 µs → `2 × 512³ / (2715 × 1000)` ≈ **98.9 GFLOP/s**.
 
