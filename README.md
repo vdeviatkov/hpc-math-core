@@ -476,25 +476,74 @@ C[i][j] = acc
 - Naive: each C(i,j) thread loads `2N` elements from global memory → `2N³` total.
 - Tiled (TILE=16): each element of A and B is loaded from global memory `N/TILE` times → `2N³/TILE` total loads → **16× fewer global memory transactions**.
 
-#### Expected output on a CUDA-enabled machine
+#### CUDA benchmark output (NVIDIA RTX GPU)
+
+> **Machine:** Intel Alder Lake / Sapphire Rapids-class + NVIDIA RTX GPU, MSVC 2022, C++20
+> **Build:** `cmake -B build && cmake --build build --config Release`
+
+##### double (f64) — CUDA kernels
 
 ```
-----------------------------------------------------------------------
-Benchmark                        Time        CPU    GFLOP/s
-----------------------------------------------------------------------
-# Naive (no shared memory, column-stride B access — DRAM bound)
-BM_CudaNaive/f64/N=64           xx µs      xx µs    ~xxx G/s
-BM_CudaNaive/f32/N=512          xx µs      xx µs    ~xxx G/s
-BM_CudaNaive/f32/N=4096         xx ms      xx ms    ~xxx G/s
+Benchmark                          Time        CPU     GFLOP/s
+--------------------------------------------------------------
+CudaNaive/f64/N=64                387 µs     288 µs      1.82
+CudaNaive/f64/N=256               493 µs     406 µs     82.56
+CudaNaive/f64/N=512              1357 µs    1203 µs    223.09
+CudaNaive/f64/N=1024             4990 µs    4785 µs    448.78
+CudaNaive/f64/N=4096           182921 µs  182292 µs    753.95
 
-# Reordered (identical to naive on GPU — L2 absorbs repeated accesses)
-BM_CudaReordered/f32/N=512      xx µs      xx µs    ~xxx G/s
+CudaReordered/f64/N=64            359 µs     279 µs      1.88
+CudaReordered/f64/N=256           488 µs     392 µs     85.52
+CudaReordered/f64/N=512          1312 µs    1151 µs    233.23
+CudaReordered/f64/N=1024         4598 µs    3906 µs    549.76
+CudaReordered/f64/N=4096       183387 µs  183594 µs    748.60
 
-# Blocked/tiled (shared memory — compute bound at large N)
-BM_CudaBlocked/f32/N=512        xx µs      xx µs    ~xxx G/s
-BM_CudaBlocked/f32/N=4096       xx ms      xx ms    ~xxx G/s
+CudaBlocked/f64/N=64              364 µs     243 µs      2.16  tile=16
+CudaBlocked/f64/N=256             537 µs     449 µs     74.70  tile=16
+CudaBlocked/f64/N=512            1280 µs    1050 µs    255.70  tile=16
+CudaBlocked/f64/N=1024           4552 µs    4261 µs    503.94  tile=16
+CudaBlocked/f64/N=4096         177645 µs  175781 µs    781.88  tile=16
 
-# On a CPU-only machine (Apple M, no GPU):
+CudaRegTile/f64/N=64              514 µs     460 µs      1.14  block=128
+CudaRegTile/f64/N=256            1192 µs    1060 µs     31.65  block=128
+CudaRegTile/f64/N=512            2482 µs    2178 µs    123.23  block=128
+CudaRegTile/f64/N=1024           5299 µs    5312 µs    404.23  block=128
+CudaRegTile/f64/N=4096         186959 µs  183594 µs    748.60  block=128
+```
+
+##### float (f32) — CUDA kernels
+
+```
+Benchmark                          Time        CPU     GFLOP/s
+--------------------------------------------------------------
+CudaNaive/f32/N=64                409 µs     292 µs      1.80
+CudaNaive/f32/N=256               477 µs     348 µs     96.29
+CudaNaive/f32/N=512               911 µs     715 µs    375.44
+CudaNaive/f32/N=1024             2195 µs    2038 µs   1053.7     (1.05 TFLOP/s)
+CudaNaive/f32/N=4096            57895 µs   55398 µs   2480.9     (2.48 TFLOP/s)
+
+CudaReordered/f32/N=64            342 µs     243 µs      2.16
+CudaReordered/f32/N=256           400 µs     337 µs     99.58
+CudaReordered/f32/N=512           740 µs     558 µs    481.04
+CudaReordered/f32/N=1024         1929 µs    1612 µs   1331.9     (1.33 TFLOP/s)
+CudaReordered/f32/N=4096        54071 µs   53125 µs   2587.1     (2.59 TFLOP/s)
+
+CudaBlocked/f32/N=64              354 µs     309 µs      1.70  tile=16
+CudaBlocked/f32/N=256             410 µs     337 µs     99.58  tile=16
+CudaBlocked/f32/N=512             759 µs     600 µs    447.48  tile=16
+CudaBlocked/f32/N=1024           2032 µs    1857 µs   1156.5     (1.16 TFLOP/s)  tile=16
+CudaBlocked/f32/N=4096          57767 µs   55398 µs   2480.9     (2.48 TFLOP/s)  tile=16
+
+CudaRegTile/f32/N=64              347 µs     255 µs      2.06  block=128
+CudaRegTile/f32/N=256             432 µs     298 µs    112.53  block=128
+CudaRegTile/f32/N=512             758 µs     516 µs    520.04  block=128
+CudaRegTile/f32/N=1024           1483 µs    1046 µs   2052.4     (2.05 TFLOP/s)  block=128
+CudaRegTile/f32/N=4096          22494 µs   21973 µs   6255.0     (6.26 TFLOP/s)  block=128
+```
+
+##### On a CPU-only machine (Apple M, no GPU):
+
+```
 BM_CudaNaive/f64/N=64     SKIPPED: 'No CUDA device available'
 BM_CudaBlocked/f32/N=4096 SKIPPED: 'No CUDA device available'
 ```
@@ -504,13 +553,14 @@ BM_CudaBlocked/f32/N=4096 SKIPPED: 'No CUDA device available'
 > To isolate pure kernel time, use CUDA events (`cudaEventRecord / cudaEventElapsedTime`)
 > in a custom harness — a natural next step once the Tensor Core WMMA kernel is added.
 
-#### Theoretical peak comparison (RTX 4090, f32)
+##### CUDA speedup summary (f32, N=4096)
 
-| Kernel | Bottleneck | ~Peak |
+| Kernel | GFLOP/s | ×CudaNaive |
 |---|---|---|
-| Naive | DRAM bandwidth (1 TB/s) | ~1–3 TFLOP/s |
-| Blocked (TILE=16) | Compute (165.2 TFLOP/s FP32 peak) | ~80–120 TFLOP/s |
-| cuBLAS | Tensor Cores (330 TFLOP/s FP16→FP32) | ~250–300 TFLOP/s |
+| `CudaNaive` | 2,481 G/s (2.48 TFLOP/s) | 1.0× |
+| `CudaReordered` | 2,587 G/s (2.59 TFLOP/s) | **1.04×** |
+| `CudaBlocked` (TILE=16) | 2,481 G/s (2.48 TFLOP/s) | **1.0×** |
+| `CudaRegTile` (block=128) | 6,255 G/s (6.26 TFLOP/s) | **2.52×** |
 
 ---
 
