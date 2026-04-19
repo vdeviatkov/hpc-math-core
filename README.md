@@ -514,6 +514,182 @@ BM_CudaBlocked/f32/N=4096 SKIPPED: 'No CUDA device available'
 
 ---
 
+### Sample benchmark output — Intel x86 (AVX2 + AVX-512)
+
+> **Machine:** Intel Alder Lake / Sapphire Rapids-class, 16 P-cores (32 threads), 4.29 GHz, MSVC 2022, C++20
+> **Build:** `cmake -B build && cmake --build build --config Release`
+> **CPU Caches:** L1 Data 48 KiB · L1 Instruction 32 KiB · L2 Unified 1024 KiB (×16) · L3 Unified 32768 KiB (×2)
+
+#### double (f64) — scalar, AVX2 & AVX-512 kernels
+
+```
+Benchmark                       Time        CPU     GFLOP/s
+------------------------------------------------------------
+Naive/f64/N=64                52.0 µs    53.1 µs     9.87
+Naive/f64/N=256             14017  µs  14062  µs     2.39
+Naive/f64/N=512            194863  µs  195312 µs     1.37
+Naive/f64/N=1024          2794359  µs    2.80s      767.8 M/s
+Naive/f64/N=4096        305295146  µs   304.3s      451.7 M/s
+
+Reordered/f64/N=64             104 µs     103  µs     5.11
+Reordered/f64/N=256           6690 µs    6696  µs     5.01
+Reordered/f64/N=512          54141 µs   54688  µs     4.91
+Reordered/f64/N=1024       427629 µs  429688  µs     5.00
+Reordered/f64/N=4096     34642827 µs   34.6s        3.97
+
+Blocked/f64/N=64               103 µs     103  µs     5.11  tile=64
+Blocked/f64/N=256             6892 µs    6944  µs     4.83  tile=64
+Blocked/f64/N=512            55092 µs   56250  µs     4.77  tile=64
+Blocked/f64/N=1024         441021 µs  437500  µs     4.91  tile=64
+Blocked/f64/N=4096       28273076 µs   28.2s        4.87  tile=64
+
+Avx2Reordered/f64/N=64        20.3 µs    20.5 µs    25.57
+Avx2Reordered/f64/N=256        974 µs     983  µs    34.13
+Avx2Reordered/f64/N=512       8120 µs    8125  µs    33.04
+Avx2Reordered/f64/N=1024     66351 µs   66761  µs    32.17
+Avx2Reordered/f64/N=4096  13227900 µs   13.2s       10.39
+
+Avx2Blocked/f64/N=64           7.83 µs    7.85 µs    66.81  avx2=1
+Avx2Blocked/f64/N=256          505 µs     500  µs    67.11  avx2=1
+Avx2Blocked/f64/N=512         5860 µs    5859  µs    45.81  avx2=1
+Avx2Blocked/f64/N=1024       47682 µs   46875  µs    45.81  avx2=1
+Avx2Blocked/f64/N=4096     3624176 µs    3.61s      38.08  avx2=1
+
+Avx512Reordered/f64/N=64      17.7 µs    17.6 µs    29.83  avx512=1
+Avx512Reordered/f64/N=256      821 µs     820  µs    40.94  avx512=1
+Avx512Reordered/f64/N=512     7554 µs    7465  µs    35.96  avx512=1
+Avx512Reordered/f64/N=1024   60469 µs   59375  µs    36.17  avx512=1
+Avx512Reordered/f64/N=4096 11374338 µs   11.4s      12.08  avx512=1
+
+Avx512Blocked/f64/N=64         3.79 µs    3.77 µs   139.19  avx512=1
+Avx512Blocked/f64/N=256         277 µs     276  µs   121.48  avx512=1
+Avx512Blocked/f64/N=512        4727 µs    4719  µs    56.88  avx512=1
+Avx512Blocked/f64/N=1024      39896 µs   39931  µs    53.78  avx512=1
+Avx512Blocked/f64/N=4096    2796709 µs    2.80s      49.14  avx512=1
+
+Neon*/f64/*     SKIPPED: 'NEON not available on this target'
+Sve*/f64/*      SKIPPED: 'SVE not available on this target'
+```
+
+#### float (f32) — scalar, AVX2 & AVX-512 kernels
+
+```
+Benchmark                       Time        CPU     GFLOP/s
+------------------------------------------------------------
+Naive/f32/N=64                52.5 µs    53.1 µs     9.87
+Naive/f32/N=256              9710  µs    9583  µs     3.50
+Naive/f32/N=512            120715  µs  122396  µs     2.19
+Naive/f32/N=1024          2800837  µs    2.80s      767.8 M/s
+Naive/f32/N=4096        313939135  µs   313.7s      438.2 M/s
+
+Reordered/f32/N=64             101 µs     103  µs     5.11
+Reordered/f32/N=256           6614 µs    6696  µs     5.01
+Reordered/f32/N=512          53251 µs   54688  µs     4.91
+Reordered/f32/N=1024       424514 µs  429688  µs     5.00
+Reordered/f32/N=4096     27507882 µs   27.4s        5.01
+
+Blocked/f32/N=64               102 µs     103  µs     5.11  tile=64
+Blocked/f32/N=256             6768 µs    6836  µs     4.91  tile=64
+Blocked/f32/N=512            53831 µs   53125  µs     5.05  tile=64
+Blocked/f32/N=1024         432354 µs  437500  µs     4.91  tile=64
+Blocked/f32/N=4096       27694736 µs   27.7s        4.96  tile=64
+
+Avx2Reordered/f32/N=64        12.7 µs    12.7 µs    41.30
+Avx2Reordered/f32/N=256        582 µs     586  µs    57.27
+Avx2Reordered/f32/N=512       4431 µs    4404  µs    60.95
+Avx2Reordered/f32/N=1024     40694 µs   40441  µs    53.10
+Avx2Reordered/f32/N=4096   4741415 µs    4.70s      29.22
+
+Avx2Blocked/f32/N=64           3.72 µs    3.77 µs   139.06  avx2=1
+Avx2Blocked/f32/N=256          231 µs     230  µs   145.79  avx2=1
+Avx2Blocked/f32/N=512         1903 µs    1927  µs   139.31  avx2=1
+Avx2Blocked/f32/N=1024       23777 µs   23438  µs    91.63  avx2=1
+Avx2Blocked/f32/N=4096     1764409 µs    1.75s      78.54  avx2=1
+
+Avx512Reordered/f32/N=64      12.2 µs    12.3 µs    42.71  avx512=1
+Avx512Reordered/f32/N=256      507 µs     502  µs    66.81  avx512=1
+Avx512Reordered/f32/N=512     3692 µs    3686  µs    72.83  avx512=1
+Avx512Reordered/f32/N=1024   30564 µs   30540  µs    70.32  avx512=1
+Avx512Reordered/f32/N=4096  4436182 µs    4.44s     30.97  avx512=1
+
+Avx512Blocked/f32/N=64         1.81 µs    1.80 µs   290.76  avx512=1
+Avx512Blocked/f32/N=256         124 µs     126  µs   267.24  avx512=1
+Avx512Blocked/f32/N=512        1110 µs    1123  µs   239.02  avx512=1
+Avx512Blocked/f32/N=1024      15673 µs   15625  µs   137.44  avx512=1
+Avx512Blocked/f32/N=4096    1110351 µs    1.11s     123.89  avx512=1
+
+Neon*/f32/*     SKIPPED: 'NEON not available on this target'
+Sve*/f32/*      SKIPPED: 'SVE not available on this target'
+```
+
+#### Prefetch distance sweep — AVX2 & AVX-512 blocked + prefetch
+
+```
+Benchmark                            Time      GFLOP/s   pf_dist
+-----------------------------------------------------------------
+— AVX2 blocked + prefetch (f64) —
+Avx2BlockedPf2/f64/N=256            477 µs    70.53 G/s   D=2
+Avx2BlockedPf4/f64/N=256            477 µs    70.74 G/s   D=4  ← best
+Avx2BlockedPf2/f64/N=1024         47538 µs    45.81 G/s   D=2  ← best
+Avx2BlockedPf16/f64/N=1024        47937 µs    44.75 G/s   D=16
+
+— AVX2 blocked + prefetch (f32) —
+Avx2BlockedPf2/f32/N=256            246 µs   136.66 G/s   D=2
+Avx2BlockedPf2/f32/N=512           2009 µs   134.71 G/s   D=2
+Avx2BlockedPf8/f32/N=1024         23881 µs    89.63 G/s   D=8
+
+— AVX-512 blocked + prefetch (f64) —
+Avx512BlockedPf2/f64/N=256          279 µs   121.48 G/s   D=2
+Avx512BlockedPf4/f64/N=512         4602 µs    58.79 G/s   D=4  ← best
+Avx512BlockedPf16/f64/N=1024      38612 µs    55.63 G/s   D=16 ← best
+
+— AVX-512 blocked + prefetch (f32) —
+Avx512BlockedPf2/f32/N=256          124 µs   273.32 G/s   D=2  ← best
+Avx512BlockedPf4/f32/N=512         1115 µs   244.34 G/s   D=4  ← best
+Avx512BlockedPf2/f32/N=1024       15656 µs   137.44 G/s   D=2
+```
+
+#### x86 speedup tables
+
+##### f64 — best kernel per family vs `gemm_naive` (Intel x86)
+
+| N | Naive | Reordered | ×naive | Blocked | ×naive | Avx2Blocked | ×naive | Avx512Blocked | ×naive |
+|---|---|---|---|---|---|---|---|---|---|
+| 64 | 52.0 µs | 104 µs | 0.5× | 103 µs | 0.5× | 7.83 µs | **6.6×** | 3.79 µs | **13.7×** |
+| 256 | 14017 µs | 6690 µs | **2.1×** | 6892 µs | **2.0×** | 505 µs | **27.8×** | 277 µs | **50.6×** |
+| 512 | 194863 µs | 54141 µs | **3.6×** | 55092 µs | **3.5×** | 5860 µs | **33.3×** | 4727 µs | **41.2×** |
+| 1024 | 2794359 µs | 427629 µs | **6.5×** | 441021 µs | **6.3×** | 47682 µs | **58.6×** | 39896 µs | **70.0×** |
+| 4096 | 305295146 µs | 34642827 µs | **8.8×** | 28273076 µs | **10.8×** | 3624176 µs | **84.3×** | 2796709 µs | **109.2×** |
+
+##### f32 — best kernel per family vs `gemm_naive` (Intel x86)
+
+| N | Naive | Reordered | ×naive | Blocked | ×naive | Avx2Blocked | ×naive | Avx512Blocked | ×naive |
+|---|---|---|---|---|---|---|---|---|---|
+| 64 | 52.5 µs | 101 µs | 0.5× | 102 µs | 0.5× | 3.72 µs | **14.1×** | 1.81 µs | **29.0×** |
+| 256 | 9710 µs | 6614 µs | **1.5×** | 6768 µs | **1.4×** | 231 µs | **42.0×** | 124 µs | **78.3×** |
+| 512 | 120715 µs | 53251 µs | **2.3×** | 53831 µs | **2.2×** | 1903 µs | **63.4×** | 1110 µs | **108.8×** |
+| 1024 | 2800837 µs | 424514 µs | **6.6×** | 432354 µs | **6.5×** | 23777 µs | **117.8×** | 15673 µs | **178.7×** |
+| 4096 | 313939135 µs | 27507882 µs | **11.4×** | 27694736 µs | **11.3×** | 1764409 µs | **177.9×** | 1110351 µs | **282.7×** |
+
+#### Headline GFLOP/s summary (Intel x86 + AVX-512, this run)
+
+| Kernel | f64 peak | f32 peak | f32/f64 ratio |
+|---|---|---|---|
+| `gemm_naive` | 9.87 G/s | 9.87 G/s | 1.0× |
+| `gemm_reordered` | 5.11 G/s | 5.11 G/s | 1.0× |
+| `gemm_blocked` | 5.11 G/s | 5.11 G/s | 1.0× |
+| `gemm_avx2_blocked` | **67.11 G/s** | **145.79 G/s** | **2.2×** |
+| `gemm_avx512_blocked` | **139.19 G/s** | **290.76 G/s** | **2.1×** |
+| `gemm_avx512_blocked_prefetch` | **55.63 G/s** @ N=1024 | **273.32 G/s** @ N=256 | — |
+
+> **Note:** scalar kernels (`Reordered`, `Blocked`) show ~5 G/s on this x86 machine because
+> MSVC does not auto-vectorise as aggressively as GCC/Clang with `-march=native -ffast-math`.
+> The explicit SIMD kernels (AVX2, AVX-512) bypass this entirely and reach the expected throughput.
+> AVX-512 `f32` peaks at **290 G/s** at N=64, nearly **2× the AVX2 peak** — the doubled register
+> width (512- vs 256-bit) translates directly to throughput.
+
+---
+
 ## Key observations
 
 ### Cache-access pattern dominates at large N
