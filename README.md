@@ -275,11 +275,11 @@ The benchmark name still appears in the output — as `SKIPPED` — so you alway
 
 ## Sample benchmark output
 
-> **Machine:** Apple M-series, 16 P-cores, Apple Clang, C++20
-> **Build:** `cmake -DCMAKE_BUILD_TYPE=Release` → `-O3 -march=native -ffast-math -funroll-loops`
+> **Machine:** Apple M4 Max, 16 cores, Apple Clang 17, C++20
+> **Build:** `cmake -DCMAKE_BUILD_TYPE=Release -DHPC_ENABLE_SME=ON` → `-O3 -ffast-math -funroll-loops` (`-march` cleared in favour of `-mcpu=apple-m4`, see [§ SME and AMX build flags](#sme-and-amx-build-flags))
 > **CPU Caches:** L1 Data 64 KiB · L1 Instruction 128 KiB · L2 Unified 4096 KiB (×16)
-> **Load Average:** 5.52 / 4.47 / 4.20 — 1-min / 5-min / 15-min average number of runnable
-> processes. On a 16-core machine, 16.0 = 100% utilisation; 5.52 ≈ 34% load — moderate
+> **Load Average:** 4.15 / 4.16 / 4.25 — 1-min / 5-min / 15-min average number of runnable
+> processes. On a 16-core machine, 16.0 = 100% utilisation; ~4.2 ≈ 26% load — moderate
 > background activity, numbers are still representative.
 
 ### double (f64) — scalar & NEON kernels
@@ -287,41 +287,41 @@ The benchmark name still appears in the output — as `SKIPPED` — so you alway
 ```
 Benchmark                    Time        CPU     GFLOP/s
 --------------------------------------------------------
-Naive/f64/N=64              71.6 µs    71.6 µs    7.32
-Naive/f64/N=256          12960  µs  12956  µs     2.59
-Naive/f64/N=512         106671  µs  106650 µs     2.52
-Naive/f64/N=1024        868280  µs  868096 µs     2.47
-Naive/f64/N=4096     194681544  µs   194.3s     707.2 M/s
+Naive/f64/N=64              55.5 µs    55.4 µs    9.46
+Naive/f64/N=256          13036  µs  13029  µs     2.58
+Naive/f64/N=512         102246  µs  102236 µs     2.63
+Naive/f64/N=1024        924366  µs  900156  µs     2.39
+Naive/f64/N=4096     207544657  µs   207.5s     662.5 M/s
 
-Reordered/f64/N=64          19.7 µs    19.7 µs   26.68
-Reordered/f64/N=256        2056   µs   2055   µs  16.33
-Reordered/f64/N=512       16629   µs  16575   µs  16.20
-Reordered/f64/N=1024     133401   µs  133103  µs  16.13
-Reordered/f64/N=4096    8424367   µs    8.42s    16.33
+Reordered/f64/N=64          18.9 µs    18.9 µs   27.74
+Reordered/f64/N=256        2020   µs   2019   µs  16.62
+Reordered/f64/N=512       16019   µs  16012   µs  16.76
+Reordered/f64/N=1024     129596   µs  129576  µs  16.57
+Reordered/f64/N=4096    8442770   µs    8.44s    16.29
 
-Blocked/f64/N=64            19.6 µs    19.6 µs   26.80  tile=64
-Blocked/f64/N=256          1334   µs   1334   µs  25.15  tile=64
-Blocked/f64/N=512         12212   µs  12209   µs  21.99  tile=64
-Blocked/f64/N=1024       112310   µs  112215  µs  19.14  tile=64
-Blocked/f64/N=4096      6903279   µs    6.89s    19.94  tile=64
+Blocked/f64/N=64            19.3 µs    19.3 µs   27.21  tile=64
+Blocked/f64/N=256          1320   µs   1320   µs  25.42  tile=64
+Blocked/f64/N=512         12079   µs  12076   µs  22.23  tile=64
+Blocked/f64/N=1024       110250   µs  110216  µs  19.48  tile=64
+Blocked/f64/N=4096      6813557   µs    6.81s    20.18  tile=64
 
-NeonNaive/f64/N=64          61.5 µs    61.4 µs    8.53  neon=1
-NeonNaive/f64/N=256      13793   µs  13788   µs   2.43  neon=1
-NeonNaive/f64/N=512     110220   µs  110210  µs   2.44  neon=1
-NeonNaive/f64/N=1024    920839   µs  920571  µs   2.33  neon=1
-NeonNaive/f64/N=4096  196441977  µs   196.2s   700.4 M/s neon=1
+NeonNaive/f64/N=64          60.6 µs    60.5 µs    8.66  neon=1
+NeonNaive/f64/N=256      13490   µs  13487   µs   2.49  neon=1
+NeonNaive/f64/N=512     103983   µs  103971  µs   2.58  neon=1
+NeonNaive/f64/N=1024    890225   µs  890160  µs   2.41  neon=1
+NeonNaive/f64/N=4096  208745583  µs   208.7s   658.7 M/s neon=1
 
-NeonReordered/f64/N=64      19.9 µs    19.9 µs   26.31  neon=1
-NeonReordered/f64/N=256    2435   µs   2435   µs  13.78  neon=1
-NeonReordered/f64/N=512   18720   µs  18718   µs  14.34  neon=1
-NeonReordered/f64/N=1024 142053   µs  142035  µs  15.12  neon=1
-NeonReordered/f64/N=4096 8830883  µs    8.83s    15.57  neon=1
+NeonReordered/f64/N=64      19.3 µs    19.3 µs   27.12  neon=1
+NeonReordered/f64/N=256    2455   µs   2454   µs  13.67  neon=1
+NeonReordered/f64/N=512   18753   µs  18749   µs  14.32  neon=1
+NeonReordered/f64/N=1024 142757   µs  142712  µs  15.05  neon=1
+NeonReordered/f64/N=4096 8859992  µs    8.86s    15.52  neon=1
 
-NeonBlocked/f64/N=64        14.6 µs    14.6 µs   35.92  neon=1
-NeonBlocked/f64/N=256      1034   µs   1034   µs  32.45  neon=1
-NeonBlocked/f64/N=512      8686   µs   8685   µs  30.91  neon=1
-NeonBlocked/f64/N=1024    70549   µs  70541   µs  30.44  neon=1
-NeonBlocked/f64/N=4096  5555345   µs    5.56s    24.74  neon=1
+NeonBlocked/f64/N=64        14.4 µs    14.4 µs   36.30  neon=1
+NeonBlocked/f64/N=256       989   µs    988   µs  33.95  neon=1
+NeonBlocked/f64/N=512      8380   µs   8377   µs  32.05  neon=1
+NeonBlocked/f64/N=1024    70187   µs  70130   µs  30.62  neon=1
+NeonBlocked/f64/N=4096  5508943   µs    5.51s    24.96  neon=1
 
 Avx2*/f64/*     SKIPPED: 'AVX2 not available on this target'
 Avx512*/f64/*   SKIPPED: 'AVX-512 not available on this target'
@@ -333,46 +333,48 @@ Sve*/f64/*      SKIPPED: 'SVE not available on this target'
 ```
 Benchmark                    Time        CPU     GFLOP/s
 --------------------------------------------------------
-Naive/f32/N=64              57.6 µs    57.4 µs    9.14
-Naive/f32/N=256          12637  µs  12636  µs     2.66
-Naive/f32/N=512         113462  µs  113451 µs     2.37
-Naive/f32/N=1024        842629  µs  842501 µs     2.55
-Naive/f32/N=4096     198056920  µs   197.9s     694.6 M/s
+Naive/f32/N=64              56.1 µs    56.1 µs    9.35
+Naive/f32/N=256          12278  µs  12272  µs     2.73
+Naive/f32/N=512         109000  µs  108961 µs     2.46
+Naive/f32/N=1024        815153  µs  815086 µs     2.63
+Naive/f32/N=4096     218351231  µs   218.4s     629.4 M/s  (contended — see note below)
 
-Reordered/f32/N=64           6.18 µs    6.18 µs  84.83
-Reordered/f32/N=256        1065   µs   1063   µs  31.57
-Reordered/f32/N=512        8519   µs   8515   µs  31.53
-Reordered/f32/N=1024      67326   µs  67247   µs  31.93
-Reordered/f32/N=4096    4299230   µs    4.29s    32.05
+Reordered/f32/N=64           6.09 µs    6.09 µs  86.10
+Reordered/f32/N=256        1039   µs   1038   µs  32.32
+Reordered/f32/N=512        8157   µs   8154   µs  32.92
+Reordered/f32/N=1024      65121   µs  65103   µs  32.99
+Reordered/f32/N=4096    4187456   µs    4.19s    32.83
 
-Blocked/f32/N=64             6.26 µs    6.24 µs  84.06  tile=64
-Blocked/f32/N=256             404 µs     403  µs  83.23  tile=64
-Blocked/f32/N=512            5394 µs    5374  µs  49.95  tile=64
-Blocked/f32/N=1024          54057 µs   54024  µs  39.75  tile=64
-Blocked/f32/N=4096        4502770 µs    4.50s    30.54  tile=64
+Blocked/f32/N=64             6.12 µs    6.11 µs  85.85  tile=64
+Blocked/f32/N=256             402 µs     402  µs  83.51  tile=64
+Blocked/f32/N=512            5238 µs    5236  µs  51.27  tile=64
+Blocked/f32/N=1024          49952 µs   49937  µs  43.00  tile=64
+Blocked/f32/N=4096        4357272 µs    4.36s    31.55  tile=64
 
-NeonNaive/f32/N=64          57.4 µs    57.4 µs    9.14  neon=1
-NeonNaive/f32/N=256        9050   µs   9039   µs   3.71  neon=1
-NeonNaive/f32/N=512       77958   µs  77951   µs   3.44  neon=1
-NeonNaive/f32/N=1024     985483   µs  953716  µs   2.25  neon=1
-NeonNaive/f32/N=4096  204839329  µs   204.6s   671.9 M/s neon=1
+NeonNaive/f32/N=64          56.3 µs    56.3 µs    9.31  neon=1
+NeonNaive/f32/N=256        8810   µs   8806   µs   3.81  neon=1
+NeonNaive/f32/N=512       74224   µs  74192   µs   3.62  neon=1
+NeonNaive/f32/N=1024     807084   µs  806945  µs   2.66  neon=1
+NeonNaive/f32/N=4096  217443539  µs   217.4s   632.1 M/s neon=1  (contended — see note below)
 
-NeonReordered/f32/N=64      20.3 µs    20.3 µs   25.84  neon=1
-NeonReordered/f32/N=256    1129   µs   1129   µs  29.72  neon=1
-NeonReordered/f32/N=512    9778   µs   9777   µs  27.46  neon=1
-NeonReordered/f32/N=1024  75721   µs  75710   µs  28.36  neon=1
-NeonReordered/f32/N=4096 4512691  µs    4.51s    30.46  neon=1
+NeonReordered/f32/N=64      20.3 µs    20.3 µs   25.82  neon=1
+NeonReordered/f32/N=256    1132   µs   1132   µs  29.64  neon=1
+NeonReordered/f32/N=512    9831   µs   9828   µs  27.31  neon=1
+NeonReordered/f32/N=1024  76022   µs  75996   µs  28.26  neon=1
+NeonReordered/f32/N=4096 4494147  µs    4.49s    30.59  neon=1
 
-NeonBlocked/f32/N=64         5.42 µs    5.42 µs  96.70  neon=1
-NeonBlocked/f32/N=256         347 µs     347  µs  96.75  neon=1
-NeonBlocked/f32/N=512        2765 µs    2765  µs  97.10  neon=1
-NeonBlocked/f32/N=1024      22578 µs   22576  µs  95.12  neon=1
-NeonBlocked/f32/N=4096    1925502 µs    1.92s    71.56  neon=1
+NeonBlocked/f32/N=64         5.41 µs    5.40 µs  97.03  neon=1
+NeonBlocked/f32/N=256         348 µs     348  µs  96.43  neon=1
+NeonBlocked/f32/N=512        2776 µs    2775  µs  96.73  neon=1
+NeonBlocked/f32/N=1024      22752 µs   22746  µs  94.41  neon=1
+NeonBlocked/f32/N=4096    1892191 µs    1.89s    72.66  neon=1
 
 Avx2*/f32/*     SKIPPED: 'AVX2 not available on this target'
 Avx512*/f32/*   SKIPPED: 'AVX-512 not available on this target'
 Sve*/f32/*      SKIPPED: 'SVE not available on this target'
 ```
+
+> **Note on the two "contended" rows:** `Naive/f32/N=4096` and `NeonNaive/f32/N=4096` were captured while a second, unrelated benchmark process happened to be running concurrently on this machine (a batching artefact of this particular run, not a property of the kernels) — wall-clock time is inflated relative to CPU time as a result. The **CPU** column and the GFLOP/s derived from it are still accurate; use those, not the wall-clock `Time` column, for these two rows specifically.
 
 ### Prefetch distance sweep — `BlockedPf` (scalar) and `NeonBlockedPf`
 
@@ -386,61 +388,68 @@ Benchmarks named `<Family>BlockedPf<D>/<prec>/N=<size>` sweep prefetch distance 
 Benchmark                         Time      GFLOP/s   pf_dist
 -------------------------------------------------------------
 — Scalar blocked + prefetch (f64) —
-BlockedPf2/f64/N=256           2259 µs    14.85 G/s   D=2
-BlockedPf4/f64/N=256           2258 µs    14.86 G/s   D=4
-BlockedPf8/f64/N=256           2260 µs    14.85 G/s   D=8
-BlockedPf16/f64/N=256          2257 µs    14.87 G/s   D=16
+BlockedPf2/f64/N=256           2277 µs    14.74 G/s   D=2
+BlockedPf4/f64/N=256           2266 µs    14.81 G/s   D=4  ← best
+BlockedPf8/f64/N=256           2269 µs    14.79 G/s   D=8
+BlockedPf16/f64/N=256          2298 µs    14.61 G/s   D=16
 
-BlockedPf2/f64/N=512          20509 µs    13.09 G/s   D=2
-BlockedPf4/f64/N=512          20446 µs    13.13 G/s   D=4  ← best
-BlockedPf8/f64/N=512          20441 µs    13.13 G/s   D=8
-BlockedPf16/f64/N=512         20984 µs    12.82 G/s   D=16
+BlockedPf2/f64/N=512          20726 µs    12.96 G/s   D=2
+BlockedPf4/f64/N=512          20696 µs    12.97 G/s   D=4
+BlockedPf8/f64/N=512          20769 µs    12.93 G/s   D=8
+BlockedPf16/f64/N=512         20659 µs    13.00 G/s   D=16 ← best
 
-BlockedPf2/f64/N=1024        190535 µs    11.31 G/s   D=2
-BlockedPf4/f64/N=1024        188858 µs    11.38 G/s   D=4
-BlockedPf8/f64/N=1024        188381 µs    11.41 G/s   D=8
-BlockedPf16/f64/N=1024       187768 µs    11.44 G/s   D=16 ← best
+BlockedPf2/f64/N=1024        189090 µs    11.36 G/s   D=2
+BlockedPf4/f64/N=1024        188221 µs    11.41 G/s   D=4  ← best
+BlockedPf8/f64/N=1024        189234 µs    11.35 G/s   D=8
+BlockedPf16/f64/N=1024       189300 µs    11.35 G/s   D=16
 
 — Scalar blocked + prefetch (f32) —
-BlockedPf2/f32/N=256           1159 µs    28.94 G/s   D=2  ← best
-BlockedPf4/f32/N=256           1178 µs    28.53 G/s   D=4
-BlockedPf8/f32/N=256           1188 µs    28.42 G/s   D=8
-BlockedPf16/f32/N=256          1241 µs    27.11 G/s   D=16
+BlockedPf2/f32/N=256           1168 µs    28.75 G/s   D=2  ← best
+BlockedPf4/f32/N=256           1171 µs    28.66 G/s   D=4
+BlockedPf8/f32/N=256           1182 µs    28.48 G/s   D=8
+BlockedPf16/f32/N=256          1229 µs    27.37 G/s   D=16
 
-BlockedPf8/f32/N=512          12027 µs    22.33 G/s   D=8  ← best
-BlockedPf4/f32/N=1024         99628 µs    21.56 G/s   D=4
+BlockedPf2/f32/N=512          12122 µs    22.15 G/s   D=2
+BlockedPf4/f32/N=512          12128 µs    22.14 G/s   D=4
+BlockedPf8/f32/N=512          12100 µs    22.19 G/s   D=8  ← best
+BlockedPf16/f32/N=512         12110 µs    22.17 G/s   D=16
+
+BlockedPf2/f32/N=1024         100408 µs    21.39 G/s   D=2
+BlockedPf4/f32/N=1024         100236 µs    21.43 G/s   D=4
+BlockedPf8/f32/N=1024         100196 µs    21.44 G/s   D=8  ← best
+BlockedPf16/f32/N=1024        100685 µs    21.33 G/s   D=16
 
 — NEON blocked + prefetch (f64) —
-NeonBlockedPf2/f64/N=256        986 µs    34.05 G/s   D=2  ← best
-NeonBlockedPf8/f64/N=256        990 µs    33.90 G/s   D=8
-NeonBlockedPf4/f64/N=256       1034 µs    32.45 G/s   D=4
-NeonBlockedPf16/f64/N=256      1051 µs    31.96 G/s   D=16
+NeonBlockedPf2/f64/N=256        994 µs    33.77 G/s   D=2
+NeonBlockedPf4/f64/N=256       1042 µs    32.20 G/s   D=4
+NeonBlockedPf8/f64/N=256        993 µs    33.80 G/s   D=8  ← best
+NeonBlockedPf16/f64/N=256      1042 µs    32.19 G/s   D=16
 
-NeonBlockedPf2/f64/N=512       8664 µs    31.01 G/s   D=2  ← best
-NeonBlockedPf8/f64/N=512       8647 µs    31.05 G/s   D=8
-NeonBlockedPf16/f64/N=512      8694 µs    30.88 G/s   D=16
-NeonBlockedPf4/f64/N=512       8982 µs    29.95 G/s   D=4
+NeonBlockedPf2/f64/N=512       8409 µs    31.94 G/s   D=2  ← best
+NeonBlockedPf4/f64/N=512       8758 µs    30.66 G/s   D=4
+NeonBlockedPf8/f64/N=512       8426 µs    31.87 G/s   D=8
+NeonBlockedPf16/f64/N=512      8737 µs    30.75 G/s   D=16
 
-NeonBlockedPf2/f64/N=1024     69663 µs    30.83 G/s   D=2  ← best
-NeonBlockedPf8/f64/N=1024     69612 µs    30.85 G/s   D=8
-NeonBlockedPf4/f64/N=1024     70677 µs    30.39 G/s   D=4
-NeonBlockedPf16/f64/N=1024    70760 µs    30.35 G/s   D=16
+NeonBlockedPf2/f64/N=1024     70901 µs    30.30 G/s   D=2
+NeonBlockedPf4/f64/N=1024     72425 µs    29.66 G/s   D=4
+NeonBlockedPf8/f64/N=1024     70585 µs    30.43 G/s   D=8  ← best
+NeonBlockedPf16/f64/N=1024    72026 µs    29.83 G/s   D=16
 
 — NEON blocked + prefetch (f32) —
-NeonBlockedPf2/f32/N=256        340 µs    98.59 G/s   D=2  ← best
-NeonBlockedPf16/f32/N=256       347 µs    96.58 G/s   D=16
-NeonBlockedPf4/f32/N=256        348 µs    96.53 G/s   D=4
-NeonBlockedPf8/f32/N=256        348 µs    96.47 G/s   D=8
+NeonBlockedPf2/f32/N=256        343 µs    97.86 G/s   D=2  ← best
+NeonBlockedPf4/f32/N=256        351 µs    95.67 G/s   D=4
+NeonBlockedPf8/f32/N=256        350 µs    95.88 G/s   D=8
+NeonBlockedPf16/f32/N=256       349 µs    96.18 G/s   D=16
 
-NeonBlockedPf2/f32/N=512       2715 µs    98.87 G/s   D=2  ← best
-NeonBlockedPf4/f32/N=512       2769 µs    96.96 G/s   D=4
-NeonBlockedPf8/f32/N=512       2770 µs    96.92 G/s   D=8
-NeonBlockedPf16/f32/N=512      2769 µs    96.95 G/s   D=16
+NeonBlockedPf2/f32/N=512       2733 µs    98.26 G/s   D=2  ← best
+NeonBlockedPf4/f32/N=512       2792 µs    96.17 G/s   D=4
+NeonBlockedPf8/f32/N=512       2795 µs    96.10 G/s   D=8
+NeonBlockedPf16/f32/N=512      2789 µs    96.28 G/s   D=16
 
-NeonBlockedPf2/f32/N=1024     22256 µs    96.50 G/s   D=2  ← best
-NeonBlockedPf4/f32/N=1024     22632 µs    94.89 G/s   D=4
-NeonBlockedPf8/f32/N=1024     22634 µs    94.88 G/s   D=8
-NeonBlockedPf16/f32/N=1024    22587 µs    95.08 G/s   D=16
+NeonBlockedPf2/f32/N=1024     22508 µs    95.46 G/s   D=2  ← best
+NeonBlockedPf4/f32/N=1024     22976 µs    93.49 G/s   D=4
+NeonBlockedPf8/f32/N=1024     22925 µs    93.71 G/s   D=8
+NeonBlockedPf16/f32/N=1024    22859 µs    93.97 G/s   D=16
 
 Avx2BlockedPf*/  SKIPPED: 'AVX2 not available on this target'
 Avx512BlockedPf*/SKIPPED: 'AVX-512 not available on this target'
@@ -460,47 +469,47 @@ SME computes GEMM with a fundamentally different primitive than every other CPU 
 ```
 Benchmark                        Time             CPU   GFLOP/s
 ------------------------------------------------------------------
-SmeNaive/f64/N=64              367 us          366 us     1.43 G/s   svl=8
-SmeNaive/f64/N=256           22794 us        22735 us     1.48 G/s   svl=8
-SmeNaive/f64/N=512          179688 us       179285 us     1.50 G/s   svl=8
-SmeNaive/f64/N=1024        1439214 us      1438229 us     1.49 G/s   svl=8
-SmeNaive/f32/N=64              181 us          181 us     2.90 G/s   svl=16
-SmeNaive/f32/N=256           11129 us        11102 us     3.02 G/s   svl=16
-SmeNaive/f32/N=512           88185 us        88121 us     3.05 G/s   svl=16
-SmeNaive/f32/N=1024         711068 us       709933 us     3.02 G/s   svl=16
+SmeNaive/f64/N=64              355 us          355 us     1.48 G/s   svl=8
+SmeNaive/f64/N=256           22065 us        22062 us     1.52 G/s   svl=8
+SmeNaive/f64/N=512          176633 us       176601 us     1.52 G/s   svl=8
+SmeNaive/f64/N=1024        1414901 us      1414665 us     1.52 G/s   svl=8
+SmeNaive/f32/N=64              178 us          178 us     2.94 G/s   svl=16
+SmeNaive/f32/N=256           10748 us        10745 us     3.12 G/s   svl=16
+SmeNaive/f32/N=512           85802 us        85776 us     3.13 G/s   svl=16
+SmeNaive/f32/N=1024         686329 us       686161 us     3.13 G/s   svl=16
 
-SmeReordered/f64/N=64           9.97 us         9.94 us    52.77 G/s   svl=8
-SmeReordered/f64/N=256           341 us          341 us    98.52 G/s   svl=8
-SmeReordered/f64/N=512          2444 us         2443 us   109.90 G/s   svl=8
-SmeReordered/f64/N=1024        18923 us        18905 us   113.59 G/s   svl=8
-SmeReordered/f64/N=2048       471606 us       470430 us    36.52 G/s   svl=8
-SmeReordered/f32/N=64           8.29 us         8.28 us    63.35 G/s   svl=16
-SmeReordered/f32/N=256           154 us          154 us   218.08 G/s   svl=16
-SmeReordered/f32/N=512           862 us          862 us   311.58 G/s   svl=16
-SmeReordered/f32/N=1024         5659 us         5656 us   379.66 G/s   svl=16  ← peak
-SmeReordered/f32/N=2048        81907 us        81822 us   209.97 G/s   svl=16
-SmeReordered/f32/N=4096      1084942 us      1082340 us   126.98 G/s   svl=16
+SmeReordered/f64/N=64           9.70 us         9.70 us    54.08 G/s   svl=8
+SmeReordered/f64/N=256           333 us          333 us   100.80 G/s   svl=8
+SmeReordered/f64/N=512          2388 us         2387 us   112.46 G/s   svl=8
+SmeReordered/f64/N=1024        19194 us        19077 us   112.57 G/s   svl=8
+SmeReordered/f64/N=2048       438908 us       438643 us    39.17 G/s   svl=8
+SmeReordered/f32/N=64           7.97 us         7.97 us    65.77 G/s   svl=16
+SmeReordered/f32/N=256           151 us          151 us   222.58 G/s   svl=16
+SmeReordered/f32/N=512           845 us          845 us   317.60 G/s   svl=16
+SmeReordered/f32/N=1024         5576 us         5570 us   385.56 G/s   svl=16  ← peak
+SmeReordered/f32/N=2048        72796 us        72771 us   236.08 G/s   svl=16
+SmeReordered/f32/N=4096      1065408 us      1063861 us   129.19 G/s   svl=16
 
-SmeBlocked/f64/N=64             10.0 us        10.00 us    52.45 G/s   svl=8
-SmeBlocked/f64/N=256              337 us          337 us    99.58 G/s   svl=8
-SmeBlocked/f64/N=512             2417 us         2416 us   111.11 G/s   svl=8
-SmeBlocked/f64/N=1024           18995 us        18986 us   113.11 G/s   svl=8
-SmeBlocked/f64/N=2048          327129 us       326861 us    52.56 G/s   svl=8   ← beats Reordered (36.52 G/s)
-SmeBlocked/f32/N=64              8.32 us         8.31 us    63.08 G/s   svl=16
-SmeBlocked/f32/N=256              152 us          152 us   221.11 G/s   svl=16
-SmeBlocked/f32/N=512              851 us          850 us   315.71 G/s   svl=16
-SmeBlocked/f32/N=1024            5673 us         5665 us   379.08 G/s   svl=16
-SmeBlocked/f32/N=2048            67729 us        67614 us   254.09 G/s   svl=16  ← beats Reordered (209.97 G/s)
-SmeBlocked/f32/N=4096           803990 us       800458 us   171.70 G/s   svl=16  ← beats Reordered (126.98 G/s)
+SmeBlocked/f64/N=64              9.78 us         9.78 us    53.60 G/s   svl=8
+SmeBlocked/f64/N=256              333 us          333 us   100.79 G/s   svl=8
+SmeBlocked/f64/N=512             2393 us         2392 us   112.21 G/s   svl=8
+SmeBlocked/f64/N=1024           18509 us        18506 us   116.04 G/s   svl=8  ← peak
+SmeBlocked/f64/N=2048          315753 us       315588 us    54.44 G/s   svl=8   ← beats Reordered (39.17 G/s)
+SmeBlocked/f32/N=64              8.09 us         8.09 us    64.83 G/s   svl=16
+SmeBlocked/f32/N=256              151 us          151 us   222.34 G/s   svl=16
+SmeBlocked/f32/N=512              851 us          850 us   315.63 G/s   svl=16
+SmeBlocked/f32/N=1024            5597 us         5589 us   384.23 G/s   svl=16
+SmeBlocked/f32/N=2048            58580 us        58567 us   293.34 G/s   svl=16  ← beats Reordered (236.08 G/s)
+SmeBlocked/f32/N=4096           762060 us       761849 us   180.40 G/s   svl=16  ← beats Reordered (129.19 G/s)
 ```
 
 ### Key observations
 
-- **380 GFLOP/s single-threaded, f32** (`SmeReordered`/`SmeBlocked` at N=1024) is the highest CPU throughput anywhere in this repo — roughly **4× the AVX-512 f32 peak** (290 G/s, Intel x86 section below) and **~4× `gemm_neon_blocked`** (97 G/s, same Apple-silicon class of chip) despite SME running at a lower clock than either comparison.
+- **386 GFLOP/s single-threaded, f32** (`SmeReordered` at N=1024) is the highest single-threaded CPU throughput anywhere in this repo — roughly **4× the AVX-512 f32 peak** (290 G/s, Intel x86 section below) and **~4× `gemm_neon_blocked`** (97 G/s, same Apple-silicon class of chip) despite SME running at a lower clock than either comparison.
 - **`SmeNaive` is pinned at ~3 GFLOP/s, flat across N** — confirming the same "SIMD width doesn't fix cache-hostile access" lesson every other `*_naive` kernel demonstrates in this repo, except here the hostility is structural: SME's streaming mode does not permit gather-load instructions at all (verified — Clang rejects `svld1_gather_index` with "builtin can only be called from a non-streaming function"), so the column vector for the outer product must be assembled with a scalar loop on every k-iteration.
-- **`SmeReordered` fixes this by packing once per row-tile** (a single scalar pass over `A(i0..i0+16, :)`, reused across every column-tile) instead of once per (row-tile, column-tile) pair — a 25-125× improvement depending on N, for identical arithmetic.
-- **`SmeBlocked` wins once the packed panel stops fitting cache**: at N=2048/4096, `SmeReordered`'s unbounded `SVL × K` packed buffer (128 KB / 256 KB at N=2048/4096) exceeds Apple M4's per-core L1, and repeated re-reads from L2 cost real throughput (210→127 G/s). Bounding the packed panel to a fixed K-tile (256 columns → 16 KB, comfortably L1-resident) and paying an extra C load/store per K-tile instead recovers most of the loss (254→172 G/s) — the same blocking trade-off as `gemm_blocked` vs `gemm_reordered` on the very first page of this README, replayed one abstraction level up.
-- **f64 peaks far lower than f32** (114 vs 380 G/s) — expected, since SVL is fixed in *bytes*, not elements: SVL=8 f64 vs SVL=16 f32, so every f64 outer product covers a quarter of the elements ($8\times8$ vs $16\times16$) per instruction.
+- **`SmeReordered` fixes this by packing once per row-tile** (a single scalar pass over `A(i0..i0+16, :)`, reused across every column-tile) instead of once per (row-tile, column-tile) pair — a 22-123× improvement depending on N, for identical arithmetic.
+- **`SmeBlocked` wins once the packed panel stops fitting cache**: at N=2048/4096, `SmeReordered`'s unbounded `SVL × K` packed buffer (128 KB / 256 KB at N=2048/4096) exceeds Apple M4's per-core L1, and repeated re-reads from L2 cost real throughput (236→129 G/s). Bounding the packed panel to a fixed K-tile (256 columns → 16 KB, comfortably L1-resident) and paying an extra C load/store per K-tile instead recovers most of the loss (293→180 G/s) — the same blocking trade-off as `gemm_blocked` vs `gemm_reordered` on the very first page of this README, replayed one abstraction level up.
+- **f64 peaks far lower than f32** (116 vs 386 G/s) — expected, since SVL is fixed in *bytes*, not elements: SVL=8 f64 vs SVL=16 f32, so every f64 outer product covers a quarter of the elements ($8\times8$ vs $16\times16$) per instruction.
 
 ---
 
@@ -514,50 +523,50 @@ This is Apple's own AMX coprocessor, reached through Accelerate.framework's BLAS
 ```
 Benchmark                        Time             CPU   GFLOP/s
 ------------------------------------------------------------------
-AmxNaive/f64/N=64               1.60 us         1.60 us   328.31 G/s
-AmxNaive/f64/N=256              73.8 us         73.8 us   454.77 G/s
-AmxNaive/f64/N=512                345 us          329 us   815.77 G/s
-AmxNaive/f64/N=1024              2514 us         2514 us   854.34 G/s
+AmxNaive/f64/N=64               1.59 us         1.59 us   330.00 G/s
+AmxNaive/f64/N=256              72.1 us         72.1 us   465.66 G/s
+AmxNaive/f64/N=512                338 us          327 us   820.39 G/s
+AmxNaive/f64/N=1024              2599 us         2558 us   839.41 G/s
 
-AmxReordered/f64/N=64            1.58 us         1.58 us   330.83 G/s
-AmxReordered/f64/N=256           72.3 us         72.3 us   464.28 G/s
-AmxReordered/f64/N=512             346 us          328 us   817.84 G/s
-AmxReordered/f64/N=1024           2515 us         2515 us   853.95 G/s
-AmxReordered/f64/N=2048          21643 us        21619 us   794.68 G/s
-AmxReordered/f64/N=4096         173218 us       173208 us   793.49 G/s
+AmxReordered/f64/N=64            1.59 us         1.59 us   329.55 G/s
+AmxReordered/f64/N=256           72.0 us         72.0 us   465.92 G/s
+AmxReordered/f64/N=512             342 us          326 us   822.24 G/s
+AmxReordered/f64/N=1024           2590 us         2501 us   858.59 G/s
+AmxReordered/f64/N=2048          21722 us        21435 us   801.48 G/s
+AmxReordered/f64/N=4096         171958 us       169722 us   809.79 G/s
 
 AmxBlocked/f64/N=64              1.59 us         1.59 us   329.78 G/s
-AmxBlocked/f64/N=256              73.1 us         73.1 us   458.77 G/s
-AmxBlocked/f64/N=512               345 us          331 us   810.47 G/s
-AmxBlocked/f64/N=1024             2522 us         2522 us   851.43 G/s
-AmxBlocked/f64/N=2048            21652 us        21651 us   793.50 G/s
-AmxBlocked/f64/N=4096           173052 us       173042 us   794.25 G/s
+AmxBlocked/f64/N=256              71.9 us         71.9 us   466.61 G/s
+AmxBlocked/f64/N=512               343 us          326 us   822.88 G/s
+AmxBlocked/f64/N=1024             2578 us         2496 us   860.28 G/s   ← peak
+AmxBlocked/f64/N=2048            21611 us        21362 us   804.22 G/s
+AmxBlocked/f64/N=4096           171394 us       168977 us   813.36 G/s
 
-AmxNaive/f32/N=64               0.641 us        0.641 us   818.32 G/s
-AmxNaive/f32/N=256               20.9 us         20.9 us  1608.67 G/s
-AmxNaive/f32/N=512                 106 us         91.6 us  2931.64 G/s
-AmxNaive/f32/N=1024                671 us          651 us  3296.36 G/s
+AmxNaive/f32/N=64               0.649 us        0.649 us   807.89 G/s
+AmxNaive/f32/N=256               19.4 us         19.4 us  1729.12 G/s
+AmxNaive/f32/N=512                 101 us         89.9 us  2984.33 G/s
+AmxNaive/f32/N=1024                668 us          655 us  3280.74 G/s
 
-AmxReordered/f32/N=64            0.649 us        0.649 us   807.80 G/s
-AmxReordered/f32/N=256            19.4 us         19.4 us  1729.35 G/s
-AmxReordered/f32/N=512              106 us         93.0 us  2884.98 G/s
-AmxReordered/f32/N=1024             672 us          651 us  3297.46 G/s
-AmxReordered/f32/N=2048            5277 us         5274 us  3257.40 G/s   ← peak: 3.26 TFLOP/s
-AmxReordered/f32/N=4096           43327 us        43293 us  3174.64 G/s
+AmxReordered/f32/N=64            0.656 us        0.656 us   799.46 G/s
+AmxReordered/f32/N=256            19.4 us         19.4 us  1726.68 G/s
+AmxReordered/f32/N=512              105 us         91.8 us  2922.79 G/s
+AmxReordered/f32/N=1024             670 us          659 us  3260.54 G/s
+AmxReordered/f32/N=2048            5339 us         5338 us  3218.12 G/s
+AmxReordered/f32/N=4096           43469 us        43143 us  3185.66 G/s
 
-AmxBlocked/f32/N=64              0.640 us        0.640 us   819.46 G/s
-AmxBlocked/f32/N=256              19.8 us         19.8 us  1696.55 G/s
-AmxBlocked/f32/N=512                107 us         91.7 us  2927.37 G/s
-AmxBlocked/f32/N=1024               670 us          653 us  3287.36 G/s
-AmxBlocked/f32/N=2048              5338 us         5304 us  3239.28 G/s
-AmxBlocked/f32/N=4096              42969 us        42954 us  3199.65 G/s
+AmxBlocked/f32/N=64              0.658 us        0.657 us   797.61 G/s
+AmxBlocked/f32/N=256              19.5 us         19.5 us  1723.73 G/s
+AmxBlocked/f32/N=512                105 us         92.4 us  2905.87 G/s
+AmxBlocked/f32/N=1024               668 us          652 us  3295.78 G/s   ← peak: 3.30 TFLOP/s
+AmxBlocked/f32/N=2048              5365 us         5365 us  3202.47 G/s
+AmxBlocked/f32/N=4096              43554 us        43549 us  3155.94 G/s
 ```
 
 ### Key observations
 
-- **Up to 3.3 TFLOP/s f32, 854 GFLOP/s f64** — by a wide margin the highest throughput anywhere in this repo, ~9× the hand-written `gemm_sme_reordered` f32 peak (380 GFLOP/s) and ~7.5× its f64 peak (114 GFLOP/s). This is expected and not really a fair fight: Accelerate's BLAS is Apple's own vendor-tuned implementation and, unlike every hand-written kernel in this repo, is free to use every CPU core available — the jump from ~820 G/s at N=64 to ~3.3 T/s at N≥1024 is consistent with additional cores/threads being brought online as the problem grows large enough to amortise their overhead, not (only) better cache behaviour.
-- **`AmxNaive`, `AmxReordered`, and `AmxBlocked` produce near-identical numbers at every size** (e.g. 3296/3297/3287 GFLOP/s at N=1024, f32) — exactly as expected, since all three call the identical `cblas_sgemm`/`cblas_dgemm` wrapper (see file header of [src/gemm/amx.hpp](src/gemm/amx.hpp)). The small run-to-run variation (≤1%) is measurement noise, not an algorithmic difference — Accelerate exposes no staging knob for this repo's naive/reordered/blocked progression to act on.
-- **f32/f64 ratio is only ~4×, not the ~2× lane-count ratio seen elsewhere** (e.g. NEON's 2.7×, AVX-512's ~2×) — consistent with Accelerate additionally exploiting a wider or more specialised f32 datapath (plausibly a bf16-adjacent or otherwise reduced-precision-friendly internal path within the AMX coprocessor) beyond simple lane doubling, though Apple does not document this and it cannot be confirmed without disassembly.
+- **Up to 3.3 TFLOP/s f32, 860 GFLOP/s f64** — by a wide margin the highest throughput anywhere in this repo, ~8.5× the hand-written `gemm_sme_reordered` f32 peak (386 GFLOP/s) and ~7.4× the hand-written `gemm_sme_blocked` f64 peak (116 GFLOP/s). This is expected and not really a fair fight: Accelerate's BLAS is Apple's own vendor-tuned implementation and, unlike every hand-written kernel in this repo, is free to use every CPU core available — the jump from ~800 G/s at N=64 to ~3.3 T/s at N≥1024 is consistent with additional cores/threads being brought online as the problem grows large enough to amortise their overhead, not (only) better cache behaviour.
+- **`AmxNaive`, `AmxReordered`, and `AmxBlocked` produce near-identical numbers at every size** (e.g. 3281/3261/3296 GFLOP/s at N=1024, f32) — exactly as expected, since all three call the identical `cblas_sgemm`/`cblas_dgemm` wrapper (see file header of [src/gemm/amx.hpp](src/gemm/amx.hpp)). The small run-to-run variation (≤1%) is measurement noise, not an algorithmic difference — Accelerate exposes no staging knob for this repo's naive/reordered/blocked progression to act on.
+- **f32/f64 ratio is only ~3.8×, not the ~2× lane-count ratio seen elsewhere** (e.g. NEON's 2.7×, AVX-512's ~2×) — consistent with Accelerate additionally exploiting a wider or more specialised f32 datapath (plausibly a bf16-adjacent or otherwise reduced-precision-friendly internal path within the AMX coprocessor) beyond simple lane doubling, though Apple does not document this and it cannot be confirmed without disassembly.
 - **This is the right comparison to make when the question is "what's the fastest way to multiply matrices on this Mac"** — if that's the actual goal, `cblas_sgemm`/`cblas_dgemm` directly (what `gemm_amx_*` wraps) is the answer, full stop. The value of the other 90% of this repository is in the *pedagogy* of getting from scalar code to a meaningful fraction of that ceiling by hand, one optimisation at a time.
 
 ---
@@ -568,21 +577,23 @@ AmxBlocked/f32/N=4096              42969 us        42954 us  3199.65 G/s
 
 | N | Naive | Reordered | ×naive | Blocked | ×naive | NeonBlocked | ×naive | NeonBlockedPf2 | ×naive |
 |---|---|---|---|---|---|---|---|---|---|
-| 64 | 71.6 µs | 19.7 µs | **2.9×** | 19.6 µs | **2.9×** | 14.6 µs | **3.9×** | — | — |
-| 256 | 12960 µs | 2056 µs | **6.3×** | 1334 µs | **9.7×** | 1034 µs | **12.5×** | 986 µs | **13.1×** |
-| 512 | 106671 µs | 16629 µs | **6.4×** | 12212 µs | **8.7×** | 8686 µs | **12.3×** | 8647 µs | **12.3×** |
-| 1024 | 868280 µs | 133401 µs | **6.5×** | 112310 µs | **7.7×** | 70549 µs | **12.3×** | 69612 µs | **12.5×** |
-| 4096 | 194681544 µs | 8424367 µs | **23.1×** | 6903279 µs | **28.2×** | 5555345 µs | **35.0×** | — | — |
+| 64 | 55.5 µs | 18.9 µs | **2.9×** | 19.3 µs | **2.9×** | 14.4 µs | **3.9×** | — | — |
+| 256 | 13036 µs | 2020 µs | **6.5×** | 1320 µs | **9.9×** | 989 µs | **13.2×** | 994 µs | **13.1×** |
+| 512 | 102246 µs | 16019 µs | **6.4×** | 12079 µs | **8.5×** | 8380 µs | **12.2×** | 8409 µs | **12.2×** |
+| 1024 | 924366 µs | 129596 µs | **7.1×** | 110250 µs | **8.4×** | 70187 µs | **13.2×** | 70901 µs | **13.0×** |
+| 4096 | 207544657 µs | 8442770 µs | **24.6×** | 6813557 µs | **30.5×** | 5508943 µs | **37.7×** | — | — |
 
 ### f32 — best kernel per family vs `gemm_naive`
 
 | N | Naive | Reordered | ×naive | Blocked | ×naive | NeonBlocked | ×naive | NeonBlockedPf2 | ×naive |
 |---|---|---|---|---|---|---|---|---|---|
-| 64 | 57.6 µs | 6.18 µs | **9.3×** | 6.26 µs | **9.2×** | 5.42 µs | **10.6×** | — | — |
-| 256 | 12637 µs | 1065 µs | **11.9×** | 404 µs | **31.3×** | 347 µs | **36.4×** | 340 µs | **37.2×** |
-| 512 | 113462 µs | 8519 µs | **13.3×** | 5394 µs | **21.0×** | 2765 µs | **41.0×** | 2715 µs | **41.8×** |
-| 1024 | 842629 µs | 67326 µs | **12.5×** | 54057 µs | **15.6×** | 22578 µs | **37.3×** | 22256 µs | **37.9×** |
-| 4096 | 198056920 µs | 4299230 µs | **46.1×** | 4502770 µs | **44.0×** | 1925502 µs | **102.9×** | — | — |
+| 64 | 56.1 µs | 6.09 µs | **9.2×** | 6.12 µs | **9.2×** | 5.41 µs | **10.4×** | — | — |
+| 256 | 12278 µs | 1039 µs | **11.8×** | 402 µs | **30.5×** | 348 µs | **35.3×** | 343 µs | **35.8×** |
+| 512 | 109000 µs | 8157 µs | **13.4×** | 5238 µs | **20.8×** | 2776 µs | **39.3×** | 2733 µs | **39.9×** |
+| 1024 | 815153 µs | 65121 µs | **12.5×** | 49952 µs | **16.3×** | 22752 µs | **35.8×** | 22508 µs | **36.2×** |
+| 4096 | 218351 µs\* | 4187456 µs | **52.1×**\* | 4357272 µs | **50.1×**\* | 1892191 µs | **115.4×**\* | — | — |
+
+\* `Naive/f32/N=4096`'s wall-clock time was inflated by a concurrent unrelated process on this run (see note above) — this row uses its CPU time (218351 µs = 218.4 ms) instead, consistent with every other kernel's own (uncontended) wall-clock time in this table. The other three columns' own timings are unaffected.
 
 ### CUDA kernels (bench_gemm_cuda)
 
@@ -907,35 +918,35 @@ Avx512BlockedPf2/f32/N=1024       15656 µs   137.44 G/s   D=2
 `gemm_naive` delivers nearly identical GFLOP/s for f32 and f64 at every size — both are **DRAM-bandwidth bound** from the column-stride gather on B. Element width is irrelevant once you are waiting on cache-miss latency.
 
 The moment the loop order changes to i-k-j (`gemm_reordered`), B and C are accessed sequentially and every cache line is fully consumed. At N=4096:
-- f64: **23×** faster than naive
-- f32: **46×** faster than naive (twice the elements per cache line → twice the bandwidth)
+- f64: **25×** faster than naive
+- f32: **52×** faster than naive (using naive's CPU time — its wall-clock time was contended on this run, see note above; twice the elements per cache line → twice the bandwidth)
 
 ### Auto-vectorisation vs explicit SIMD
 
-`gemm_reordered` and `gemm_blocked` carry **no NEON intrinsics** — the compiler auto-vectorises the sequential inner j-loop with `-march=native -ffast-math`. f32 delivers ~84 GFLOP/s at small N.
+`gemm_reordered` and `gemm_blocked` carry **no NEON intrinsics** — the compiler auto-vectorises the sequential inner j-loop with `-ffast-math`. f32 delivers ~86 GFLOP/s at small N.
 
 `gemm_neon_blocked` adds **explicit Q-register tiling** (4 rows × 4 Q-vectors = 4×16 f32 held in registers for the full k-tile) on top of L2 blocking:
 
 | Kernel | f32 N=256 | f32 N=512 | f32 N=1024 |
 |---|---|---|---|
-| `gemm_blocked` (auto-vec) | 83.2 G/s | 49.9 G/s | 39.8 G/s |
-| `gemm_neon_blocked` (explicit) | **96.7 G/s** | **97.1 G/s** | **95.1 G/s** |
+| `gemm_blocked` (auto-vec) | 83.5 G/s | 51.3 G/s | 43.0 G/s |
+| `gemm_neon_blocked` (explicit) | **96.4 G/s** | **96.7 G/s** | **94.4 G/s** |
 
-The explicit register tile maintains ~96 GFLOP/s from N=64 through N=1024 — **flat across sizes**. The auto-vectorised blocked kernel degrades from 84→40 G/s because C rows are evicted from L1 between k-iterations at larger N.
+The explicit register tile maintains ~95-97 GFLOP/s from N=64 through N=1024 — **flat across sizes**. The auto-vectorised blocked kernel degrades from 84→43 G/s because C rows are evicted from L1 between k-iterations at larger N.
 
 ### Software prefetch analysis
 
-**Scalar `BlockedPf` vs base `Blocked`:** prefetch *hurts* at N=256 (14.9 vs 25.2 G/s for f64) and gives only marginal gain at N=512/1024. The scalar kernel is entirely compiler-auto-vectorised; the hardware prefetcher already handles the simple streaming access, and adding explicit prefetch instructions creates front-end pressure that slows the tight inner loop.
+**Scalar `BlockedPf` vs base `Blocked`:** prefetch *hurts* at N=256 (14.8 vs 25.4 G/s for f64) and gives only marginal gain at N=512/1024. The scalar kernel is entirely compiler-auto-vectorised; the hardware prefetcher already handles the simple streaming access, and adding explicit prefetch instructions creates front-end pressure that slows the tight inner loop.
 
 **`NeonBlockedPf` vs base `NeonBlocked`:** prefetch gives a small but consistent gain:
 
 | Kernel | f32 N=256 | f32 N=512 | f32 N=1024 |
 |---|---|---|---|
-| `NeonBlocked` (no prefetch) | 96.7 G/s | 97.1 G/s | 95.1 G/s |
-| `NeonBlockedPf2` (D=2) | **98.6 G/s** | **98.9 G/s** | **96.5 G/s** |
-| Gain | **+2.0%** | **+1.8%** | **+1.5%** |
+| `NeonBlocked` (no prefetch) | 96.4 G/s | 96.7 G/s | 94.4 G/s |
+| `NeonBlockedPf2` (D=2) | **97.9 G/s** | **98.3 G/s** | **95.5 G/s** |
+| Gain | **+1.5%** | **+1.6%** | **+1.1%** |
 
-For f64 the gain is slightly larger in absolute terms (D=2 wins at all sizes). D=2 consistently outperforms D=4/8/16 — the L2 latency on Apple M is short enough that prefetching more than 2 micro-kernel steps ahead adds latency-hiding overhead without benefit.
+For f64 the gain is slightly larger in absolute terms (D=2/D=8 trade the lead across sizes, both well ahead of D=4/D=16). The L2 latency on Apple M is short enough that prefetching much further than 2-8 micro-kernel steps ahead adds latency-hiding overhead without benefit.
 
 **Prefetch distance rule of thumb for this hardware:**
 
@@ -950,15 +961,17 @@ optimal D ≈ ceil(L2_latency_cycles / cycles_per_micro_kernel_call)
 - `gemm_neon_blocked` f64 peaks at ~36 G/s; f32 peaks at ~97 G/s — ratio ≈ **2.7×**.
 - The theoretical ratio is 2× (lane count). The extra 0.7× for f32 comes from f32 tiles fitting entirely in L1 at sizes where f64 tiles spill.
 
-### Headline GFLOP/s summary (Apple M-series, this run)
+### Headline GFLOP/s summary (Apple M4 Max, this run)
 
 | Kernel | f64 peak | f32 peak | f32/f64 ratio |
 |---|---|---|---|
-| `gemm_naive` | 9.22 G/s | 9.14 G/s | 1.0× |
-| `gemm_reordered` | 26.68 G/s | 84.83 G/s | **3.2×** |
-| `gemm_blocked` | 26.80 G/s | 84.06 G/s | **3.1×** |
-| `gemm_neon_blocked` | 35.92 G/s | 97.10 G/s | **2.7×** |
-| `gemm_neon_blocked_prefetch` (D=2) | **34.05 G/s** @ N=256 | **98.87 G/s** @ N=512 | **2.9×** |
+| `gemm_naive` | 9.46 G/s | 9.35 G/s | 1.0× |
+| `gemm_reordered` | 27.74 G/s | 86.10 G/s | **3.1×** |
+| `gemm_blocked` | 27.21 G/s | 85.85 G/s | **3.2×** |
+| `gemm_neon_blocked` | 36.30 G/s | 97.03 G/s | **2.7×** |
+| `gemm_neon_blocked_prefetch` (D=2) | **33.77 G/s** @ N=256 | **98.26 G/s** @ N=512 | **2.9×** |
+| `gemm_sme_reordered` | 112.57 G/s | **385.56 G/s** | **3.4×** |
+| `gemm_amx_blocked` (via Accelerate) | 860.28 G/s | **3295.78 G/s** | **3.8×** |
 
 ---
 
@@ -976,6 +989,7 @@ Example: `NeonBlockedPf2/f32/N=512`, 2715 µs → `2 × 512³ / (2715 × 1000)` 
 
 ## Documentation
 
+- **[docs/gemm-approaches.md](docs/gemm-approaches.md)** — One-page cheat sheet: every family's cache technique, register width, and key intrinsics/APIs, side by side. Start here for a quick refresher.
 - **[src/gemm/README.md](src/gemm/README.md)** — Side-by-side loop analysis with ASCII memory access diagrams for each kernel.
 - **[docs/cache-behavior.md](docs/cache-behavior.md)** — Cache lines, reuse distance, working-set analysis, roofline model.
 

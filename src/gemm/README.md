@@ -3,6 +3,10 @@
 This directory contains all CPU GEMM implementations for the `hpc-math-core` benchmark suite.
 All kernels compute **C = A × B** where A is M×K, B is K×N, C is M×N (row-major, `float` or `double`).
 
+Looking for a quick refresher rather than the full derivation below? See
+**[docs/gemm-approaches.md](../../docs/gemm-approaches.md)** — a one-page
+summary of every family's cache technique and key intrinsics side by side.
+
 ---
 
 ## Files
