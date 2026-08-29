@@ -75,6 +75,87 @@ endif()
 # ---------------------------------------------------------------------------
 set(HPC_MARCH "native" CACHE STRING "Value passed to -march=. Set to x86-64-v3 for portable x86 CI builds.")
 
+# ---------------------------------------------------------------------------
+# Optional: ARM SME (Scalable Matrix Extension)
+#
+# Enable with:  cmake -DHPC_ENABLE_SME=ON ..
+#
+# ⚠ Unlike every other ISA flag in this file, a successful *compile* does
+# NOT imply SME will work: on Apple Silicon (M4/M4 Pro/M4 Max, the only
+# broadly available SME2 hardware as of this writing), the generic
+# "-march=armv9-a+sme2" flag produces a binary that SIGILLs on its very
+# first instruction inside the streaming region. Clang emits a CNTD
+# instruction outside streaming mode to size the ZA-save prologue buffer;
+# CNTD is an ordinary (non-streaming) SVE instruction, and Apple Silicon
+# implements NO non-streaming SVE unit — only Streaming SVE via SME. See
+# src/gemm/sme.hpp for the full writeup. "-mcpu=apple-m4" sidesteps this by
+# generating a prologue that doesn't need an outside-streaming SVE
+# instruction. Because this failure mode is a runtime SIGILL rather than a
+# compile error, we compile AND RUN a tiny SME probe for each candidate
+# flag at configure time and use the first one that actually executes.
+#
+# This block MUST run before -march=${HPC_MARCH} is baked into
+# add_compile_options() below: passing both "-march=native" AND
+# "-mcpu=apple-m4" to Apple Clang silently drops the SME/SVE target
+# features that "-mcpu=apple-m4" alone provides (verified empirically —
+# "-march=native" has no notion of SME and clobbers it when combined). So
+# when an "-mcpu=..." candidate wins, HPC_MARCH is forced empty here,
+# disabling the plain -march flag entirely in favour of the CPU-name flag
+# (which already implies the full baseline architecture).
+# ---------------------------------------------------------------------------
+option(HPC_ENABLE_SME "Enable ARM SME (Scalable Matrix Extension) instructions" OFF)
+
+if(HPC_ENABLE_SME)
+    include(CheckCXXSourceRuns)
+
+    # Minimal probe: zero ZA, one FMOPA outer-product accumulate, one
+    # horizontal-slice store out of ZA. Exercises exactly the instruction
+    # sequence gemm_sme_* relies on (see src/gemm/sme.hpp).
+    set(HPC_SME_PROBE_SRC [[
+#include <arm_sme.h>
+__arm_locally_streaming __arm_new("za")
+static void probe() {
+    svzero_za();
+    svfloat32_t a = svdup_f32(1.0f);
+    svfloat32_t b = svdup_f32(2.0f);
+    svbool_t pg = svptrue_b32();
+    svmopa_za32_f32_m(0, pg, pg, a, b);
+    float out[64] = {0};
+    svst1_hor_za32(0, 0, pg, out);
+}
+int main() { probe(); return 0; }
+]])
+
+    set(_HPC_SME_FOUND FALSE)
+    # Try Apple-specific CPU names first (correct prologue codegen), then
+    # generic native/architectural flags (correct on non-Apple SME hardware,
+    # which does implement non-streaming SVE alongside SME).
+    foreach(FLAG "-mcpu=apple-m4" "-mcpu=native" "-march=armv9-a+sme2")
+        if(_HPC_SME_FOUND)
+            break()
+        endif()
+        string(MAKE_C_IDENTIFIER "HPC_SME_RUNS_${FLAG}" _HPC_SME_CHECK_VAR)
+        set(CMAKE_REQUIRED_FLAGS "${FLAG} -std=c++20")
+        check_cxx_source_runs("${HPC_SME_PROBE_SRC}" ${_HPC_SME_CHECK_VAR})
+        unset(CMAKE_REQUIRED_FLAGS)
+        if(${_HPC_SME_CHECK_VAR})
+            if(FLAG MATCHES "^-mcpu=")
+                set(HPC_MARCH "" CACHE STRING "" FORCE)
+                message(STATUS "SME flag '${FLAG}' supersedes HPC_MARCH — clearing -march (see comment above)")
+            endif()
+            add_compile_options($<$<COMPILE_LANGUAGE:CXX>:${FLAG}>)
+            set(_HPC_SME_FOUND TRUE)
+            message(STATUS "SME enabled — verified working (compiled AND executed) with flag '${FLAG}'")
+        endif()
+    endforeach()
+
+    if(NOT _HPC_SME_FOUND)
+        message(WARNING "HPC_ENABLE_SME=ON but no candidate flag produced SME code that "
+                         "actually runs on this (compiler, hardware) pair — gemm_sme_* will "
+                         "fall back to SVE/NEON/scalar at compile time (no SIGILL risk).")
+    endif()
+endif()
+
 add_compile_options(
     # --- GCC / Clang / AppleClang ---
     $<$<AND:$<CXX_COMPILER_ID:GNU,Clang,AppleClang>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>:-O3>
@@ -144,6 +225,44 @@ if(HPC_ENABLE_AVX512)
     message(STATUS "AVX-512 extensions enabled")
 endif()
 
+# ---------------------------------------------------------------------------
+# Optional: Apple AMX, accessed via Accelerate.framework
+#
+# Enable with:  cmake -DHPC_ENABLE_AMX=ON ..   (defaults to ON on Apple platforms)
+#
+# Apple Silicon has its own AMX (Apple Matrix coprocessor) — architecturally
+# unrelated to Intel's AMX despite the shared acronym, and NOT exposed via
+# any public ACLE-style intrinsic header the way ARM SME is (see
+# HPC_ENABLE_SME above). Apple does not document raw AMX instructions for
+# third-party use. The one sanctioned, stable way to benefit from it is
+# Accelerate.framework's BLAS (cblas_sgemm / cblas_dgemm) — Apple's own
+# highly-tuned implementation, understood (Apple does not publish which
+# execution unit it targets) to dispatch to the AMX coprocessor blocks
+# on Apple Silicon. Unlike the Intel-AMX design this replaced, this
+# requires no special compiler flags, no runtime CPUID/permission dance,
+# and no risk of SIGILL — Accelerate.framework ships in every macOS SDK,
+# so this option is safe to default ON.
+# ---------------------------------------------------------------------------
+option(HPC_ENABLE_AMX "Enable Apple AMX GEMM path via Accelerate.framework (Apple platforms only)" ${APPLE})
+
+set(HPC_AMX_ENABLED FALSE)
+if(HPC_ENABLE_AMX)
+    if(NOT APPLE)
+        message(WARNING "HPC_ENABLE_AMX=ON but not building for Apple — Accelerate.framework "
+                         "is Apple-only; gemm_amx_* will fall back to gemm_avx512_*/scalar.")
+    else()
+        find_library(HPC_ACCELERATE_FRAMEWORK Accelerate)
+        if(HPC_ACCELERATE_FRAMEWORK)
+            set(HPC_AMX_ENABLED TRUE)
+            add_compile_definitions(HPC_HAS_AMX ACCELERATE_NEW_LAPACK)
+            message(STATUS "Apple AMX enabled via Accelerate.framework (${HPC_ACCELERATE_FRAMEWORK})")
+        else()
+            message(WARNING "HPC_ENABLE_AMX=ON but Accelerate.framework was not found — "
+                             "gemm_amx_* will fall back to gemm_avx512_*/scalar.")
+        endif()
+    endif()
+endif()
+
 # Apply the chosen MSVC SIMD architecture flag (AVX2 or AVX512).
 # Use COMPILE_LANGUAGE:CXX so nvcc doesn't receive conflicting /arch flags.
 if(MSVC)
@@ -200,6 +319,10 @@ target_include_directories(hpc_math_core INTERFACE
     $<INSTALL_INTERFACE:include>
 )
 target_compile_features(hpc_math_core INTERFACE cxx_std_20)
+
+if(HPC_AMX_ENABLED)
+    target_link_libraries(hpc_math_core INTERFACE ${HPC_ACCELERATE_FRAMEWORK})
+endif()
 
 # ---------------------------------------------------------------------------
 # Sub-directories

@@ -25,7 +25,9 @@
  *     is computed from svcntw()/svcntd(), not a compile-time constant.
  *
  * SVE2 (ARMv9.0-A, 2021) is a superset of SVE that adds:
- *   • Matrix outer-product instructions (FMOPA / FMOPS) via SME extension
+ *   • Matrix outer-product instructions (FMOPA / FMOPS) via SME extension —
+ *     see gemm/sme.hpp, which sits above this file in the fallback chain
+ *     and implements a whole-tile outer-product GEMM instead of per-lane FMA.
  *   • More complex integer/polynomial operations
  *   For GEMM purposes, SVE and SVE2 are equivalent; the kernels below
  *   target SVE (available on Neoverse V1, A64FX, some Cortex-X cores).

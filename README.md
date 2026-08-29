@@ -4,11 +4,11 @@
 
 A progressive benchmark suite demonstrating **hardware-aware optimisations for linear algebra**, targeting quantitative engineering and high-frequency trading performance standards.
 
-This repository starts from first principles — readable scalar code — and adds successive layers of hardware exploitation: cache-friendly access patterns, SIMD vectorisation (AVX2 · AVX-512 · NEON · SVE), software prefetch, and CUDA. Every step is fully benchmarked, cross-validated by a Google Test suite, and documented with ASCII memory diagrams and cache analysis.
+This repository starts from first principles — readable scalar code — and adds successive layers of hardware exploitation: cache-friendly access patterns, SIMD vectorisation (AVX2 · AVX-512 · NEON · SVE), software prefetch, CUDA, and matrix-engine hardware (ARM SME2, Apple AMX). Every step is fully benchmarked, cross-validated by a Google Test suite, and documented with ASCII memory diagrams and cache analysis.
 
 ---
 
-## Current status: Step 6 — CUDA (naive · reordered · tiled shared-memory blocked)
+## Current status: Step 8 — Apple AMX (via Accelerate.framework)
 
 | Step | Kernel family | Key technique | Status |
 |---|---|---|---|
@@ -19,10 +19,11 @@ This repository starts from first principles — readable scalar code — and ad
 | 4 | `gemm_neon_{naive,reordered,blocked}` | 128-bit Q-register tile (ARM NEON / AdvSIMD), `vfmaq` FMA | ✅ |
 | 4 | `gemm_sve_{naive,reordered,blocked}` | VLA SVE: runtime VL, `svwhilelt` predicates, zero scalar tails | ✅ |
 | 5 | `gemm_{scalar,avx2,avx512,neon,sve}_blocked_prefetch` | `__builtin_prefetch` on A rows, B k-tiles and C write rows; distance sweep D∈{2,4,8,16} | ✅ |
-| 6 | `gemm_cuda_{naive,reordered,blocked}` | CUDA: one-thread-per-element baseline, explicit row-major read, TILE×TILE shared-memory tiling (TILE=16, +1 pad against bank conflicts) | ✅ |
-| 7 | `gemm_cuda_wmma` | NVIDIA Tensor Core WMMA API (FP16 accumulate into FP32) | 🔜 |
+| 6 | `gemm_cuda_{naive,reordered,blocked,reg_tile,double_buf,wmma}` | CUDA: shared-memory tiling → register tiling → double buffering → Tensor Core WMMA | ✅ |
+| 7 | `gemm_sme_{naive,reordered,blocked}` | ARM SME2: `FMOPA` outer-product accumulate into a ZA tile — verified on Apple M4 Max, up to **380 GFLOP/s single-threaded f32** | ✅ |
+| 8 | `gemm_amx_{naive,reordered,blocked}` | Apple AMX coprocessor via Accelerate.framework (`cblas_sgemm`/`cblas_dgemm`) — verified on Apple M4 Max, up to **3.3 TFLOP/s f32** | ✅ |
 
-Each SIMD family is **skipped automatically** if the ISA is absent on the build CPU — no `#ifdef` pollution in benchmark registrations, no silent fallback timing. See [§ ISA availability](#isa-availability--skipping) below.
+Each SIMD family is **skipped automatically** if the ISA is absent on the build CPU — no `#ifdef` pollution in benchmark registrations, no silent fallback timing. See [§ ISA availability](#isa-availability--skipping) below. SME is **opt-in at configure time** (`-DHPC_ENABLE_SME=ON`, off by default — real SIGILL risk on a wrong flag combination); AMX is **on by default on Apple platforms** (`-DHPC_ENABLE_AMX=ON`, since it only links a standard system framework) — see [§ SME and AMX build flags](#sme-and-amx-build-flags) for the full story.
 
 See [src/gemm/README.md](src/gemm/README.md) for per-kernel memory diagrams and [docs/cache-behavior.md](docs/cache-behavior.md) for the full cache analysis.
 
@@ -48,6 +49,8 @@ hpc-math-core/
 │   │   ├── avx512.hpp                  AVX-512: 4×32 f32 / 4×16 f64 register tile
 │   │   ├── neon.hpp                    ARM NEON: 4×16 f32 / 4×4 f64 Q-register tile
 │   │   ├── sve.hpp                     ARM SVE: VLA tile, predicated tails
+│   │   ├── sme.hpp                     ARM SME2: FMOPA outer-product into a ZA tile (verified, Apple M4 Max)
+│   │   ├── amx.hpp                     Apple AMX via Accelerate.framework cblas_sgemm/dgemm (verified, Apple M4 Max)
 │   │   ├── prefetch.hpp                __builtin_prefetch wrappers for all blocked kernels
 │   │   ├── cuda.hpp                    Host-side C++ interface for CUDA launchers
 │   │   └── README.md
@@ -62,8 +65,8 @@ hpc-math-core/
 │       └── CMakeLists.txt
 ├── tests/
 │   ├── CMakeLists.txt
-│   ├── test_gemm.cpp                   Google Test suite — CPU kernels (233 tests)
-│   ├── test_gemm_cuda.cpp              Google Test suite — CUDA kernels (32 tests, skipped if no GPU)
+│   ├── test_gemm.cpp                   Google Test suite — CPU kernels (330 tests)
+│   ├── test_gemm_cuda.cpp              Google Test suite — CUDA kernels (40 tests, skipped if no GPU)
 │   └── cuda/
 │       └── CMakeLists.txt
 └── docs/
@@ -94,7 +97,7 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release
 # 2. Build everything (CPU + CUDA if available, stubs otherwise)
 cmake --build build --parallel
 
-# 3. Run all tests (233 CPU + 32 CUDA; CUDA tests skip if no GPU)
+# 3. Run all tests (330 CPU + 40 CUDA; CUDA tests skip if no GPU)
 cd build && ctest --output-on-failure
 
 # 4. Run CPU benchmarks
@@ -135,14 +138,78 @@ cd build; ctest --build-config Release --output-on-failure
 
 ---
 
+## SME and AMX build flags
+
+`gemm_sme_*` and `gemm_amx_*` are both **matrix-engine** kernels (whole-tile
+outer-product / vendor-BLAS-dispatched compute, not wider SIMD FMA — see
+[src/gemm/README.md](src/gemm/README.md) for the architectural explanation),
+but they need very different build handling:
+
+```bash
+# ARM SME2 (Apple M4 / M4 Pro / M4 Max only, as of this writing) — opt-in,
+# because a wrong flag combination here is a genuine SIGILL risk.
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DHPC_ENABLE_SME=ON
+cmake --build build --parallel
+./build/benchmarks/bench_gemm --benchmark_filter="Sme"
+
+# Apple AMX via Accelerate.framework — ON by default on Apple platforms,
+# since it only links a standard system framework (no SIGILL risk at all).
+cmake -B build -DCMAKE_BUILD_TYPE=Release   # HPC_ENABLE_AMX defaults to ON here
+cmake --build build --parallel
+./build/benchmarks/bench_gemm --benchmark_filter="Amx"
+```
+
+**`HPC_ENABLE_SME`** (default OFF) runs a *compile-and-execute* probe at
+configure time (not just a compile check) because a compile-only check is
+provably insufficient here: `-march=armv9-a+sme2` compiles cleanly on Apple
+Silicon but the resulting binary `SIGILL`s at runtime on the very first
+non-streaming-SVE instruction Clang emits in the function prologue — Apple
+Silicon has no non-streaming SVE unit at all, only Streaming SVE via SME
+(`-mcpu=apple-m4` avoids this). The probe also discovered that combining
+the default `-march=native` with `-mcpu=apple-m4` silently drops the SME
+target features altogether, so `HPC_ENABLE_SME=ON` clears `HPC_MARCH` in
+favour of the verified `-mcpu=` flag. **Verified end-to-end** on an Apple
+M4 Max — see the benchmark results below. Full writeup:
+[src/gemm/sme.hpp](src/gemm/sme.hpp).
+
+**`HPC_ENABLE_AMX`** (default ON on Apple platforms) targets Apple's own
+AMX coprocessor — architecturally unrelated to Intel's AMX despite sharing
+an acronym, and not something Apple exposes as a public instruction set the
+way ARM SME is. The only Apple-sanctioned way to reach it is
+**Accelerate.framework**'s BLAS (`cblas_sgemm`/`cblas_dgemm`), which Apple's
+own performance guidance points to for matrix math and which is understood
+to dispatch to AMX blocks internally. Because this only requires linking a
+standard framework shipped in every macOS SDK — no special compiler flags,
+no CPUID probing, no OS permission handshake, no SIGILL risk — it carries
+none of the fragility that keeps `HPC_ENABLE_SME` opt-in, so it defaults ON
+wherever `APPLE` is true. **Verified end-to-end** on an Apple M4 Max: up to
+**3.3 TFLOP/s f32** — see the benchmark results below. Full writeup:
+[src/gemm/amx.hpp](src/gemm/amx.hpp).
+
+Note that `gemm_amx_naive`, `_reordered`, and `_blocked` are intentionally
+identical wrappers around the same Accelerate call — the vendor BLAS
+exposes no algorithm-staging knob to reorder or block from the caller's
+side, so unlike every other family in this repo there is only one real
+implementation here (see [src/gemm/amx.hpp](src/gemm/amx.hpp) for why the
+three names still exist: benchmark/test naming symmetry with the rest of
+the suite). Accelerate's BLAS may also use multiple CPU cores internally
+for large matrices — unlike every other, strictly single-threaded, CPU
+kernel in this repo — so treat its numbers as "best vendor-library
+throughput on this machine", not an apples-to-apples single-core
+comparison against `gemm_sme_*`/`gemm_avx512_*`/`gemm_neon_*`.
+
+---
+
 ## Continuous Integration
 
 | Job | Runner | Compiler | What runs |
 |---|---|---|---|
-| **`build-linux-x86`** | `ubuntu-24.04` | GCC 14 | All CPU tests (scalar, AVX2, prefetch); CUDA/NEON/SVE skipped |
-| **`build-linux-arm`** | `ubuntu-24.04-arm` | GCC 14 | All CPU tests (scalar, NEON, prefetch); AVX2/AVX-512/CUDA skipped |
-| **`build-macos`** | `macos-14` (Apple M) | Apple Clang | All CPU tests (scalar, NEON, prefetch); AVX2/AVX-512/CUDA skipped |
+| **`build-linux-x86`** | `ubuntu-24.04` | GCC 14 | All CPU tests (scalar, AVX2, prefetch); CUDA/NEON/SVE/SME/AMX skipped |
+| **`build-linux-arm`** | `ubuntu-24.04-arm` | GCC 14 | All CPU tests (scalar, NEON, prefetch); AVX2/AVX-512/CUDA/SME/AMX skipped |
+| **`build-macos`** | `macos-14` (Apple M) | Apple Clang | All CPU tests (scalar, NEON, prefetch, **AMX**); AVX2/AVX-512/CUDA/SME skipped (`HPC_ENABLE_SME` defaults OFF; `HPC_ENABLE_AMX` defaults ON on Apple) |
 | **`build-cuda-stub`** | `ubuntu-24.04` | GCC 14 (no nvcc) | CMake finds no nvcc → stub library; CUDA bench + tests built and run; every CUDA row prints `SKIPPED` |
+
+None of the CI runners above pass `-DHPC_ENABLE_SME=ON` — GitHub-hosted runners have no Apple M4-class hardware, so it stays at its default OFF and `gemm_sme_*` is exercised only via its (also-tested) fallback chain. `build-macos` DOES exercise real `gemm_amx_*` (Accelerate.framework ships in the `macos-14` runner's SDK, and `HPC_ENABLE_AMX` defaults ON there), so the AMX dispatch — though not the specific numbers below, which come from a local M4 Max run — is continuously verified. The SME and AMX benchmark numbers in this README both come from a manual local run on Apple M4 Max hardware.
 
 Each job restores **ccache** and the **FetchContent cache** (`build/_deps`), configures with `cmake -G Ninja -DCMAKE_BUILD_TYPE=Release`, builds in parallel, and uploads JUnit XML from `ctest --output-junit`.
 
@@ -193,12 +260,16 @@ The benchmark name still appears in the output — as `SKIPPED` — so you alway
 
 | Machine | Runs | Skipped |
 |---|---|---|
-| **Apple M-series** (this run) | Scalar · NEON · Scalar-Pf · NEON-Pf | AVX2 · AVX-512 · SVE · CUDA |
-| Intel Skylake (AVX2, no AVX-512, no GPU) | Scalar · AVX2 · Scalar-Pf · AVX2-Pf | AVX-512 · NEON · SVE · CUDA |
-| Intel Skylake + NVIDIA GPU | Scalar · AVX2 · Scalar-Pf · AVX2-Pf · **CUDA** | AVX-512 · NEON · SVE |
-| Intel Sapphire Rapids + NVIDIA GPU | Scalar · AVX2 · AVX-512 · all Pf · **CUDA** | NEON · SVE |
-| AWS Graviton3 / Neoverse V1 | Scalar · NEON · SVE (256-bit) · all Pf variants | AVX2 · AVX-512 · CUDA |
-| Fujitsu A64FX | Scalar · NEON · SVE (512-bit) · all Pf variants | AVX2 · AVX-512 · CUDA |
+| **Apple M-series** (default build — `HPC_ENABLE_AMX` defaults ON) | Scalar · NEON · Scalar-Pf · NEON-Pf · **AMX** | AVX2 · AVX-512 · SVE · SME · CUDA |
+| **Apple M4 Max, `-DHPC_ENABLE_SME=ON`** (this run) | Scalar · NEON · Scalar-Pf · NEON-Pf · **SME** · **AMX** | AVX2 · AVX-512 · SVE · CUDA |
+| Intel Mac (Accelerate present, but no Apple AMX coprocessor — dispatches to AVX/AVX-512 internally instead) | Scalar · AVX2 · AVX-512 · all Pf · **AMX**\* | NEON · SVE · SME · CUDA |
+| Intel Skylake (Linux/Windows, AVX2, no AVX-512, no GPU) | Scalar · AVX2 · Scalar-Pf · AVX2-Pf | AVX-512 · NEON · SVE · SME · AMX · CUDA |
+| Intel Skylake + NVIDIA GPU | Scalar · AVX2 · Scalar-Pf · AVX2-Pf · **CUDA** | AVX-512 · NEON · SVE · SME · AMX |
+| Intel Sapphire Rapids + NVIDIA GPU | Scalar · AVX2 · AVX-512 · all Pf · **CUDA** | NEON · SVE · SME · AMX |
+| AWS Graviton3 / Neoverse V1 | Scalar · NEON · SVE (256-bit) · all Pf variants | AVX2 · AVX-512 · SME · AMX · CUDA |
+| Fujitsu A64FX | Scalar · NEON · SVE (512-bit) · all Pf variants | AVX2 · AVX-512 · SME · AMX · CUDA |
+
+\* Not run — no Intel Mac was available to this project; Accelerate.framework itself is a normal part of every macOS SDK regardless of CPU vendor, so this is expected to work, just unverified here. Everything on Apple Silicon (both rows above it) **is** verified — see [§ SME and AMX build flags](#sme-and-amx-build-flags).
 
 ---
 
@@ -375,6 +446,119 @@ Avx2BlockedPf*/  SKIPPED: 'AVX2 not available on this target'
 Avx512BlockedPf*/SKIPPED: 'AVX-512 not available on this target'
 SveBlockedPf*/   SKIPPED: 'SVE not available on this target'
 ```
+
+---
+
+## ARM SME2 — Apple M4 Max (real, measured — `-DHPC_ENABLE_SME=ON`)
+
+> **Machine:** Apple M4 Max, Apple Clang 17, C++20, `-mcpu=apple-m4` (see [§ SME and AMX build flags](#sme-and-amx-build-flags) for why this build needs a dedicated flag rather than `-march=native`)
+> **SVL (streaming vector length):** 16 f32 / 8 f64 elements — reported live via the `svl` benchmark counter
+> **Command:** `cmake -B build -DCMAKE_BUILD_TYPE=Release -DHPC_ENABLE_SME=ON && cmake --build build -j && ./build/benchmarks/bench_gemm --benchmark_filter=Sme`
+
+SME computes GEMM with a fundamentally different primitive than every other CPU kernel above: instead of per-lane FMA, a single `FMOPA` instruction accumulates a whole SVL×SVL **outer product** into a 2-D hardware accumulator (ZA), the same class of operation as NVIDIA Tensor Cores (`gemm_cuda_wmma`) and Apple's own AMX coprocessor (below) — see [src/gemm/README.md](src/gemm/README.md#algorithm-10--arm-sme2-scalable-matrix-extension) for the full architectural writeup, including the two real hardware/toolchain issues found while building this (gather-loads are illegal in SME streaming mode; combining `-march=native` with `-mcpu=apple-m4` silently disables SME).
+
+```
+Benchmark                        Time             CPU   GFLOP/s
+------------------------------------------------------------------
+SmeNaive/f64/N=64              367 us          366 us     1.43 G/s   svl=8
+SmeNaive/f64/N=256           22794 us        22735 us     1.48 G/s   svl=8
+SmeNaive/f64/N=512          179688 us       179285 us     1.50 G/s   svl=8
+SmeNaive/f64/N=1024        1439214 us      1438229 us     1.49 G/s   svl=8
+SmeNaive/f32/N=64              181 us          181 us     2.90 G/s   svl=16
+SmeNaive/f32/N=256           11129 us        11102 us     3.02 G/s   svl=16
+SmeNaive/f32/N=512           88185 us        88121 us     3.05 G/s   svl=16
+SmeNaive/f32/N=1024         711068 us       709933 us     3.02 G/s   svl=16
+
+SmeReordered/f64/N=64           9.97 us         9.94 us    52.77 G/s   svl=8
+SmeReordered/f64/N=256           341 us          341 us    98.52 G/s   svl=8
+SmeReordered/f64/N=512          2444 us         2443 us   109.90 G/s   svl=8
+SmeReordered/f64/N=1024        18923 us        18905 us   113.59 G/s   svl=8
+SmeReordered/f64/N=2048       471606 us       470430 us    36.52 G/s   svl=8
+SmeReordered/f32/N=64           8.29 us         8.28 us    63.35 G/s   svl=16
+SmeReordered/f32/N=256           154 us          154 us   218.08 G/s   svl=16
+SmeReordered/f32/N=512           862 us          862 us   311.58 G/s   svl=16
+SmeReordered/f32/N=1024         5659 us         5656 us   379.66 G/s   svl=16  ← peak
+SmeReordered/f32/N=2048        81907 us        81822 us   209.97 G/s   svl=16
+SmeReordered/f32/N=4096      1084942 us      1082340 us   126.98 G/s   svl=16
+
+SmeBlocked/f64/N=64             10.0 us        10.00 us    52.45 G/s   svl=8
+SmeBlocked/f64/N=256              337 us          337 us    99.58 G/s   svl=8
+SmeBlocked/f64/N=512             2417 us         2416 us   111.11 G/s   svl=8
+SmeBlocked/f64/N=1024           18995 us        18986 us   113.11 G/s   svl=8
+SmeBlocked/f64/N=2048          327129 us       326861 us    52.56 G/s   svl=8   ← beats Reordered (36.52 G/s)
+SmeBlocked/f32/N=64              8.32 us         8.31 us    63.08 G/s   svl=16
+SmeBlocked/f32/N=256              152 us          152 us   221.11 G/s   svl=16
+SmeBlocked/f32/N=512              851 us          850 us   315.71 G/s   svl=16
+SmeBlocked/f32/N=1024            5673 us         5665 us   379.08 G/s   svl=16
+SmeBlocked/f32/N=2048            67729 us        67614 us   254.09 G/s   svl=16  ← beats Reordered (209.97 G/s)
+SmeBlocked/f32/N=4096           803990 us       800458 us   171.70 G/s   svl=16  ← beats Reordered (126.98 G/s)
+```
+
+### Key observations
+
+- **380 GFLOP/s single-threaded, f32** (`SmeReordered`/`SmeBlocked` at N=1024) is the highest CPU throughput anywhere in this repo — roughly **4× the AVX-512 f32 peak** (290 G/s, Intel x86 section below) and **~4× `gemm_neon_blocked`** (97 G/s, same Apple-silicon class of chip) despite SME running at a lower clock than either comparison.
+- **`SmeNaive` is pinned at ~3 GFLOP/s, flat across N** — confirming the same "SIMD width doesn't fix cache-hostile access" lesson every other `*_naive` kernel demonstrates in this repo, except here the hostility is structural: SME's streaming mode does not permit gather-load instructions at all (verified — Clang rejects `svld1_gather_index` with "builtin can only be called from a non-streaming function"), so the column vector for the outer product must be assembled with a scalar loop on every k-iteration.
+- **`SmeReordered` fixes this by packing once per row-tile** (a single scalar pass over `A(i0..i0+16, :)`, reused across every column-tile) instead of once per (row-tile, column-tile) pair — a 25-125× improvement depending on N, for identical arithmetic.
+- **`SmeBlocked` wins once the packed panel stops fitting cache**: at N=2048/4096, `SmeReordered`'s unbounded `SVL × K` packed buffer (128 KB / 256 KB at N=2048/4096) exceeds Apple M4's per-core L1, and repeated re-reads from L2 cost real throughput (210→127 G/s). Bounding the packed panel to a fixed K-tile (256 columns → 16 KB, comfortably L1-resident) and paying an extra C load/store per K-tile instead recovers most of the loss (254→172 G/s) — the same blocking trade-off as `gemm_blocked` vs `gemm_reordered` on the very first page of this README, replayed one abstraction level up.
+- **f64 peaks far lower than f32** (114 vs 380 G/s) — expected, since SVL is fixed in *bytes*, not elements: SVL=8 f64 vs SVL=16 f32, so every f64 outer product covers a quarter of the elements ($8\times8$ vs $16\times16$) per instruction.
+
+---
+
+## Apple AMX — Apple M4 Max, via Accelerate.framework (real, measured)
+
+> **Machine:** Apple M4 Max, Apple Clang 17, C++20, `-DHPC_ENABLE_AMX=ON` (default on Apple platforms)
+> **Command:** `cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j && ./build/benchmarks/bench_gemm --benchmark_filter=Amx`
+
+This is Apple's own AMX coprocessor, reached through Accelerate.framework's BLAS (`cblas_sgemm`/`cblas_dgemm`) rather than any hand-written kernel — see [§ SME and AMX build flags](#sme-and-amx-build-flags) and [src/gemm/README.md](src/gemm/README.md#algorithm-11--apple-amx-via-accelerateframework) for why this is architecturally unrelated to Intel's AMX, why `gemm_amx_naive`/`_reordered`/`_blocked` are intentionally identical wrappers, and why these numbers are **not** a single-core comparison against the rest of this README (Accelerate's BLAS may use multiple cores internally).
+
+```
+Benchmark                        Time             CPU   GFLOP/s
+------------------------------------------------------------------
+AmxNaive/f64/N=64               1.60 us         1.60 us   328.31 G/s
+AmxNaive/f64/N=256              73.8 us         73.8 us   454.77 G/s
+AmxNaive/f64/N=512                345 us          329 us   815.77 G/s
+AmxNaive/f64/N=1024              2514 us         2514 us   854.34 G/s
+
+AmxReordered/f64/N=64            1.58 us         1.58 us   330.83 G/s
+AmxReordered/f64/N=256           72.3 us         72.3 us   464.28 G/s
+AmxReordered/f64/N=512             346 us          328 us   817.84 G/s
+AmxReordered/f64/N=1024           2515 us         2515 us   853.95 G/s
+AmxReordered/f64/N=2048          21643 us        21619 us   794.68 G/s
+AmxReordered/f64/N=4096         173218 us       173208 us   793.49 G/s
+
+AmxBlocked/f64/N=64              1.59 us         1.59 us   329.78 G/s
+AmxBlocked/f64/N=256              73.1 us         73.1 us   458.77 G/s
+AmxBlocked/f64/N=512               345 us          331 us   810.47 G/s
+AmxBlocked/f64/N=1024             2522 us         2522 us   851.43 G/s
+AmxBlocked/f64/N=2048            21652 us        21651 us   793.50 G/s
+AmxBlocked/f64/N=4096           173052 us       173042 us   794.25 G/s
+
+AmxNaive/f32/N=64               0.641 us        0.641 us   818.32 G/s
+AmxNaive/f32/N=256               20.9 us         20.9 us  1608.67 G/s
+AmxNaive/f32/N=512                 106 us         91.6 us  2931.64 G/s
+AmxNaive/f32/N=1024                671 us          651 us  3296.36 G/s
+
+AmxReordered/f32/N=64            0.649 us        0.649 us   807.80 G/s
+AmxReordered/f32/N=256            19.4 us         19.4 us  1729.35 G/s
+AmxReordered/f32/N=512              106 us         93.0 us  2884.98 G/s
+AmxReordered/f32/N=1024             672 us          651 us  3297.46 G/s
+AmxReordered/f32/N=2048            5277 us         5274 us  3257.40 G/s   ← peak: 3.26 TFLOP/s
+AmxReordered/f32/N=4096           43327 us        43293 us  3174.64 G/s
+
+AmxBlocked/f32/N=64              0.640 us        0.640 us   819.46 G/s
+AmxBlocked/f32/N=256              19.8 us         19.8 us  1696.55 G/s
+AmxBlocked/f32/N=512                107 us         91.7 us  2927.37 G/s
+AmxBlocked/f32/N=1024               670 us          653 us  3287.36 G/s
+AmxBlocked/f32/N=2048              5338 us         5304 us  3239.28 G/s
+AmxBlocked/f32/N=4096              42969 us        42954 us  3199.65 G/s
+```
+
+### Key observations
+
+- **Up to 3.3 TFLOP/s f32, 854 GFLOP/s f64** — by a wide margin the highest throughput anywhere in this repo, ~9× the hand-written `gemm_sme_reordered` f32 peak (380 GFLOP/s) and ~7.5× its f64 peak (114 GFLOP/s). This is expected and not really a fair fight: Accelerate's BLAS is Apple's own vendor-tuned implementation and, unlike every hand-written kernel in this repo, is free to use every CPU core available — the jump from ~820 G/s at N=64 to ~3.3 T/s at N≥1024 is consistent with additional cores/threads being brought online as the problem grows large enough to amortise their overhead, not (only) better cache behaviour.
+- **`AmxNaive`, `AmxReordered`, and `AmxBlocked` produce near-identical numbers at every size** (e.g. 3296/3297/3287 GFLOP/s at N=1024, f32) — exactly as expected, since all three call the identical `cblas_sgemm`/`cblas_dgemm` wrapper (see file header of [src/gemm/amx.hpp](src/gemm/amx.hpp)). The small run-to-run variation (≤1%) is measurement noise, not an algorithmic difference — Accelerate exposes no staging knob for this repo's naive/reordered/blocked progression to act on.
+- **f32/f64 ratio is only ~4×, not the ~2× lane-count ratio seen elsewhere** (e.g. NEON's 2.7×, AVX-512's ~2×) — consistent with Accelerate additionally exploiting a wider or more specialised f32 datapath (plausibly a bf16-adjacent or otherwise reduced-precision-friendly internal path within the AMX coprocessor) beyond simple lane doubling, though Apple does not document this and it cannot be confirmed without disassembly.
+- **This is the right comparison to make when the question is "what's the fastest way to multiply matrices on this Mac"** — if that's the actual goal, `cblas_sgemm`/`cblas_dgemm` directly (what `gemm_amx_*` wraps) is the answer, full stop. The value of the other 90% of this repository is in the *pedagogy* of getting from scalar code to a meaningful fraction of that ceiling by hand, one optimisation at a time.
 
 ---
 
