@@ -9,6 +9,8 @@
  *   gemm_cuda_vectorized                                      (Level 5)
  *   gemm_cuda_mma_ldmatrix                                    (Level 6, fp32 only)
  *   gemm_cuda_hopper_wgmma                                    (Level 7, fp32 only)
+ *   gemm_cuda_wmma_pipelined                                  (Level 8, fp32 only, NEW)
+ *   gemm_cuda_cublas, gemm_cuda_cublas_tf32, gemm_cuda_cublas_fp16 (Reference, tf32/fp16 fp32 only)
  *
  * All tests skip at runtime when no CUDA device is present.
  * gemm_cuda_wmma / gemm_cuda_mma_ldmatrix additionally skip when Tensor
@@ -356,6 +358,131 @@ TEST_F(CudaHopperWgmmaFloat, N128) {
     hpc::gemm::gemm_naive(A, B, C_ref);
     hpc::gemm::gemm_cuda_hopper_wgmma(A, B, C_got);
     expect_near(C_got, C_ref, "hopper_wgmma/N=128", 1e-2, 1e-2);
+}
+
+// ===========================================================================
+// Level 8 -- Pipelined WMMA (bigger tiles + cp.async double buffering) --
+// fp32 only, sm_70+. NEW kernel, added after the cuBLAS reference below
+// measured this GPU's real Tensor Core ceiling (~118 TFLOP/s dense FP16,
+// compute-only) vs Level 4/6's ~5 TFLOP/s. See gemm_kernels.cu's
+// kernel_wmma_pipelined file comment for the full design rationale.
+// VERIFIED on RTX 5080. Sizes: N=128/256/512 exercise the fast path
+// (exact multiples of 128/128/32); N=192 is NOT a multiple of 128 and
+// exercises the fallback to the always-correct gemm_cuda_wmma.
+// ===========================================================================
+struct CudaWmmaPipelinedFloat : CudaTensorCoreTest {};
+
+TEST_F(CudaWmmaPipelinedFloat, N128) {
+    hpc::Matrix<float> A(128,128), B(128,128), C_ref(128,128), C_got(128,128);
+    fill_random(A,1); fill_random(B,2);
+    hpc::gemm::gemm_naive(A, B, C_ref);
+    hpc::gemm::gemm_cuda_wmma_pipelined(A, B, C_got);
+    expect_near(C_got, C_ref, "wmma_pipelined/N=128", 1e-2, 1e-2);
+}
+TEST_F(CudaWmmaPipelinedFloat, N256) {
+    hpc::Matrix<float> A(256,256), B(256,256), C_ref(256,256), C_got(256,256);
+    fill_random(A,3); fill_random(B,4);
+    hpc::gemm::gemm_naive(A, B, C_ref);
+    hpc::gemm::gemm_cuda_wmma_pipelined(A, B, C_got);
+    expect_near(C_got, C_ref, "wmma_pipelined/N=256", 1e-2, 1e-2);
+}
+TEST_F(CudaWmmaPipelinedFloat, N512) {
+    hpc::Matrix<float> A(512,512), B(512,512), C_ref(512,512), C_got(512,512);
+    fill_random(A,5); fill_random(B,6);
+    hpc::gemm::gemm_naive(A, B, C_ref);
+    hpc::gemm::gemm_cuda_wmma_pipelined(A, B, C_got);
+    expect_near(C_got, C_ref, "wmma_pipelined/N=512", 1e-2, 1e-2);
+}
+TEST_F(CudaWmmaPipelinedFloat, N192_FallbackPath) {
+    // Not a multiple of 128 -- exercises the kernel_wmma fallback branch.
+    hpc::Matrix<float> A(192,192), B(192,192), C_ref(192,192), C_got(192,192);
+    fill_random(A,7); fill_random(B,8);
+    hpc::gemm::gemm_naive(A, B, C_ref);
+    hpc::gemm::gemm_cuda_wmma_pipelined(A, B, C_got);
+    expect_near(C_got, C_ref, "wmma_pipelined/N=192 (fallback)", 1e-2, 1e-2);
+}
+TEST_F(CudaWmmaPipelinedFloat, NonSquare_384x256x160) {
+    // 384=3*128 (M), 256=2*128 (N), 160=5*32 (K) -- exercises the fast
+    // path with M != N != K, unlike the square cases above.
+    hpc::Matrix<float> A(384,160), B(160,256), C_ref(384,256), C_got(384,256);
+    fill_random(A,9); fill_random(B,10);
+    hpc::gemm::gemm_naive(A, B, C_ref);
+    hpc::gemm::gemm_cuda_wmma_pipelined(A, B, C_got);
+    expect_near(C_got, C_ref, "wmma_pipelined/NonSquare_384x256x160", 1e-2, 1e-2);
+}
+
+// ===========================================================================
+// Reference -- cuBLAS (vendor-tuned upper bound, not part of the Level 0-7
+// ladder above). See gemm_kernels.cu's "Reference -- cuBLAS" section: this
+// measures what NVIDIA's own production GEMM achieves on this GPU, as the
+// realistic ceiling for the hand-written kernels above to be judged
+// against and (for gemm_cuda_cublas_tf32) rewritten toward.
+//
+// gemm_cuda_cublas<T>: plain SGEMM/DGEMM -- full precision, tight tolerance
+// like every other non-Tensor-Core kernel in this file.
+// gemm_cuda_cublas_tf32: TF32 Tensor Cores (10-bit mantissa) -- relaxed
+// tolerance like WMMA/mma.sync above, and gated on sm_80+ the same way
+// CudaMmaLdmatrixFloat is (TF32 tensor ops are an Ampere+ feature).
+// ===========================================================================
+struct CudaCublasFloat  : CudaTest {};
+struct CudaCublasDouble : CudaTest {};
+HPC_CUDA_TEST(CudaCublasFloat,  gemm_cuda_cublas, float,   64, 1, 2)
+HPC_CUDA_TEST(CudaCublasFloat,  gemm_cuda_cublas, float,  256, 3, 4)
+HPC_CUDA_TEST(CudaCublasFloat,  gemm_cuda_cublas, float,  512, 5, 6)
+HPC_CUDA_TEST(CudaCublasDouble, gemm_cuda_cublas, double,  64, 1, 2)
+HPC_CUDA_TEST(CudaCublasDouble, gemm_cuda_cublas, double, 256, 3, 4)
+
+struct CudaCublasTf32Float : CudaAmpereMmaTest {};
+
+TEST_F(CudaCublasTf32Float, N64) {
+    hpc::Matrix<float> A(64,64), B(64,64), C_ref(64,64), C_got(64,64);
+    fill_random(A,1); fill_random(B,2);
+    hpc::gemm::gemm_naive(A, B, C_ref);
+    hpc::gemm::gemm_cuda_cublas_tf32(A, B, C_got);
+    expect_near(C_got, C_ref, "cublas_tf32/N=64", 1e-2, 1e-2);
+}
+TEST_F(CudaCublasTf32Float, N256) {
+    hpc::Matrix<float> A(256,256), B(256,256), C_ref(256,256), C_got(256,256);
+    fill_random(A,3); fill_random(B,4);
+    hpc::gemm::gemm_naive(A, B, C_ref);
+    hpc::gemm::gemm_cuda_cublas_tf32(A, B, C_got);
+    expect_near(C_got, C_ref, "cublas_tf32/N=256", 1e-2, 1e-2);
+}
+TEST_F(CudaCublasTf32Float, N512) {
+    hpc::Matrix<float> A(512,512), B(512,512), C_ref(512,512), C_got(512,512);
+    fill_random(A,5); fill_random(B,6);
+    hpc::gemm::gemm_naive(A, B, C_ref);
+    hpc::gemm::gemm_cuda_cublas_tf32(A, B, C_got);
+    expect_near(C_got, C_ref, "cublas_tf32/N=512", 1e-2, 1e-2);
+}
+
+// gemm_cuda_cublas_fp16: dense FP16 Tensor Cores (fp16-in/fp32-accumulate)
+// via cublasGemmEx -- see gemm_kernels.cu for why this exists (TF32
+// compute-only topped out ~59 TFLOP/s on RTX 5080; dense FP16 is the next
+// data point toward the "100-200 TFLOP/s" question this was added to
+// answer). Gated the same way as CudaWmmaFloat (sm_70+, Tensor Cores).
+struct CudaCublasFp16Float : CudaTensorCoreTest {};
+
+TEST_F(CudaCublasFp16Float, N64) {
+    hpc::Matrix<float> A(64,64), B(64,64), C_ref(64,64), C_got(64,64);
+    fill_random(A,1); fill_random(B,2);
+    hpc::gemm::gemm_naive(A, B, C_ref);
+    hpc::gemm::gemm_cuda_cublas_fp16(A, B, C_got);
+    expect_near(C_got, C_ref, "cublas_fp16/N=64", 1e-2, 1e-2);
+}
+TEST_F(CudaCublasFp16Float, N256) {
+    hpc::Matrix<float> A(256,256), B(256,256), C_ref(256,256), C_got(256,256);
+    fill_random(A,3); fill_random(B,4);
+    hpc::gemm::gemm_naive(A, B, C_ref);
+    hpc::gemm::gemm_cuda_cublas_fp16(A, B, C_got);
+    expect_near(C_got, C_ref, "cublas_fp16/N=256", 1e-2, 1e-2);
+}
+TEST_F(CudaCublasFp16Float, N512) {
+    hpc::Matrix<float> A(512,512), B(512,512), C_ref(512,512), C_got(512,512);
+    fill_random(A,5); fill_random(B,6);
+    hpc::gemm::gemm_naive(A, B, C_ref);
+    hpc::gemm::gemm_cuda_cublas_fp16(A, B, C_got);
+    expect_near(C_got, C_ref, "cublas_fp16/N=512", 1e-2, 1e-2);
 }
 
 #undef HPC_CUDA_TEST

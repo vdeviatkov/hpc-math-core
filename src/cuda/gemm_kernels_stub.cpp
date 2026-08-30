@@ -9,6 +9,7 @@
 
 #include "gemm/cuda.hpp"
 #include "hpc/matrix.hpp"
+#include <cstddef>
 #include <stdexcept>
 
 namespace hpc::gemm {
@@ -51,6 +52,48 @@ void gemm_cuda_mma_ldmatrix(const Matrix<float>&, const Matrix<float>&, Matrix<f
 void gemm_cuda_hopper_wgmma(const Matrix<float>&, const Matrix<float>&, Matrix<float>&) {
     throw std::runtime_error("CUDA not available: built without CUDA support");
 }
+void gemm_cuda_wmma_pipelined(const Matrix<float>&, const Matrix<float>&, Matrix<float>&) {
+    throw std::runtime_error("CUDA not available: built without CUDA support");
+}
+void gemm_cuda_wmma_pipelined_device(const void*, const void*, float*, int, int, int) {
+    throw std::runtime_error("CUDA not available: built without CUDA support");
+}
+template <typename T>
+void gemm_cuda_cublas(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) {
+    throw std::runtime_error("CUDA not available: built without CUDA support");
+}
+void gemm_cuda_cublas_tf32(const Matrix<float>&, const Matrix<float>&, Matrix<float>&) {
+    throw std::runtime_error("CUDA not available: built without CUDA support");
+}
+void gemm_cuda_cublas_device_f32(const float*, const float*, float*, int, int, int) {
+    throw std::runtime_error("CUDA not available: built without CUDA support");
+}
+void gemm_cuda_cublas_tf32_device(const float*, const float*, float*, int, int, int) {
+    throw std::runtime_error("CUDA not available: built without CUDA support");
+}
+void gemm_cuda_cublas_fp16(const Matrix<float>&, const Matrix<float>&, Matrix<float>&) {
+    throw std::runtime_error("CUDA not available: built without CUDA support");
+}
+void gemm_cuda_convert_f32_to_f16_device(const float*, void*, int) {
+    throw std::runtime_error("CUDA not available: built without CUDA support");
+}
+void gemm_cuda_cublas_fp16_device(const void*, const void*, float*, int, int, int) {
+    throw std::runtime_error("CUDA not available: built without CUDA support");
+}
+void* gemm_cuda_malloc(std::size_t) {
+    throw std::runtime_error("CUDA not available: built without CUDA support");
+}
+void gemm_cuda_free(void*) {
+    // No-op: nothing was ever allocated (gemm_cuda_malloc always throws
+    // before returning a pointer), and every caller is gated on
+    // cuda_device_count() == 0 before reaching here anyway.
+}
+void gemm_cuda_memcpy_h2d(void*, const void*, std::size_t) {
+    throw std::runtime_error("CUDA not available: built without CUDA support");
+}
+void gemm_cuda_device_synchronize() {
+    throw std::runtime_error("CUDA not available: built without CUDA support");
+}
 
 // Explicit instantiations -- required so the linker finds the symbols.
 template void gemm_cuda_naive<float>(const Matrix<float>&, const Matrix<float>&, Matrix<float>&);
@@ -65,5 +108,7 @@ template void gemm_cuda_double_buf<float>(const Matrix<float>&, const Matrix<flo
 template void gemm_cuda_double_buf<double>(const Matrix<double>&, const Matrix<double>&, Matrix<double>&);
 template void gemm_cuda_vectorized<float>(const Matrix<float>&, const Matrix<float>&, Matrix<float>&);
 template void gemm_cuda_vectorized<double>(const Matrix<double>&, const Matrix<double>&, Matrix<double>&);
+template void gemm_cuda_cublas<float>(const Matrix<float>&, const Matrix<float>&, Matrix<float>&);
+template void gemm_cuda_cublas<double>(const Matrix<double>&, const Matrix<double>&, Matrix<double>&);
 
 }  // namespace hpc::gemm

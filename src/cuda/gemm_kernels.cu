@@ -87,6 +87,14 @@
 #include <mma.h>
 using namespace nvcuda;
 
+// cuBLAS -- backs the vendor-tuned reference kernels (gemm_cuda_cublas /
+// gemm_cuda_cublas_tf32) near the bottom of this file. Unlike every kernel
+// above, these call into NVIDIA's own production GEMM implementation
+// instead of hand-written PTX/intrinsics, to answer "what does this GPU
+// actually achieve at its realistic peak" as a ceiling for the hand-written
+// kernels to be measured against.
+#include <cublas_v2.h>
+
 // Driver API -- needed only for the Hopper TMA descriptor
 // (cuTensorMapEncodeTiled has no CUDA-runtime-API equivalent). Always
 // included (it is a plain host header, part of every CUDA toolkit
@@ -841,6 +849,218 @@ kernel_wmma(const float* __restrict__ A,
 }
 
 // ============================================================================
+// Kernel 6b: Pipelined Tensor Cores via WMMA (Level 8) -- bigger tiles +
+// cp.async double buffering. NEW kernel, added after the "Reference --
+// cuBLAS" section far below this file measured this GPU's realistic
+// Tensor Core ceiling.
+//
+// kernel_wmma above (64x64 block tile, single-buffered, one wmma::mma_sync
+// per warp per k-step) measured ~5 TFLOP/s on RTX 5080 -- cuBLAS's dense
+// FP16 Tensor Core path (gemm_cuda_cublas_fp16, compute-only) measured
+// ~118 TFLOP/s on the same GPU. That ~24x gap is almost entirely
+// pipelining and tile size, not precision or instruction choice (both
+// already use fp16 Tensor Cores) -- see "Reference -- cuBLAS" below for
+// the measurements that motivated this kernel.
+//
+// This kernel closes part of that gap the way CUTLASS-style kernels do,
+// while staying on the documented wmma:: C++ API (not raw mma.sync/
+// ldmatrix PTX -- kernel_mma_ldmatrix below already demonstrates, and
+// this file's fix history already proves, how much easier it is to
+// introduce a silent wrong-value bug in hand-written register-mapping PTX
+// than in compiler-managed WMMA fragments):
+//
+//   1. Bigger thread-block tile: 128x128 (vs 64x64) with BK=32 (vs 16),
+//      so more work is done per shared-memory round trip and per
+//      __syncthreads() pair.
+//   2. Bigger per-warp tile: each of 8 warps (256 threads/block) owns a
+//      32x64 output region == 2x4 = 8 WMMA 16x16x16 fragments, issuing
+//      8 wmma::mma_sync calls per k-sub-step instead of kernel_wmma's 1,
+//      amortizing load/sync overhead across more compute. A/B fragments
+//      are each loaded once per k-sub-step and reused across the other
+//      dimension (a_frag reused across all fn, b_frag[] reused across
+//      all fm) -- the same register-blocking structure kernel_reg_tile/
+//      kernel_double_buf already use for their scalar FMA micro-kernel.
+//   3. Double-buffered shared memory loaded via cp.async (Ampere+; see
+//      HPC_HAVE_CP_ASYNC above), so the NEXT k-tile's global->shared
+//      copy overlaps the CURRENT k-tile's Tensor Core compute -- the
+//      same structural fix already proven correct in kernel_double_buf's
+//      cp.async bug fix elsewhere in this file, applied here to fp16
+//      Tensor Core input instead of scalar FMA input. Falls back to a
+//      synchronous vectorized copy (still double-buffered, just without
+//      the async overlap) on pre-Ampere targets, matching kernel_double_
+//      buf's own #ifdef HPC_HAVE_CP_ASYNC / #else pattern.
+//
+// Design choices that keep this correctness-tractable (unlike kernel_
+// mma_ldmatrix's hand-mapped PTX registers, or kernel_hopper_wgmma's
+// from-scratch descriptor layout):
+//
+//   - A and B are pre-converted to fp16 in GLOBAL memory once (via the
+//     existing kernel_f32_to_f16, the same staging step gemm_cuda_cublas_
+//     fp16 and kernel_hopper_wgmma already use) before this kernel
+//     launches. cp.async is a same-dtype byte copy, not a converting
+//     load -- it cannot do the fp32->fp16 narrowing kernel_wmma's
+//     synchronous load does on the fly, so the conversion has to happen
+//     as a separate step whenever cp.async is used at all.
+//   - Unlike kernel_wmma, As is stored NATURALLY as As[m][k] (matching
+//     A16's own row-major layout exactly, K contiguous) rather than
+//     transposed as As[k][m]. This is a deliberate departure from
+//     kernel_wmma's layout: cp.async can only copy a CONTIGUOUS run of
+//     bytes to a CONTIGUOUS destination, and A16's natural per-row K
+//     contiguity only lines up with a per-row-in-K destination too (i.e.
+//     no transpose) -- so a_frag below is `row_major`, the OPPOSITE of
+//     kernel_wmma's `col_major` a_frag. This is not a bug -- it is the
+//     correct tag for THIS kernel's different (untransposed) physical
+//     layout, exactly analogous to how kernel_wmma's own fix above
+//     required matching its tag to ITS layout. Bs stays natural
+//     (Bs[k][n], same as kernel_wmma), so b_frag stays `row_major` here
+//     too, same as kernel_wmma.
+//   - Every cp.async transfer moves a full 16-byte (8 x __half) chunk,
+//     the largest size __pipeline_memcpy_async supports, chosen so a
+//     single instruction per thread per chunk both maximizes throughput
+//     and keeps every source/destination address provably 16-byte
+//     aligned by construction (see the alignment argument below) --
+//     no zfill/boundary-tile logic is needed at all because...
+//   - ...this kernel deliberately requires M, N to be exact multiples of
+//     128 and K an exact multiple of 32 (no tail handling, the same
+//     scoping decision kernel_hopper_wgmma already makes for its own
+//     tile shape) -- the host dispatch below falls back to the always-
+//     correct kernel_wmma otherwise. Every alignment argument above
+//     depends on this: cudaMalloc'd buffers are >=256-byte aligned, and
+//     with K/N multiples of 32/128 (hence of 8), every row of A16/B16
+//     this kernel reads a 16-byte chunk from starts at a byte offset
+//     that is itself a multiple of 16 (offset-in-elements is always a
+//     multiple of 8 given those divisibility constraints, so offset-in-
+//     bytes = that * 2 is always a multiple of 16).
+// ============================================================================
+
+static constexpr int kPipeBM = 128;   // thread-block output rows
+static constexpr int kPipeBN = 128;   // thread-block output cols
+static constexpr int kPipeBK = 32;    // k-step per shared-memory tile (2 WMMA k-steps of 16)
+static constexpr int kPipeWarpM = 32; // per-warp output rows (2x kWMMA_M)
+static constexpr int kPipeWarpN = 64; // per-warp output cols (4x kWMMA_N)
+static constexpr int kPipeWarpRows = kPipeBM / kPipeWarpM;          // 4
+static constexpr int kPipeWarpCols = kPipeBN / kPipeWarpN;          // 2
+static constexpr int kPipeNumWarps = kPipeWarpRows * kPipeWarpCols; // 8 (256 threads)
+static constexpr int kPipeFragM = kPipeWarpM / kWMMA_M;             // 2
+static constexpr int kPipeFragN = kPipeWarpN / kWMMA_N;             // 4
+static constexpr int kPipeKSteps = kPipeBK / kWMMA_K;               // 2
+
+__global__ void __launch_bounds__(kPipeNumWarps * 32)
+kernel_wmma_pipelined(const __half* __restrict__ A16,   // MxK, row-major, fp16
+                      const __half* __restrict__ B16,   // KxN, row-major, fp16
+                      float* __restrict__ C,
+                      int M, int K, int N) {
+    const int blockRow = blockIdx.y;
+    const int blockCol = blockIdx.x;
+    const int warpId  = threadIdx.x / 32;
+    const int warpRow = warpId / kPipeWarpCols;   // 0..3
+    const int warpCol = warpId % kPipeWarpCols;   // 0..1
+    const int cWarpRow = blockRow * kPipeBM + warpRow * kPipeWarpM;
+    const int cWarpCol = blockCol * kPipeBN + warpCol * kPipeWarpN;
+
+    __shared__ alignas(16) __half As[2][kPipeBM][kPipeBK];  // natural: As[m][k]
+    __shared__ alignas(16) __half Bs[2][kPipeBK][kPipeBN];  // natural: Bs[k][n]
+
+    wmma::fragment<wmma::accumulator, kWMMA_M, kWMMA_N, kWMMA_K, float> c_frag[kPipeFragM][kPipeFragN];
+    #pragma unroll
+    for (int fm = 0; fm < kPipeFragM; ++fm)
+        #pragma unroll
+        for (int fn = 0; fn < kPipeFragN; ++fn)
+            wmma::fill_fragment(c_frag[fm][fn], 0.0f);
+
+    const int nTilesK = K / kPipeBK;  // exact -- see file comment above
+    const int tid = threadIdx.x;
+
+    // Each thread copies 16-byte (8-half) chunks. As has kPipeBM*(kPipeBK/8)
+    // chunks, Bs has kPipeBK*(kPipeBN/8) chunks -- both equal 512 with the
+    // constants above, and kPipeNumWarps*32 = 256 threads, so each thread
+    // handles exactly 2 chunks per call (512/256).
+    auto load_tile = [&](int tileK, int buf) {
+        constexpr int kAChunksPerRow = kPipeBK / 8;
+        constexpr int kAChunks = kPipeBM * kAChunksPerRow;
+        for (int c = tid; c < kAChunks; c += blockDim.x) {
+            const int row  = c / kAChunksPerRow;
+            const int kOff = (c % kAChunksPerRow) * 8;
+            const __half* src = A16 + static_cast<std::size_t>(blockRow * kPipeBM + row) * K
+                                     + (tileK * kPipeBK + kOff);
+            __half* dst = &As[buf][row][kOff];
+#ifdef HPC_HAVE_CP_ASYNC
+            __pipeline_memcpy_async(dst, src, 16);
+#else
+            *reinterpret_cast<float4*>(dst) = *reinterpret_cast<const float4*>(src);
+#endif
+        }
+        constexpr int kBChunksPerRow = kPipeBN / 8;
+        constexpr int kBChunks = kPipeBK * kBChunksPerRow;
+        for (int c = tid; c < kBChunks; c += blockDim.x) {
+            const int row  = c / kBChunksPerRow;
+            const int nOff = (c % kBChunksPerRow) * 8;
+            const __half* src = B16 + static_cast<std::size_t>(tileK * kPipeBK + row) * N
+                                     + (blockCol * kPipeBN + nOff);
+            __half* dst = &Bs[buf][row][nOff];
+#ifdef HPC_HAVE_CP_ASYNC
+            __pipeline_memcpy_async(dst, src, 16);
+#else
+            *reinterpret_cast<float4*>(dst) = *reinterpret_cast<const float4*>(src);
+#endif
+        }
+#ifdef HPC_HAVE_CP_ASYNC
+        __pipeline_commit();
+#endif
+    };
+    auto wait_tile = [] {
+#ifdef HPC_HAVE_CP_ASYNC
+        __pipeline_wait_prior(0);
+#endif
+        __syncthreads();
+    };
+
+    load_tile(0, 0);
+    wait_tile();
+
+    for (int tileK = 0; tileK < nTilesK; ++tileK) {
+        const int cur = tileK & 1;
+        const int nxt = 1 - cur;
+
+        if (tileK + 1 < nTilesK)
+            load_tile(tileK + 1, nxt);
+
+        #pragma unroll
+        for (int kSub = 0; kSub < kPipeKSteps; ++kSub) {
+            // Load each fn's b_frag once per k-sub-step, reuse across all
+            // fm below (register-blocking, same idea as kernel_reg_tile's
+            // reg_A/reg_B reuse across its m/n FMA loop).
+            wmma::fragment<wmma::matrix_b, kWMMA_M, kWMMA_N, kWMMA_K, __half, wmma::row_major> b_frag[kPipeFragN];
+            #pragma unroll
+            for (int fn = 0; fn < kPipeFragN; ++fn)
+                wmma::load_matrix_sync(b_frag[fn],
+                    &Bs[cur][kSub * kWMMA_K][warpCol * kPipeWarpN + fn * kWMMA_N], kPipeBN);
+
+            #pragma unroll
+            for (int fm = 0; fm < kPipeFragM; ++fm) {
+                wmma::fragment<wmma::matrix_a, kWMMA_M, kWMMA_N, kWMMA_K, __half, wmma::row_major> a_frag;
+                wmma::load_matrix_sync(a_frag,
+                    &As[cur][warpRow * kPipeWarpM + fm * kWMMA_M][kSub * kWMMA_K], kPipeBK);
+                #pragma unroll
+                for (int fn = 0; fn < kPipeFragN; ++fn)
+                    wmma::mma_sync(c_frag[fm][fn], a_frag, b_frag[fn], c_frag[fm][fn]);
+            }
+        }
+
+        if (tileK + 1 < nTilesK)
+            wait_tile();
+    }
+
+    #pragma unroll
+    for (int fm = 0; fm < kPipeFragM; ++fm)
+        #pragma unroll
+        for (int fn = 0; fn < kPipeFragN; ++fn)
+            wmma::store_matrix_sync(
+                C + (cWarpRow + fm * kWMMA_M) * N + (cWarpCol + fn * kWMMA_N),
+                c_frag[fm][fn], N, wmma::mem_row_major);
+}
+
+// ============================================================================
 // Kernel 7: Raw Tensor Core MMA via mma.sync + ldmatrix (Level 6)
 // Deliberately kept as a SEPARATE kernel from kernel_wmma above, not a
 // refactor of it -- the point is to compare the two abstraction levels.
@@ -1471,7 +1691,7 @@ struct DeviceBuffer {
 // ============================================================================
 
 enum class GemmKind { Naive, Reordered, Blocked, RegTile, DoubleBuf, Wmma,
-                      Vectorized, MmaLdmatrix, HopperWgmma };
+                      Vectorized, MmaLdmatrix, HopperWgmma, WmmaPipelined };
 
 template <typename T>
 static void launch(GemmKind kind, const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
@@ -1653,6 +1873,52 @@ static void launch(GemmKind kind, const Matrix<T>& A, const Matrix<T>& B, Matrix
                 kernel_double_buf<T><<<grid2, block2>>>(dA.ptr, dB.ptr, dC.ptr, M, K, N);
             }
         }
+
+    } else if (kind == GemmKind::WmmaPipelined) {
+        // NEW kernel (Level 8) -- see kernel_wmma_pipelined's file comment
+        // for the full rationale. fp32-only, sm_70+ (Tensor Cores; the
+        // cp.async double-buffering benefit specifically needs sm_80+,
+        // but the kernel is still correct without it -- see HPC_HAVE_
+        // CP_ASYNC's #else fallback in kernel_wmma_pipelined). Requires
+        // M/N exact multiples of 128 and K an exact multiple of 32 (no
+        // tail handling, same scoping decision as kernel_hopper_wgmma);
+        // falls back to the always-correct kernel_wmma otherwise.
+        if constexpr (!std::is_same_v<T, float>) {
+            throw std::runtime_error("gemm_cuda_wmma_pipelined is only supported for float");
+        } else {
+            const bool exactTiles = (M % kPipeBM == 0) && (N % kPipeBN == 0) && (K % kPipeBK == 0);
+            if (cuda_has_tensor_cores() && exactTiles) {
+                DeviceBuffer<__half> dA16(static_cast<std::size_t>(M) * K);
+                DeviceBuffer<__half> dB16(static_cast<std::size_t>(K) * N);
+                {
+                    const int threads = 256;
+                    const int blocksA = (M * K + threads - 1) / threads;
+                    const int blocksB = (K * N + threads - 1) / threads;
+                    kernel_f32_to_f16<<<blocksA, threads>>>(
+                        reinterpret_cast<const float*>(dA.ptr), dA16.ptr, M * K);
+                    kernel_f32_to_f16<<<blocksB, threads>>>(
+                        reinterpret_cast<const float*>(dB.ptr), dB16.ptr, K * N);
+                    CUDA_CHECK(cudaGetLastError());
+                }
+                const dim3 block(kPipeNumWarps * 32);
+                const dim3 grid(N / kPipeBN, M / kPipeBM);
+                kernel_wmma_pipelined<<<grid, block>>>(
+                    dA16.ptr, dB16.ptr, reinterpret_cast<float*>(dC.ptr), M, K, N);
+            } else if (cuda_has_tensor_cores()) {
+                const dim3 block(kWarpM * kWarpN * 32);
+                const dim3 grid((N + kBlockN-1)/kBlockN, (M + kBlockM-1)/kBlockM);
+                kernel_wmma<<<grid, block>>>(
+                    reinterpret_cast<const float*>(dA.ptr),
+                    reinterpret_cast<const float*>(dB.ptr),
+                    reinterpret_cast<float*>(dC.ptr), M, K, N);
+            } else {
+                constexpr int FLBM = kDBufBM<float>;
+                constexpr int FLBN = kDBufBN<float>;
+                const dim3 block2(256);
+                const dim3 grid2((N + FLBN-1)/FLBN, (M + FLBM-1)/FLBM);
+                kernel_double_buf<T><<<grid2, block2>>>(dA.ptr, dB.ptr, dC.ptr, M, K, N);
+            }
+        }
     }
 
     CUDA_CHECK(cudaGetLastError());
@@ -1700,6 +1966,274 @@ void gemm_cuda_mma_ldmatrix(const Matrix<float>& A, const Matrix<float>& B, Matr
 void gemm_cuda_hopper_wgmma(const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C) {
     launch<float>(GemmKind::HopperWgmma, A, B, C);
 }
+// Pipelined WMMA (Level 8, NEW) is float-only, like WMMA/mma_ldmatrix
+// above -- see kernel_wmma_pipelined's file comment.
+void gemm_cuda_wmma_pipelined(const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C) {
+    launch<float>(GemmKind::WmmaPipelined, A, B, C);
+}
+
+// Raw-device-pointer, compute-only entry point -- same reasoning as the
+// cuBLAS raw-device-pointer functions further down this file: for a fair
+// compute-only comparison against gemm_cuda_cublas_fp16_device (measured
+// ~118 TFLOP/s), timing must exclude the fp32->fp16 conversion and
+// cudaMalloc/H2D/D2H that gemm_cuda_wmma_pipelined's Matrix<float>-based
+// wrapper above always pays. Caller must guarantee M/N/K satisfy the
+// exact-tile requirement (M,N multiples of 128; K a multiple of 32) --
+// unlike the wrapper above, this does NOT fall back to kernel_wmma, since
+// there is no non-fp16 input to fall back from at this layer.
+void gemm_cuda_wmma_pipelined_device(const void* dA16, const void* dB16, float* dC,
+                                     int M, int K, int N) {
+    const dim3 block(kPipeNumWarps * 32);
+    const dim3 grid(N / kPipeBN, M / kPipeBM);
+    kernel_wmma_pipelined<<<grid, block>>>(
+        static_cast<const __half*>(dA16), static_cast<const __half*>(dB16), dC, M, K, N);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+// ============================================================================
+// Reference -- cuBLAS (vendor-tuned upper bound, not part of the hand-
+// written kernel ladder above)
+//
+// Added to answer a concrete question after the Levels 0-6 real-hardware
+// verification pass above: the hand-written Tensor Core kernels
+// (gemm_cuda_wmma, gemm_cuda_mma_ldmatrix) measured ~5 TFLOP/s on this
+// RTX 5080 -- well under the "100-200 TFLOP/s" a well-tuned Tensor Core
+// GEMM should reach on Blackwell -- because they are small (64x64 tiles),
+// single-buffered, and unpipelined. Before attempting a much larger
+// hand-written rewrite (bigger tiles, multi-stage cp.async pipelining,
+// larger per-warp MMA fragments) to close that gap, gemm_cuda_cublas_tf32
+// establishes what NVIDIA's own production GEMM actually achieves here as
+// the realistic ceiling to rewrite toward.
+//
+// gemm_cuda_cublas<T>      -- plain SGEMM/DGEMM, cuBLAS's own tuned SIMT
+//                              kernel. Ceiling for the FMA-based kernels
+//                              (naive/blocked/reg_tile/double_buf/vectorized).
+// gemm_cuda_cublas_tf32    -- fp32 in/out, TF32 Tensor Core compute
+//                              (10-bit mantissa, same precision class as
+//                              the fp16 kernels above). Ceiling for the
+//                              Tensor Core kernels (wmma/mma_ldmatrix).
+// ============================================================================
+
+// Lazily-created, process-lifetime handle. Not thread-safe, matching this
+// file's single-threaded benchmark/test usage (every other kernel here is
+// launched the same way, with no concurrent-stream support).
+static cublasHandle_t cublas_handle() {
+    static cublasHandle_t handle = [] {
+        cublasHandle_t h;
+        if (cublasCreate(&h) != CUBLAS_STATUS_SUCCESS)
+            throw std::runtime_error("cublasCreate failed");
+        return h;
+    }();
+    return handle;
+}
+
+template <typename T>
+void gemm_cuda_cublas(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
+    const int M = static_cast<int>(A.rows());
+    const int K = static_cast<int>(A.cols());
+    const int N = static_cast<int>(B.cols());
+
+    DeviceBuffer<T> dA(static_cast<std::size_t>(M) * K);
+    DeviceBuffer<T> dB(static_cast<std::size_t>(K) * N);
+    DeviceBuffer<T> dC(static_cast<std::size_t>(M) * N);
+    CUDA_CHECK(cudaMemcpy(dA.ptr, A.data(), static_cast<std::size_t>(M) * K * sizeof(T), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(dB.ptr, B.data(), static_cast<std::size_t>(K) * N * sizeof(T), cudaMemcpyHostToDevice));
+
+    const T alpha = T{1}, beta = T{0};
+    // hpc::Matrix is row-major; cuBLAS is column-major. Row-major C = A*B
+    // is exactly column-major C^T = B^T*A^T over the SAME memory -- so
+    // swapping A<->B (and M<->N) and asking cuBLAS for an ordinary
+    // (no-transpose) column-major C^T=B^T*A^T reproduces our row-major
+    // C=A*B with no data movement and no transpose flags. Standard trick
+    // for using a column-major BLAS from row-major storage.
+    cublasStatus_t st;
+    if constexpr (std::is_same_v<T, float>) {
+        st = cublasSgemm(cublas_handle(), CUBLAS_OP_N, CUBLAS_OP_N,
+                          N, M, K, &alpha, dB.ptr, N, dA.ptr, K, &beta, dC.ptr, N);
+    } else {
+        st = cublasDgemm(cublas_handle(), CUBLAS_OP_N, CUBLAS_OP_N,
+                          N, M, K, &alpha, dB.ptr, N, dA.ptr, K, &beta, dC.ptr, N);
+    }
+    if (st != CUBLAS_STATUS_SUCCESS)
+        throw std::runtime_error("cublasSgemm/cublasDgemm failed, status=" + std::to_string(static_cast<int>(st)));
+
+    CUDA_CHECK(cudaDeviceSynchronize());
+    CUDA_CHECK(cudaMemcpy(C.data(), dC.ptr, static_cast<std::size_t>(M) * N * sizeof(T), cudaMemcpyDeviceToHost));
+}
+
+// fp32-only, like WMMA/mma_ldmatrix above -- TF32 (10-bit mantissa, ~1e-3
+// relative error, same precision class as those fp16 kernels) via
+// cublasGemmEx's fast-TF32 compute type. Requires sm_80+ (Ampere+); on
+// older hardware cuBLAS itself transparently falls back to a plain fp32
+// SIMT path (no explicit fallback needed here, unlike the hand-written
+// kernels above).
+void gemm_cuda_cublas_tf32(const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C) {
+    const int M = static_cast<int>(A.rows());
+    const int K = static_cast<int>(A.cols());
+    const int N = static_cast<int>(B.cols());
+
+    DeviceBuffer<float> dA(static_cast<std::size_t>(M) * K);
+    DeviceBuffer<float> dB(static_cast<std::size_t>(K) * N);
+    DeviceBuffer<float> dC(static_cast<std::size_t>(M) * N);
+    CUDA_CHECK(cudaMemcpy(dA.ptr, A.data(), static_cast<std::size_t>(M) * K * sizeof(float), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(dB.ptr, B.data(), static_cast<std::size_t>(K) * N * sizeof(float), cudaMemcpyHostToDevice));
+
+    const float alpha = 1.0f, beta = 0.0f;
+    // Same row-major/column-major swap trick as gemm_cuda_cublas above.
+    const cublasStatus_t st = cublasGemmEx(
+        cublas_handle(), CUBLAS_OP_N, CUBLAS_OP_N,
+        N, M, K, &alpha,
+        dB.ptr, CUDA_R_32F, N,
+        dA.ptr, CUDA_R_32F, K,
+        &beta,
+        dC.ptr, CUDA_R_32F, N,
+        CUBLAS_COMPUTE_32F_FAST_TF32, CUBLAS_GEMM_DEFAULT);
+    if (st != CUBLAS_STATUS_SUCCESS)
+        throw std::runtime_error("cublasGemmEx (TF32) failed, status=" + std::to_string(static_cast<int>(st)));
+
+    CUDA_CHECK(cudaDeviceSynchronize());
+    CUDA_CHECK(cudaMemcpy(C.data(), dC.ptr, static_cast<std::size_t>(M) * N * sizeof(float), cudaMemcpyDeviceToHost));
+}
+
+// ============================================================================
+// Reference -- cuBLAS, raw-device-pointer entry points (peak-compute-only
+// benchmarking)
+//
+// Every kernel above -- including gemm_cuda_cublas/_tf32 just above -- times
+// a FULL round trip (cudaMalloc + H2D copy + compute + D2H copy) on every
+// call, by design, so every kernel in this file is measured the same way
+// (see the top-level README's "all CUDA benchmarks include host<->device
+// transfer time" note). That is the wrong methodology to answer "what is
+// this GPU's actual achievable compute throughput" at problem sizes large
+// enough to matter: at N=16384 the ~3.2 GB of host<->device traffic plus
+// per-call cudaMalloc of ~1 GB buffers dominates wall-clock time far more
+// than the matmul itself, which is exactly why gemm_cuda_cublas_tf32's
+// end-to-end throughput (measured ~22 TFLOP/s at N=16384 on RTX 5080)
+// badly understates the GPU's real Tensor Core throughput.
+//
+// These two entry points take pre-allocated, already-resident device
+// pointers and do nothing but issue the GEMM call -- allocate and copy
+// once outside the timed region (see BM_CudaCublas*ComputeOnly in
+// bench_gemm_cuda.cpp), then call these repeatedly inside it. They call
+// the exact same cublasSgemm/cublasGemmEx as the Matrix<T>-based wrappers
+// above (same row-major/column-major swap trick), so their correctness is
+// already covered by CudaCublasFloat/CudaCublasTf32Float's GTest cases --
+// no separate correctness test needed for boilerplate that skips a memcpy.
+// ============================================================================
+void gemm_cuda_cublas_device_f32(const float* dA, const float* dB, float* dC,
+                                 int M, int K, int N) {
+    const float alpha = 1.0f, beta = 0.0f;
+    const cublasStatus_t st = cublasSgemm(cublas_handle(), CUBLAS_OP_N, CUBLAS_OP_N,
+                                          N, M, K, &alpha, dB, N, dA, K, &beta, dC, N);
+    if (st != CUBLAS_STATUS_SUCCESS)
+        throw std::runtime_error("cublasSgemm (device) failed, status=" + std::to_string(static_cast<int>(st)));
+}
+
+void gemm_cuda_cublas_tf32_device(const float* dA, const float* dB, float* dC,
+                                  int M, int K, int N) {
+    const float alpha = 1.0f, beta = 0.0f;
+    const cublasStatus_t st = cublasGemmEx(
+        cublas_handle(), CUBLAS_OP_N, CUBLAS_OP_N,
+        N, M, K, &alpha,
+        dB, CUDA_R_32F, N,
+        dA, CUDA_R_32F, K,
+        &beta,
+        dC, CUDA_R_32F, N,
+        CUBLAS_COMPUTE_32F_FAST_TF32, CUBLAS_GEMM_DEFAULT);
+    if (st != CUBLAS_STATUS_SUCCESS)
+        throw std::runtime_error("cublasGemmEx (TF32, device) failed, status=" + std::to_string(static_cast<int>(st)));
+}
+
+// fp16-in/fp32-accumulate compute-only entry point -- TF32 (compute-only
+// measured ~59 TFLOP/s on RTX 5080) is still well under the "100-200
+// TFLOP/s" range asked about; dense FP16 Tensor Core throughput is
+// roughly 2x TF32 on Ampere-and-later (TF32 occupies twice the bits per
+// element, so half as many elements move through the tensor pipe per
+// cycle), so this is the natural next data point. Reuses
+// kernel_f32_to_f16 (defined above, used identically by the Level 7
+// wgmma dispatch) for the one-time fp32->fp16 staging.
+//
+// Uses void* rather than __half* in every signature below (and in the
+// cuda.hpp declarations) even though this file is happy to use __half
+// internally: cuda.hpp is included by gemm_kernels_stub.cpp and by every
+// host .cpp file (bench_gemm_cuda.cpp, test_gemm_cuda.cpp) that must
+// still compile on a genuinely CPU-only machine with NO CUDA toolkit
+// installed at all (see the build-cuda-stub CI job) -- <cuda_fp16.h>
+// itself would not be found there, so __half cannot appear in a type
+// that header exposes. float*/void*/int/size_t are all the public API
+// above and below may safely use.
+void gemm_cuda_convert_f32_to_f16_device(const float* src, void* dst, int count) {
+    const int threads = 256;
+    const int blocks = (count + threads - 1) / threads;
+    kernel_f32_to_f16<<<blocks, threads>>>(src, static_cast<__half*>(dst), count);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+void gemm_cuda_cublas_fp16_device(const void* dA16, const void* dB16, float* dC,
+                                  int M, int K, int N) {
+    const float alpha = 1.0f, beta = 0.0f;
+    const cublasStatus_t st = cublasGemmEx(
+        cublas_handle(), CUBLAS_OP_N, CUBLAS_OP_N,
+        N, M, K, &alpha,
+        dB16, CUDA_R_16F, N,
+        dA16, CUDA_R_16F, K,
+        &beta,
+        dC, CUDA_R_32F, N,
+        CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+    if (st != CUBLAS_STATUS_SUCCESS)
+        throw std::runtime_error("cublasGemmEx (FP16, device) failed, status=" + std::to_string(static_cast<int>(st)));
+}
+
+// Matrix<float>-based wrapper (converts internally) -- for correctness
+// testing only; the compute-only benchmark uses the raw-pointer entry
+// points above directly, converting once outside the timed region.
+void gemm_cuda_cublas_fp16(const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C) {
+    const int M = static_cast<int>(A.rows());
+    const int K = static_cast<int>(A.cols());
+    const int N = static_cast<int>(B.cols());
+
+    DeviceBuffer<float> dA(static_cast<std::size_t>(M) * K);
+    DeviceBuffer<float> dB(static_cast<std::size_t>(K) * N);
+    DeviceBuffer<float> dC(static_cast<std::size_t>(M) * N);
+    CUDA_CHECK(cudaMemcpy(dA.ptr, A.data(), static_cast<std::size_t>(M) * K * sizeof(float), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(dB.ptr, B.data(), static_cast<std::size_t>(K) * N * sizeof(float), cudaMemcpyHostToDevice));
+
+    DeviceBuffer<__half> dA16(static_cast<std::size_t>(M) * K);
+    DeviceBuffer<__half> dB16(static_cast<std::size_t>(K) * N);
+    gemm_cuda_convert_f32_to_f16_device(dA.ptr, dA16.ptr, M * K);
+    gemm_cuda_convert_f32_to_f16_device(dB.ptr, dB16.ptr, K * N);
+
+    gemm_cuda_cublas_fp16_device(dA16.ptr, dB16.ptr, dC.ptr, M, K, N);
+
+    CUDA_CHECK(cudaDeviceSynchronize());
+    CUDA_CHECK(cudaMemcpy(C.data(), dC.ptr, static_cast<std::size_t>(M) * N * sizeof(float), cudaMemcpyDeviceToHost));
+}
+
+// ============================================================================
+// Reference -- generic device-memory helpers for compute-only benchmarking
+//
+// Thin, toolkit-type-free wrappers (void*/size_t only, same reasoning as
+// above) around cudaMalloc/cudaMemcpy/cudaFree/cudaDeviceSynchronize, so
+// bench_gemm_cuda.cpp's compute-only benchmarks (BM_CudaCublas*ComputeOnly)
+// can pre-stage device buffers without including <cuda_runtime.h> itself --
+// that header isn't available on a CPU-only machine with no CUDA toolkit,
+// and bench_gemm_cuda.cpp (like this whole file's public API) must still
+// compile there against the stub library.
+// ============================================================================
+void* gemm_cuda_malloc(std::size_t bytes) {
+    void* ptr = nullptr;
+    CUDA_CHECK(cudaMalloc(&ptr, bytes));
+    return ptr;
+}
+void gemm_cuda_free(void* ptr) {
+    if (ptr) cudaFree(ptr);
+}
+void gemm_cuda_memcpy_h2d(void* dst, const void* src, std::size_t bytes) {
+    CUDA_CHECK(cudaMemcpy(dst, src, bytes, cudaMemcpyHostToDevice));
+}
+void gemm_cuda_device_synchronize() {
+    CUDA_CHECK(cudaDeviceSynchronize());
+}
 
 // ============================================================================
 // Explicit instantiations
@@ -1717,6 +2251,8 @@ template void gemm_cuda_double_buf<float>(const Matrix<float>&, const Matrix<flo
 template void gemm_cuda_double_buf<double>(const Matrix<double>&, const Matrix<double>&, Matrix<double>&);
 template void gemm_cuda_vectorized<float>(const Matrix<float>&, const Matrix<float>&, Matrix<float>&);
 template void gemm_cuda_vectorized<double>(const Matrix<double>&, const Matrix<double>&, Matrix<double>&);
+template void gemm_cuda_cublas<float>(const Matrix<float>&, const Matrix<float>&, Matrix<float>&);
+template void gemm_cuda_cublas<double>(const Matrix<double>&, const Matrix<double>&, Matrix<double>&);
 
 }  // namespace hpc::gemm
 

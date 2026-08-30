@@ -411,8 +411,11 @@ if(CMAKE_CUDA_COMPILER)
     # CUDA::cuda_driver (libcuda) is needed in addition to the usual
     # CUDA::cudart -- gemm_cuda_hopper_wgmma's TMA descriptor setup calls
     # cuTensorMapEncodeTiled, which is a driver-API-only function with no
-    # CUDA-runtime-API equivalent.
-    target_link_libraries(hpc_math_cuda PUBLIC hpc_math_core CUDA::cudart CUDA::cuda_driver)
+    # CUDA-runtime-API equivalent. CUDA::cublas backs the vendor-tuned
+    # reference kernels (gemm_cuda_cublas / gemm_cuda_cublas_tf32) used to
+    # measure this GPU's realistic achievable peak against the hand-written
+    # kernels above.
+    target_link_libraries(hpc_math_cuda PUBLIC hpc_math_core CUDA::cudart CUDA::cuda_driver CUDA::cublas)
 
     message(STATUS "Building CUDA benchmark  : benchmarks/bench_gemm_cuda")
     message(STATUS "Building CUDA test suite : tests/hpc_tests_cuda")
