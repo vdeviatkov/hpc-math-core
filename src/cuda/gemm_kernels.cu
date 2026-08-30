@@ -95,11 +95,15 @@ using namespace nvcuda;
 // (see CMakeLists.txt) in addition to the usual CUDA::cudart.
 //
 // NOTE: CUtensorMap, cuTensorMapEncodeTiled, and __grid_constant__ (used by
-// kernel_hopper_wgmma further down) are CUDA 12.0+ additions. This file
-// has not been tested against any specific CUDA version (no toolkit was
-// available anywhere in this project -- see gemm_cuda_hopper_wgmma's much
-// larger "UNVERIFIED" caveat below); building against CUDA <12.0 would
-// fail to compile this translation unit at all, not just this one kernel.
+// kernel_hopper_wgmma further down) are CUDA 12.0+ additions. Verified
+// building and running against CUDA 13.2 on real hardware (RTX 5080,
+// Blackwell sm_120) -- building against CUDA <12.0 would fail to compile
+// this translation unit at all, not just this one kernel. That same
+// verification run is what found and fixed the real bugs described
+// throughout this file (search "found running on real hardware"); the
+// Hopper-specific kernel_hopper_wgmma itself remains genuinely unverified
+// since no Hopper (sm_90a) hardware has been available to test it on --
+// see its much larger "UNVERIFIED" caveat below.
 #include <cuda.h>
 
 // cp.async requires sm_80+ (Ampere)
@@ -396,17 +400,24 @@ kernel_double_buf(const T* __restrict__ A,
     // On Ampere+: issues async copy and does NOT synchronise.
     // On older:   copies synchronously and issues __syncthreads.
     //
-    // NOTE: the boundary check (aRow<M && aCol<K) reads from global memory
-    // into the local `a_val`/`b_val` register BEFORE __pipeline_memcpy_async
-    // is called, so the async copy here is local(register)->shared, not
-    // global->shared. This preserves the double-buffer *structure* (compute
-    // on `cur` overlaps with issuing the load for `nxt`) but does not use
-    // cp.async to hide global memory latency the way a direct
-    // global-pointer-to-shared-pointer __pipeline_memcpy_async call would --
-    // that would additionally require unconditional in-bounds tiles (no
-    // per-element ternary) to pass a raw global address through. Left as-is:
-    // this is a pre-existing design characteristic, not part of the bug fix
-    // above, and reworking it is out of scope here.
+    // CORRECTNESS FIX (found running on real Ampere-class hardware for the
+    // first time -- RTX 5080/Blackwell, sm_120 -- see cuda_has_hopper()
+    // above for a different instance of the same "never verified on real
+    // hardware" class of bug): the previous version read the boundary-
+    // checked element into a local `a_val`/`b_val` register and passed
+    // `&a_val` as __pipeline_memcpy_async's source. cp.async is a
+    // global-memory-to-shared-memory instruction ONLY -- the source
+    // address must resolve to the global address space, and a local
+    // (register/stack) variable's address does not. Every call aborted at
+    // runtime with cudaErrorNotSupported ("operation not supported on
+    // global/shared address space"), which then poisoned the CUDA context
+    // for the rest of the process (every subsequent CUDA call, including
+    // unrelated cudaMalloc calls in later tests, failed with the same
+    // sticky error). Fixed by passing the real global pointer and using
+    // the zfill overload (copy `sizeof(T) - zfill` bytes from src, zero
+    // the rest) so out-of-bounds elements still zero-fill shared memory
+    // without ever dereferencing out-of-range global memory -- the dummy
+    // in-bounds address substituted for the OOB case is never read.
     // -------------------------------------------------------------------
     auto load_tile = [&](int tileK, int buf) {
         for (int idx = threadIdx.x; idx < kAElems; idx += blockDim.x) {
@@ -414,13 +425,13 @@ kernel_double_buf(const T* __restrict__ A,
             const int c = idx % LBM;
             const int aRow = blockRow * LBM + c;
             const int aCol = tileK * kBK + r;
-            const T a_val  = (aRow < M && aCol < K) ? A[aRow * K + aCol] : T{0};
+            const bool aInBounds = (aRow < M && aCol < K);
 #ifdef HPC_HAVE_CP_ASYNC
-            // Async copy: write directly to shared memory without occupying
-            // registers or stalling the warp.
-            __pipeline_memcpy_async(&As[buf][r][c], &a_val, sizeof(T));
+            const T* aSrc = aInBounds ? &A[aRow * K + aCol] : &A[0];
+            __pipeline_memcpy_async(&As[buf][r][c], aSrc, sizeof(T),
+                                     aInBounds ? 0 : sizeof(T));
 #else
-            As[buf][r][c] = a_val;
+            As[buf][r][c] = aInBounds ? A[aRow * K + aCol] : T{0};
 #endif
         }
         for (int idx = threadIdx.x; idx < kBElems; idx += blockDim.x) {
@@ -428,11 +439,13 @@ kernel_double_buf(const T* __restrict__ A,
             const int c = idx % LBN;
             const int bRow = tileK * kBK + r;
             const int bCol = blockCol * LBN + c;
-            const T b_val  = (bRow < K && bCol < N) ? B[bRow * N + bCol] : T{0};
+            const bool bInBounds = (bRow < K && bCol < N);
 #ifdef HPC_HAVE_CP_ASYNC
-            __pipeline_memcpy_async(&Bs[buf][r][c], &b_val, sizeof(T));
+            const T* bSrc = bInBounds ? &B[bRow * N + bCol] : &B[0];
+            __pipeline_memcpy_async(&Bs[buf][r][c], bSrc, sizeof(T),
+                                     bInBounds ? 0 : sizeof(T));
 #else
-            Bs[buf][r][c] = b_val;
+            Bs[buf][r][c] = bInBounds ? B[bRow * N + bCol] : T{0};
 #endif
         }
 #ifdef HPC_HAVE_CP_ASYNC
@@ -533,10 +546,11 @@ kernel_double_buf(const T* __restrict__ A,
 //     scatter-store, B's vectorized store) and every read site (the k-loop
 //     below), so whatever permutation it computes is applied and undone
 //     consistently. Only the *performance* claim (fewer bank conflicts than
-//     padding) is unverified without a profiler on real hardware -- the
-//     *result* is correct regardless, which is why this technique is safe
-//     to include even though this repo has no GPU to validate the perf
-//     benefit against.
+//     padding) has not been checked with a profiler (e.g. Nsight Compute)
+//     against the padding alternative -- the *result* is correct
+//     regardless (confirmed by CudaVectorizedFloat/Double's GTest cases on
+//     real hardware), which is why this technique is safe to include even
+//     without a profiler run to validate the perf benefit specifically.
 // ============================================================================
 
 // 128-bit vector type selector: float4 for float, double2 for double.
@@ -725,15 +739,52 @@ kernel_wmma(const float* __restrict__ A,
     const int cWarpCol = blockCol * kBlockN + warpCol * kWMMA_N;
 
     // Shared memory: store fp16 sub-tiles for Tensor Core input.
-    // +1 padding avoids bank conflicts on 16-wide warp access.
-    __shared__ __half As[kBlockK][kBlockM + 1];  // 16 x 65
-    __shared__ __half Bs[kBlockK][kBlockN + 1];  // 16 x 65
+    // CORRECTNESS FIX (found running on real hardware for the first time --
+    // see the cp.async/cuda_has_hopper()/DoubleBuf-launch-config fixes
+    // elsewhere in this file for the same story): this used to be padded
+    // +1 (As/Bs[kBlockK][kBlockM+1]) for the usual scalar shared-memory
+    // bank-conflict trick. wmma::load_matrix_sync does NOT tolerate that --
+    // for a __half fragment it requires the leading dimension to be a
+    // multiple of 8 elements (16 bytes), and kBlockM+1 = 65 is odd. Every
+    // call aborted at runtime with cudaErrorMisalignedAddress. kBlockM/N
+    // (64) are themselves already multiples of 8, so simply dropping the
+    // padding satisfies the alignment requirement; the padding's bank-
+    // conflict benefit was never realized here anyway since
+    // load_matrix_sync is a single cooperative warp-wide instruction, not
+    // per-thread strided scalar loads.
+    __shared__ __half As[kBlockK][kBlockM];  // 16 x 64
+    __shared__ __half Bs[kBlockK][kBlockN];  // 16 x 64
 
     // WMMA fragments for this warp.
+    //
+    // CORRECTNESS FIX (found running on real hardware for the first time --
+    // see this file's other "found running on real hardware" comments):
+    // these major-order tags were swapped relative to how As/Bs are
+    // physically laid out, and load_matrix_sync trusted them blindly --
+    // wrong VALUES, not a crash, so this survived compiling and even
+    // running without complaint until compared against the reference GEMM.
+    //
+    // As is stored As[k][m] (transposed -- see its declaration comment
+    // above: As[k][m] = A[m][k]), so with load_matrix_sync's row_major
+    // convention (address(row,col) = ptr + row*ldm + col) and
+    // as_ptr/ldm=kBlockM below, element(row,col) resolves to
+    // As[k=row][m=col] = A[M=col, K=row] -- row and col land on the WRONG
+    // axis (A's K ended up as the fragment's "row"/M axis and vice versa).
+    // matrix_a needs col_major instead: address(row,col) = ptr + row +
+    // col*ldm resolves to As[k=col][m=row] = A[M=row, K=col], which is
+    // exactly the (row=M, col=K) semantics wmma::mma_sync expects of
+    // matrix_a.
+    //
+    // Bs is stored Bs[k][n] in ITS natural (non-transposed) orientation,
+    // so the same row_major convention that was wrong for As is the
+    // correct one for Bs: address(row,col) = ptr + row*ldm + col resolves
+    // to Bs[k=row][n=col] = B[K=row, N=col] -- exactly matrix_b's expected
+    // (row=K, col=N) semantics. col_major (the previous tag) would have
+    // swapped it the same way row_major swapped matrix_a above.
     wmma::fragment<wmma::matrix_a, kWMMA_M, kWMMA_N, kWMMA_K, __half,
-                   wmma::row_major> a_frag;
+                   wmma::col_major> a_frag;
     wmma::fragment<wmma::matrix_b, kWMMA_M, kWMMA_N, kWMMA_K, __half,
-                   wmma::col_major> b_frag;
+                   wmma::row_major> b_frag;
     wmma::fragment<wmma::accumulator, kWMMA_M, kWMMA_N, kWMMA_K, float> c_frag;
     wmma::fill_fragment(c_frag, 0.0f);
 
@@ -766,15 +817,16 @@ kernel_wmma(const float* __restrict__ A,
         // Each warp performs its 16x16x16 Tensor Core MMA.
         if (cWarpRow < M && cWarpCol < N) {
             // Pointers to this warp's 16x16 fragment within shared memory.
-            // As is stored as As[k][m]: row = warpRow*kWMMA_M, col = k
-            // We need As[k][warpRow*16 .. warpRow*16+15] as a row-major 16x16.
-            // The layout is: As[k_row][m_col], so for wmma::row_major we need
-            // A[m][k] -- i.e., As^T. Stride = kBlockM+1.
+            // As is stored As[k][m] (transposed relative to A) and Bs is
+            // stored Bs[k][n] (B's natural orientation) -- see the a_frag/
+            // b_frag declaration comment above for why that means a_frag
+            // must be col_major and b_frag row_major. Stride = kBlockM/N
+            // (no padding -- see the As/Bs declaration comment above).
             const __half* as_ptr = &As[0][warpRow * kWMMA_M];
             const __half* bs_ptr = &Bs[0][warpCol * kWMMA_N];
 
-            wmma::load_matrix_sync(a_frag, as_ptr, kBlockM + 1);
-            wmma::load_matrix_sync(b_frag, bs_ptr, kBlockN + 1);
+            wmma::load_matrix_sync(a_frag, as_ptr, kBlockM);
+            wmma::load_matrix_sync(b_frag, bs_ptr, kBlockN);
             wmma::mma_sync(c_frag, a_frag, b_frag, c_frag);
         }
 
@@ -793,18 +845,28 @@ kernel_wmma(const float* __restrict__ A,
 // Deliberately kept as a SEPARATE kernel from kernel_wmma above, not a
 // refactor of it -- the point is to compare the two abstraction levels.
 //
-// *** UNVERIFIED -- read before trusting this kernel ***
-// This has never been compiled or run: no CUDA toolkit or GPU was available
-// in the environment that wrote it (see README.md's CUDA section and this
-// file's top-of-file note). It follows the PTX ISA's documented instruction
-// shapes and the standard published ldmatrix+mma.sync idiom as precisely as
-// could be reproduced without a reference compile. Unlike a missing
-// #include or a type error, a wrong thread-to-fragment mapping here would
-// silently produce numerically wrong output rather than fail to build or
-// crash -- this is exactly the class of bug the rest of this file's kernels
-// (which use documented C++ APIs: wmma::, __pipeline_memcpy_async, or plain
-// indexed loads) do not risk, and it is exactly why the WMMA kernel above
-// exists as a *separate*, comparatively lower-risk Tensor Core kernel.
+// *** VERIFIED on real hardware (RTX 5080, Blackwell sm_120, CUDA 13.2) ***
+// Originally written with no CUDA toolkit or GPU available anywhere in the
+// project, following the PTX ISA's documented instruction shapes and the
+// standard published ldmatrix+mma.sync idiom as precisely as could be
+// reproduced without a reference compile. As anticipated by this comment's
+// original warning below, that produced exactly the predicted failure mode:
+// it compiled and ran without complaint but computed numerically WRONG
+// results (not a crash) once actually exercised against a reference GEMM.
+// Root cause: the A-fragment's ldmatrix.x4 quadrant-to-register mapping had
+// its row/col bits swapped (`aM` used `quadIdx/2` and `aK` used
+// `quadIdx%2`, the reverse of the correct assignment) -- see the fix
+// comment at the `aM`/`aK` computation below for the corrected formula and
+// the reference implementation it was cross-checked against. All three
+// GTest cases (N=64/128/256) now pass against the reference GEMM.
+//
+// Unlike a missing #include or a type error, that wrong-thread-to-fragment
+// mapping bug silently produced numerically wrong output rather than
+// failing to build or crashing -- this is exactly the class of bug the
+// rest of this file's kernels (which use documented C++ APIs: wmma::,
+// __pipeline_memcpy_async, or plain indexed loads) do not risk, and it is
+// exactly why the WMMA kernel above exists as a *separate*, comparatively
+// lower-risk Tensor Core kernel.
 //
 // What this kernel does, one level below WMMA:
 //   WMMA (kernel_wmma):  wmma::load_matrix_sync / wmma::mma_sync -- the
@@ -931,10 +993,29 @@ kernel_mma_ldmatrix(const float* __restrict__ A,
 
         if (cWarpRow < M) {
             // --- A fragment: 16(M)x16(K) tile, 4 quadrants, ldmatrix.x4 (no .trans) ---
+            // CORRECTNESS FIX (found running on real hardware for the first
+            // time -- this kernel's file-level comment already flagged
+            // itself as the single most likely place in this file for a
+            // silent wrong-value bug, and this is it): ldmatrix.x4 loads
+            // 4 fixed 8x8 chunks in lane-group order (chunk = lane/8 ->
+            // a_frag[chunk]), and mma.sync.m16n8k16 expects those four
+            // chunks in a SPECIFIC physical order -- row-quadrant fastest,
+            // col-quadrant slowest, i.e. chunk0=(M0-7,K0-7),
+            // chunk1=(M8-15,K0-7), chunk2=(M0-7,K8-15), chunk3=(M8-15,K8-15).
+            // The previous formula had this backwards (quadIdx/2 selecting
+            // the M half, quadIdx%2 selecting the K half), silently
+            // transposing which quadrant landed in which a_frag register.
+            // Cross-checked against a working reference implementation
+            // (am17an.bearblog.dev's mma-tensor-cores GEMM writeup): row
+            // (M) must vary with quadIdx%2 (the fast-varying bit), col (K)
+            // with quadIdx/2 (the slow-varying bit) -- the reverse of what
+            // was here. The B fragment loop below was already correct
+            // against that same reference (bK = bLane reconstructs
+            // lane%16 exactly, matching the reference's row=lane%16).
             const int quadIdx  = lane / 8;              // 0..3
             const int quadRow  = lane % 8;               // 0..7
-            const int aM = warpRow * kMmaM + (quadIdx / 2) * 8 + quadRow;
-            const int aK = (quadIdx % 2) * 8;
+            const int aM = warpRow * kMmaM + quadRow + (quadIdx % 2) * 8;
+            const int aK = (quadIdx / 2) * 8;
             const __half* a_addr = &As[aM][aK];
 
             unsigned a_frag[4];
@@ -1077,7 +1158,14 @@ static constexpr int kWgmmaN = 64;
 static constexpr int kWgmmaK = 16;
 static constexpr int kWgmmaWarpgroupThreads = 128;
 
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
+// == 900, not >= 900: wgmma/TMA are Hopper-exclusive (sm_90/sm_90a) and are
+// NOT part of Blackwell's (sm_100/sm_110/sm_120/sm_121, __CUDA_ARCH__ 1000+)
+// forward-compatible feature set -- ptxas rejects wgmma.mma_async and
+// friends outright for those targets. Verified on real Blackwell hardware
+// (RTX 5080, sm_120): the old ">= 900" guard let this branch compile for
+// -arch=native there and ptxas aborted the build. See cuda_has_hopper()
+// below for the matching runtime-dispatch fix.
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 900
 
 // ----------------------------------------------------------------------------
 // Shared-memory matrix descriptor for wgmma operands (PTX ISA "Asynchronous
@@ -1262,7 +1350,7 @@ kernel_hopper_wgmma(const __half* __restrict__ A16,  // pre-converted, row-major
     }
 }
 
-#else  // __CUDA_ARCH__ < 900 (or host compilation pass for a non-Hopper-only build)
+#else  // __CUDA_ARCH__ != 900 (Blackwell, pre-Hopper, or host compilation pass)
 
 // sm_90a-only: this branch exists purely so the translation unit compiles
 // when no -arch target is Hopper. Never launched on such hardware (host
@@ -1272,7 +1360,7 @@ __global__ void kernel_hopper_wgmma(const __half* __restrict__, const __half* __
                                     const __grid_constant__ CUtensorMap,
                                     const __grid_constant__ CUtensorMap) {}
 
-#endif  // __CUDA_ARCH__ >= 900
+#endif  // __CUDA_ARCH__ == 900
 
 // ----------------------------------------------------------------------------
 // Host-side TMA descriptor construction (driver API).
@@ -1341,7 +1429,26 @@ static bool device_has_capability(int major, int minor) noexcept {
 
 bool cuda_has_tensor_cores() noexcept { return device_has_capability(7, 0); }
 bool cuda_has_ampere()       noexcept { return device_has_capability(8, 0); }
-bool cuda_has_hopper()       noexcept { return device_has_capability(9, 0); }
+
+// NOT device_has_capability(9, 0): wgmma/TMA (sm_90a) are Hopper-exclusive
+// instructions, not part of the forward-compatible "family" feature set --
+// ptxas rejects wgmma.mma_async/commit_group/wait_group outright when
+// targeting Blackwell (sm_100/sm_110/sm_120/sm_121, compute major 10/12),
+// even though those report compute capability >= 9.0. Verified against
+// real Blackwell hardware (RTX 5080, sm_120): device_has_capability(9, 0)'s
+// ">=" semantics -- correct for tensor-core/Ampere gating below, since
+// those ARE forward-compatible -- silently mis-selected kernel_hopper_wgmma
+// on non-Hopper hardware and ptxas aborted the whole build.
+bool cuda_has_hopper() noexcept {
+    int devCount = 0;
+    if (cudaGetDeviceCount(&devCount) != cudaSuccess) return false;
+    for (int d = 0; d < devCount; ++d) {
+        cudaDeviceProp prop{};
+        if (cudaGetDeviceProperties(&prop, d) == cudaSuccess)
+            if (prop.major == 9) return true;
+    }
+    return false;
+}
 
 // ============================================================================
 // RAII device buffer
@@ -1401,7 +1508,23 @@ static void launch(GemmKind kind, const Matrix<T>& A, const Matrix<T>& B, Matrix
     } else if (kind == GemmKind::DoubleBuf) {
         constexpr int LBM = kDBufBM<T>;
         constexpr int LBN = kDBufBN<T>;
-        const dim3 block(256);
+        // CORRECTNESS FIX (found running on real hardware for the first
+        // time -- see cp.async / cuda_has_hopper() fixes above for the
+        // same story): this was hardcoded to 256 threads, correct only by
+        // coincidence for float (kDBufBM/BN=kBM/kBN=128 -> (128/8)*(128/8)
+        // = 256). For double, kDBufBM/BN halve to 64 (see the comment on
+        // kDBufBM above) so only (64/8)*(64/8) = 64 threads' worth of
+        // (threadRow, threadCol) mapping is valid -- the other 192 threads
+        // computed threadRow up to 31 instead of the valid 0..7, reading
+        // As/Bs[...][threadRow*kTM+m] far past each row's real LBM+1=65
+        // elements (out-of-bounds shared-memory read) and, whenever that
+        // block happened to land in-bounds of a LARGER matrix (multi-block
+        // grids, i.e. N/M > 64), writing the resulting garbage over a
+        // different block's already-correct C tile. Single-block cases
+        // (N<=64) masked this because gi<M's bounds check discarded every
+        // phantom thread's store. Kept generic (not hardcoded 64) so a
+        // future T with a different kDBufBM/BN doesn't reintroduce this.
+        const dim3 block((LBM / kTM) * (LBN / kTN));
         const dim3 grid((N + LBN-1)/LBN, (M + LBM-1)/LBM);
         kernel_double_buf<T><<<grid, block>>>(dA.ptr, dB.ptr, dC.ptr, M, K, N);
 

@@ -23,8 +23,10 @@ README's benchmark sections, machine noted per row.
 | SVE | Not available | — | — | Apple Silicon has no non-streaming SVE unit |
 | **SME2** (`gemm_sme_reordered`/`_blocked`) | Apple M4 Max | **386 G/s** | **116 G/s** | outer-product engine, not FMA — see below |
 | **Apple AMX** (via Accelerate) | Apple M4 Max | **3,296 G/s** | **860 G/s** | multi-threaded vendor BLAS — not a single-core comparison |
-| CUDA (`gemm_cuda_reg_tile`) | NVIDIA RTX-class GPU | 6,255 G/s | — | register-tiled shared-memory kernel, single GPU |
-| CUDA (`gemm_cuda_wmma`) | NVIDIA RTX-class GPU | not benchmarked in this repo | — | Tensor Cores, fp16-in/fp32-accumulate; published Tensor Core peaks for this GPU class are ~250–300 TFLOP/s, but that is not a measurement from this codebase |
+| CUDA (`gemm_cuda_double_buf`) | NVIDIA RTX 5080 (Blackwell) | **5,744 G/s** | 704 G/s | best plain-FMA CUDA kernel; N=4096, includes host↔device transfer |
+| CUDA (`gemm_cuda_reg_tile`) | NVIDIA RTX 5080 (Blackwell) | 5,728 G/s | 694 G/s | register-tiled shared-memory kernel, single GPU |
+| CUDA (`gemm_cuda_mma_ldmatrix`) | NVIDIA RTX 5080 (Blackwell) | 5,082 G/s | — | raw `mma.sync`+`ldmatrix` Tensor Cores, fp16-in/fp32-accumulate; on this small/untuned 64×64-tile kernel, below the plain-FMA kernels above at N=4096 |
+| CUDA (`gemm_cuda_wmma`) | NVIDIA RTX 5080 (Blackwell) | 4,798 G/s | — | `wmma::` Tensor Cores, fp16-in/fp32-accumulate; published Tensor Core peaks for this GPU class are ~250–300 TFLOP/s at large batched/tuned problem sizes — not what this small educational kernel is tuned for |
 
 ---
 
@@ -115,12 +117,18 @@ self-consistent XOR shared-memory swizzle instead of padding) →
 level lower: hand-issued `ldmatrix.sync` + `mma.sync` PTX instead of the
 C++ `wmma::` API) → `gemm_cuda_hopper_wgmma` (producer/consumer warp
 specialization: one warpgroup issues TMA bulk-tensor loads while another
-runs `wgmma.mma_async` directly against shared memory). **Verification
-drops sharply toward the end of this list**: Levels 0-4 have historical
-benchmark data from a separate machine; Levels 5-7 were written with zero
-CUDA toolkit or GPU access, and the last one (Hopper wgmma+TMA) is
-explicitly a best-effort sketch the user asked for with that understanding
-— see `src/gemm/README.md`'s CUDA section for the full, per-level caveat.
+runs `wgmma.mma_async` directly against shared memory). **Levels 0-6 are
+now verified on real hardware** (NVIDIA RTX 5080, Blackwell sm_120,
+2026-08-29) — that first real run found and fixed five genuine bugs across
+`double_buf`, `wmma`, and `mma_ldmatrix` (wrong cp.async address space, a
+hardcoded thread count, misaligned/transposed WMMA fragments, a swapped
+`ldmatrix` quadrant mapping); see the top-level README's
+[§ CUDA kernels](../README.md#cuda-kernels-bench_gemm_cuda) for the full
+per-bug writeup. **Level 7 (Hopper `wgmma`+TMA) remains unverified**: it
+requires real `sm_90a` hardware, which even this Blackwell GPU is not, and
+correctly `SKIP`s at runtime — it is explicitly a best-effort sketch the
+user asked for with that understanding — see `src/gemm/README.md`'s CUDA
+section for the full, per-level caveat.
 
 ---
 

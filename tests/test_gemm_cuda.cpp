@@ -15,13 +15,23 @@
  * Cores / sm_80+ are unavailable. gemm_cuda_hopper_wgmma additionally
  * skips without sm_90a.
  *
- * IMPORTANT: gemm_cuda_mma_ldmatrix and gemm_cuda_hopper_wgmma are
- * UNVERIFIED -- no CUDA toolkit or GPU was available anywhere in this
- * project. Their tests here compile and are ready to run, but have never
- * actually executed; see each kernel's file comment in gemm_kernels.cu for
- * the full caveat (gemm_cuda_hopper_wgmma in particular is an explicitly
- * best-effort, likely-non-functional sketch of Hopper warp specialization
- * + TMA, written per direct user request with that understanding).
+ * STATUS: all kernels above except gemm_cuda_hopper_wgmma have now been
+ * verified on real hardware (RTX 5080, Blackwell sm_120, CUDA 13.2) --
+ * every test in this file that runs on that hardware (all but the two
+ * CudaHopperWgmmaFloat cases, which SKIP: this GPU is not Hopper) passes.
+ * That verification run found and fixed real bugs in gemm_cuda_double_buf
+ * (cp.async source in the wrong address space), the DoubleBuf launch
+ * config (hardcoded thread count, wrong for double), gemm_cuda_wmma
+ * (shared-memory padding broke load_matrix_sync's alignment requirement,
+ * and the A/B fragment major-order tags were swapped relative to the
+ * physical layout), and gemm_cuda_mma_ldmatrix (the A-fragment
+ * ldmatrix.x4 quadrant mapping had its row/col bits swapped) -- see each
+ * kernel's file comment in gemm_kernels.cu for the full writeup.
+ * gemm_cuda_hopper_wgmma remains genuinely UNVERIFIED: it requires sm_90a
+ * (Hopper) specifically, and no Hopper hardware has been available to
+ * test it on (it is an explicitly best-effort, likely-non-functional
+ * sketch of Hopper warp specialization + TMA, written per direct user
+ * request with that understanding).
  *
  * Tolerances:
  *   float  (SIMT): rel 1e-4, abs 1e-3
@@ -29,7 +39,7 @@
  *   float  (WMMA / mma.sync / wgmma): rel 1e-2, abs 1e-2  -- fp16
  *     conversion introduces ~1e-3 error on top of whatever error, if any,
  *     an incorrect fragment/descriptor mapping might additionally add for
- *     the two UNVERIFIED kernels.
+ *     the still-UNVERIFIED wgmma kernel.
  */
 
 #include "gemm/cuda.hpp"
@@ -64,7 +74,8 @@ protected:
 };
 
 // gemm_cuda_mma_ldmatrix requires sm_80+ specifically (mma.sync m16n8k16
-// f16 shape). UNVERIFIED code path -- see gemm_kernels.cu's file comment.
+// f16 shape). Verified on real hardware -- see gemm_kernels.cu's file
+// comment for the bug that was found and fixed.
 class CudaAmpereMmaTest : public ::testing::Test {
 protected:
     void SetUp() override {
@@ -291,9 +302,9 @@ TEST_F(CudaVectorizedFloat, NonSquare_100x200x50) {
 
 // ===========================================================================
 // Level 6 -- Raw Tensor Cores via mma.sync + ldmatrix -- fp32 only, sm_80+.
-// UNVERIFIED: see gemm_kernels.cu's kernel_mma_ldmatrix file comment; no
-// CUDA hardware/toolkit was available anywhere in this project to run
-// this test. It compiles and is ready to run on Ampere+ hardware.
+// Verified on real hardware (RTX 5080, Blackwell sm_120) -- all three
+// cases below pass; see gemm_kernels.cu's kernel_mma_ldmatrix file comment
+// for the ldmatrix quadrant-mapping bug that was found and fixed here.
 // Relaxed tolerance for the same reason as WMMA (fp16 conversion).
 // ===========================================================================
 struct CudaMmaLdmatrixFloat : CudaAmpereMmaTest {};

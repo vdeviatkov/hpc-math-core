@@ -19,7 +19,7 @@ This repository starts from first principles — readable scalar code — and ad
 | 4 | `gemm_neon_{naive,reordered,blocked}` | 128-bit Q-register tile (ARM NEON / AdvSIMD), `vfmaq` FMA | ✅ |
 | 4 | `gemm_sve_{naive,reordered,blocked}` | VLA SVE: runtime VL, `svwhilelt` predicates, zero scalar tails | ✅ |
 | 5 | `gemm_{scalar,avx2,avx512,neon,sve}_blocked_prefetch` | `__builtin_prefetch` on A rows, B k-tiles and C write rows; distance sweep D∈{2,4,8,16} | ✅ |
-| 6 | `gemm_cuda_{naive,reordered,blocked,reg_tile,double_buf,wmma,vectorized,mma_ldmatrix,hopper_wgmma}` | CUDA: shared-memory tiling → register tiling → double buffering → Tensor Core WMMA → vectorized loads/swizzle → raw mma.sync/ldmatrix → Hopper warp specialization/TMA. **Levels 5-7 (vectorized/mma_ldmatrix/hopper_wgmma) have never run on a GPU — no CUDA hardware anywhere in this project; hopper_wgmma is explicit best-effort.** | ⚠️ |
+| 6 | `gemm_cuda_{naive,reordered,blocked,reg_tile,double_buf,wmma,vectorized,mma_ldmatrix,hopper_wgmma}` | CUDA: shared-memory tiling → register tiling → double buffering → Tensor Core WMMA → vectorized loads/swizzle → raw mma.sync/ldmatrix → Hopper warp specialization/TMA — verified on NVIDIA RTX 5080 (Blackwell, sm_120), up to **5.7 TFLOP/s f32** (`double_buf`/`reg_tile`, N=4096). Verifying on real GPU hardware for the first time found and fixed five real bugs (a CMake flag leaking into nvcc, a cp.async address-space bug, a hardcoded launch config, and two WMMA/mma.sync layout bugs — see [§ CUDA kernels](#cuda-kernels-bench_gemm_cuda)). **`hopper_wgmma` remains explicit best-effort/unverified — it requires real sm_90a (Hopper) hardware, which this machine (Blackwell) is not; it correctly `SKIP`s here.** | ✅ |
 | 7 | `gemm_sme_{naive,reordered,blocked}` | ARM SME2: `FMOPA` outer-product accumulate into a ZA tile — verified on Apple M4 Max, up to **386 GFLOP/s single-threaded f32** | ✅ |
 | 8 | `gemm_amx_{naive,reordered,blocked}` | Apple AMX coprocessor via Accelerate.framework (`cblas_sgemm`/`cblas_dgemm`) — verified on Apple M4 Max, up to **3.3 TFLOP/s f32** | ✅ |
 
@@ -601,13 +601,28 @@ AmxBlocked/f32/N=4096              43554 us        43549 us  3155.94 G/s
 > The binary compiles and links on CPU-only machines (Apple M, CI) via a stub library.
 > On a machine with a CUDA GPU the stub is replaced by the real `.cu` kernel library.
 
-Three kernels, named to mirror the CPU progression:
+Nine kernels (Levels 0-7, `CudaReordered` shares Level 0 with `CudaNaive`):
 
 | Kernel | Strategy | Key technique |
 |---|---|---|
 | `CudaNaive` | 1 thread → 1 C(i,j), no shared memory | Baseline: exposes raw global-memory bandwidth |
 | `CudaReordered` | Same mapping, explicit row-major inner loop | Structural symmetry with CPU `gemm_reordered`; identical to naive on GPU |
 | `CudaBlocked` | TILE×TILE thread block → TILE×TILE sub-tile of C | Shared-memory tiling (TILE=16); 16× fewer global loads vs naive |
+| `CudaRegTile` | 128×128 block, 8×8 register tile/thread | Register blocking on top of shared-memory tiling |
+| `CudaDoubleBuf` | `CudaRegTile` + ping-pong shared buffers | `cp.async` (Ampere+) overlaps the next tile's load with the current tile's compute |
+| `CudaVectorized` | `CudaRegTile` shape + 128-bit loads | `float4`/`double2` global↔shared loads, XOR shared-memory swizzle instead of padding |
+| `CudaWmma` | 64×64 block, 4×4 warps, 16×16×16 Tensor Core tile | `wmma::load_matrix_sync`/`wmma::mma_sync`, fp32→fp16 on the fly (sm_70+) |
+| `CudaMmaLdmatrix` | 64×64 block, 4×4 warps, two 16×8×16 tiles/warp | Raw `ldmatrix.sync`+`mma.sync.m16n8k16` PTX, one level below WMMA (sm_80+) |
+| `CudaHopperWgmma` | Warp-specialized producer/consumer, TMA tile loads | `wgmma.mma_async` + `cp.async.bulk.tensor` (sm_90a/Hopper only — **unverified**, see below) |
+
+> **Verified on real GPU hardware for the first time on 2026-08-29** (NVIDIA RTX 5080, Blackwell, sm_120, CUDA 13.2, Windows/MSVC). Every kernel through `CudaMmaLdmatrix` (Levels 0-6) now passes its full GTest correctness suite. That first real run found and fixed five genuine bugs that had shipped un-exercised because no CUDA hardware had ever been available in this project:
+> 1. **Build system:** `CMakeLists.txt`'s MSVC `/O2 /fp:fast /Oy-` host-optimisation flags were applied project-wide instead of being scoped to `$<COMPILE_LANGUAGE:CXX>`, so they leaked onto nvcc's own command line and broke its argument parser (`nvcc fatal: A single input file is required...`). Fixed by adding the same `COMPILE_LANGUAGE:CXX` guard the AVX-512 `/arch` flag already used.
+> 2. **`cuda_has_hopper()` / the `kernel_hopper_wgmma` compile guard:** both used "compute capability ≥ 9.0", which is also true for Blackwell (major 10/12) — but `wgmma`/TMA are Hopper-exclusive instructions, not part of Blackwell's forward-compatible feature set, and ptxas rejected them outright for `sm_120`. Fixed to require major == 9 exactly (compile-time `__CUDA_ARCH__ == 900`, runtime `prop.major == 9`).
+> 3. **`gemm_cuda_double_buf`:** its `cp.async`/`__pipeline_memcpy_async` calls copied from a local register (`&a_val`) instead of the real global-memory address — cp.async only supports global→shared, so every call aborted with `cudaErrorNotSupported`, which then poisoned the CUDA context for the rest of the process. Fixed to pass the real global pointer with the `zfill` overload for boundary tiles. Its launch also hardcoded 256 threads/block regardless of element type; correct only by coincidence for `float` — for `double` (whose block shrinks to 64×64) it silently computed with 4× too many threads, corrupting neighboring blocks' output at N > 64. Fixed to size the block from the actual tile shape.
+> 4. **`gemm_cuda_wmma`:** the usual "+1" shared-memory padding trick broke `wmma::load_matrix_sync`'s alignment requirement (leading dimension must be a multiple of 8 `__half` elements) → `cudaErrorMisalignedAddress`. Its A/B fragment `row_major`/`col_major` tags were also swapped relative to how `As`/`Bs` are actually laid out, silently transposing the operands. Both fixed.
+> 5. **`gemm_cuda_mma_ldmatrix`:** the A-fragment's `ldmatrix.x4` quadrant-to-register address mapping had its row/col bits swapped, silently computing numerically wrong output (no crash). Fixed and cross-checked against a reference implementation.
+>
+> `CudaHopperWgmma` remains genuinely unverified — it requires real `sm_90a` (Hopper) hardware, and this machine (Blackwell) correctly `SKIP`s it via `cuda_has_hopper()`. See each kernel's file comment in [`src/cuda/gemm_kernels.cu`](src/cuda/gemm_kernels.cu) for the full writeup of each fix.
 
 #### GPU memory hierarchy
 
@@ -656,39 +671,53 @@ C[i][j] = acc
 - Naive: each C(i,j) thread loads `2N` elements from global memory → `2N³` total.
 - Tiled (TILE=16): each element of A and B is loaded from global memory `N/TILE` times → `2N³/TILE` total loads → **16× fewer global memory transactions**.
 
-#### CUDA benchmark output (NVIDIA RTX GPU)
+#### CUDA benchmark output (NVIDIA RTX 5080, real hardware)
 
-> **Machine:** Intel Alder Lake / Sapphire Rapids-class + NVIDIA RTX GPU, MSVC 2022, C++20
-> **Build:** `cmake -B build && cmake --build build --config Release`
+> **Machine:** Intel Alder Lake/Sapphire Rapids-class host + **NVIDIA GeForce RTX 5080** (Blackwell, sm_120), CUDA 13.2, MSVC 2022, C++20.
+> **Build:** `cmake -B build -DCMAKE_CUDA_ARCHITECTURES=native && cmake --build build --config Release`
+> **Run:** `./build/benchmarks/cuda/Release/bench_gemm_cuda.exe --benchmark_format=console`
+> **Date:** 2026-08-29 — first real-hardware run in this project's history; see [§ CUDA kernels](#cuda-kernels-bench_gemm_cuda) above for the five bugs it found and fixed.
 
 ##### double (f64) — CUDA kernels
 
 ```
 Benchmark                          Time        CPU     GFLOP/s
 --------------------------------------------------------------
-CudaNaive/f64/N=64                387 µs     288 µs      1.82
-CudaNaive/f64/N=256               493 µs     406 µs     82.56
-CudaNaive/f64/N=512              1357 µs    1203 µs    223.09
-CudaNaive/f64/N=1024             4990 µs    4785 µs    448.78
-CudaNaive/f64/N=4096           182921 µs  182292 µs    753.95
+CudaNaive/f64/N=64                379 µs     293 µs      1.79
+CudaNaive/f64/N=256               514 µs     386 µs     86.89
+CudaNaive/f64/N=512              1404 µs    1234 µs    217.52
+CudaNaive/f64/N=1024             4956 µs    4604 µs    466.46
+CudaNaive/f64/N=4096           185016 µs  187500 µs    733.01
 
-CudaReordered/f64/N=64            359 µs     279 µs      1.88
-CudaReordered/f64/N=256           488 µs     392 µs     85.52
-CudaReordered/f64/N=512          1312 µs    1151 µs    233.23
-CudaReordered/f64/N=1024         4598 µs    3906 µs    549.76
-CudaReordered/f64/N=4096       183387 µs  183594 µs    748.60
+CudaReordered/f64/N=64            389 µs     276 µs      1.90
+CudaReordered/f64/N=256           515 µs     435 µs     77.10
+CudaReordered/f64/N=512          1438 µs    1228 µs    218.65
+CudaReordered/f64/N=1024         4840 µs    4743 µs    452.74
+CudaReordered/f64/N=4096       185304 µs  187500 µs    733.01
 
-CudaBlocked/f64/N=64              364 µs     243 µs      2.16  tile=16
-CudaBlocked/f64/N=256             537 µs     449 µs     74.70  tile=16
-CudaBlocked/f64/N=512            1280 µs    1050 µs    255.70  tile=16
-CudaBlocked/f64/N=1024           4552 µs    4261 µs    503.94  tile=16
-CudaBlocked/f64/N=4096         177645 µs  175781 µs    781.88  tile=16
+CudaBlocked/f64/N=64              392 µs     296 µs      1.77  tile=16
+CudaBlocked/f64/N=256             521 µs     441 µs     76.06  tile=16
+CudaBlocked/f64/N=512            1401 µs    1050 µs    255.70  tile=16
+CudaBlocked/f64/N=1024           4695 µs    4464 µs    481.04  tile=16
+CudaBlocked/f64/N=4096         179898 µs  175781 µs    781.88  tile=16
 
-CudaRegTile/f64/N=64              514 µs     460 µs      1.14  block=128
-CudaRegTile/f64/N=256            1192 µs    1060 µs     31.65  block=128
-CudaRegTile/f64/N=512            2482 µs    2178 µs    123.23  block=128
-CudaRegTile/f64/N=1024           5299 µs    5312 µs    404.23  block=128
-CudaRegTile/f64/N=4096         186959 µs  183594 µs    748.60  block=128
+CudaRegTile/f64/N=64              559 µs     399 µs      1.31  block=128
+CudaRegTile/f64/N=256            1262 µs    1123 µs     29.88  block=128
+CudaRegTile/f64/N=512            2649 µs    2344 µs    114.53  block=128
+CudaRegTile/f64/N=1024           5522 µs    5388 µs    398.57  block=128
+CudaRegTile/f64/N=4096         195597 µs  197917 µs    694.43  block=128
+
+CudaDoubleBuf/f64/N=64            455 µs     374 µs      1.40  ampere_async=1
+CudaDoubleBuf/f64/N=256           875 µs     802 µs     41.83  ampere_async=1
+CudaDoubleBuf/f64/N=512          1855 µs    1548 µs    173.42  ampere_async=1
+CudaDoubleBuf/f64/N=1024         5663 µs    5162 µs    416.03  ampere_async=1
+CudaDoubleBuf/f64/N=4096       192435 µs  195312 µs    703.69  ampere_async=1
+
+CudaVectorized/f64/N=64           553 µs     467 µs      1.12  vec_width=2
+CudaVectorized/f64/N=256         1264 µs    1147 µs     29.24  vec_width=2
+CudaVectorized/f64/N=512         2650 µs    2308 µs    116.29  vec_width=2
+CudaVectorized/f64/N=1024        5484 µs    5580 µs    384.83  vec_width=2
+CudaVectorized/f64/N=4096      192832 µs  192708 µs    713.20  vec_width=2
 ```
 
 ##### float (f32) — CUDA kernels
@@ -696,42 +725,72 @@ CudaRegTile/f64/N=4096         186959 µs  183594 µs    748.60  block=128
 ```
 Benchmark                          Time        CPU     GFLOP/s
 --------------------------------------------------------------
-CudaNaive/f32/N=64                409 µs     292 µs      1.80
-CudaNaive/f32/N=256               477 µs     348 µs     96.29
-CudaNaive/f32/N=512               911 µs     715 µs    375.44
-CudaNaive/f32/N=1024             2195 µs    2038 µs   1053.7     (1.05 TFLOP/s)
-CudaNaive/f32/N=4096            57895 µs   55398 µs   2480.9     (2.48 TFLOP/s)
+CudaNaive/f32/N=64                382 µs     265 µs      1.98
+CudaNaive/f32/N=256               438 µs     320 µs    104.79
+CudaNaive/f32/N=512               823 µs     625 µs    429.50
+CudaNaive/f32/N=1024             2119 µs    1801 µs   1192.2     (1.19 TFLOP/s)
+CudaNaive/f32/N=4096            55006 µs   55398 µs   2480.9     (2.48 TFLOP/s)
 
-CudaReordered/f32/N=64            342 µs     243 µs      2.16
-CudaReordered/f32/N=256           400 µs     337 µs     99.58
-CudaReordered/f32/N=512           740 µs     558 µs    481.04
-CudaReordered/f32/N=1024         1929 µs    1612 µs   1331.9     (1.33 TFLOP/s)
-CudaReordered/f32/N=4096        54071 µs   53125 µs   2587.1     (2.59 TFLOP/s)
+CudaReordered/f32/N=64            389 µs     305 µs      1.72
+CudaReordered/f32/N=256           438 µs     346 µs     96.98
+CudaReordered/f32/N=512           826 µs     670 µs    400.86
+CudaReordered/f32/N=1024         2134 µs    1779 µs   1207.3     (1.21 TFLOP/s)
+CudaReordered/f32/N=4096        56304 µs   55398 µs   2480.9     (2.48 TFLOP/s)
 
-CudaBlocked/f32/N=64              354 µs     309 µs      1.70  tile=16
-CudaBlocked/f32/N=256             410 µs     337 µs     99.58  tile=16
-CudaBlocked/f32/N=512             759 µs     600 µs    447.48  tile=16
-CudaBlocked/f32/N=1024           2032 µs    1857 µs   1156.5     (1.16 TFLOP/s)  tile=16
-CudaBlocked/f32/N=4096          57767 µs   55398 µs   2480.9     (2.48 TFLOP/s)  tile=16
+CudaBlocked/f32/N=64              402 µs     307 µs      1.71  tile=16
+CudaBlocked/f32/N=256             447 µs     322 µs    104.10  tile=16
+CudaBlocked/f32/N=512             834 µs     670 µs    400.86  tile=16
+CudaBlocked/f32/N=1024           2220 µs    1812 µs   1185.4     (1.19 TFLOP/s)  tile=16
+CudaBlocked/f32/N=4096          59448 µs   59659 µs   2303.7     (2.30 TFLOP/s)  tile=16
 
-CudaRegTile/f32/N=64              347 µs     255 µs      2.06  block=128
-CudaRegTile/f32/N=256             432 µs     298 µs    112.53  block=128
-CudaRegTile/f32/N=512             758 µs     516 µs    520.04  block=128
-CudaRegTile/f32/N=1024           1483 µs    1046 µs   2052.4     (2.05 TFLOP/s)  block=128
-CudaRegTile/f32/N=4096          22494 µs   21973 µs   6255.0     (6.26 TFLOP/s)  block=128
+CudaRegTile/f32/N=64              381 µs     279 µs      1.88  block=128
+CudaRegTile/f32/N=256             489 µs     363 µs     92.51  block=128
+CudaRegTile/f32/N=512             866 µs     725 µs    370.03  block=128
+CudaRegTile/f32/N=1024           1742 µs    1475 µs   1456.3     (1.46 TFLOP/s)  block=128
+CudaRegTile/f32/N=4096          24870 µs   23996 µs   5727.7     (5.73 TFLOP/s)  block=128
+
+CudaDoubleBuf/f32/N=64            391 µs     265 µs      1.98  ampere_async=1
+CudaDoubleBuf/f32/N=256           480 µs     417 µs     80.44  ampere_async=1
+CudaDoubleBuf/f32/N=512           813 µs     684 µs    392.68  ampere_async=1
+CudaDoubleBuf/f32/N=1024         1647 µs    1286 µs   1669.4     (1.67 TFLOP/s)  ampere_async=1
+CudaDoubleBuf/f32/N=4096        24223 µs   23926 µs   5744.4     (5.74 TFLOP/s)  ampere_async=1
+
+CudaVectorized/f32/N=64           378 µs     247 µs      2.12  vec_width=4
+CudaVectorized/f32/N=256          472 µs     384 µs     87.45  vec_width=4
+CudaVectorized/f32/N=512          814 µs     670 µs    400.86  vec_width=4
+CudaVectorized/f32/N=1024        1655 µs    1430 µs   1501.8     (1.50 TFLOP/s)  vec_width=4
+CudaVectorized/f32/N=4096       27914 µs   28125 µs   4886.7     (4.89 TFLOP/s)  vec_width=4
+
+CudaWmma/f32/N=64                 393 µs     314 µs      1.67  tensor_cores=1
+CudaWmma/f32/N=256                456 µs     322 µs    104.10  tensor_cores=1
+CudaWmma/f32/N=512                777 µs     519 µs    517.39  tensor_cores=1
+CudaWmma/f32/N=1024               1663 µs    1500 µs   1431.9     (1.43 TFLOP/s)  tensor_cores=1
+CudaWmma/f32/N=4096              29729 µs   28646 µs   4797.9     (4.80 TFLOP/s)  tensor_cores=1
+
+CudaMmaLdmatrix/f32/N=64          379 µs     272 µs      1.93  tensor_cores=1
+CudaMmaLdmatrix/f32/N=256         450 µs     360 µs     93.24  tensor_cores=1
+CudaMmaLdmatrix/f32/N=512         767 µs     488 µs    549.76  tensor_cores=1
+CudaMmaLdmatrix/f32/N=1024        1624 µs    1500 µs   1431.9     (1.43 TFLOP/s)  tensor_cores=1
+CudaMmaLdmatrix/f32/N=4096       27985 µs   27043 µs   5082.2     (5.08 TFLOP/s)  tensor_cores=1
+
+CudaHopperWgmma/f32/*    SKIPPED: 'wgmma/TMA requires sm_90a (Hopper) -- UNVERIFIED code path'
 ```
 
-
-> **Note:** all CUDA benchmarks include host↔device transfer time (`cudaMemcpy` + kernel + `cudaMemcpy`).
+> **Note:** all CUDA benchmarks include host↔device transfer time (`cudaMemcpy` + kernel + `cudaMemcpy`). `CudaWmma`/`CudaMmaLdmatrix` convert fp32→fp16 on the fly (`precision=16`), so their GFLOP/s is not directly comparable to the fp32 FMA kernels above them at face value — on this specific unoptimized/educational implementation (small 64×64 output tiles, no multi-stage pipelining) they land *below* `CudaRegTile`/`CudaDoubleBuf`'s plain-FMA throughput at N=4096, which is a legitimate result of this kernel's tuning level, not a correctness issue (all three pass their GTest correctness suites).
 
 ##### CUDA speedup summary (f32, N=4096)
 
 | Kernel | GFLOP/s | ×CudaNaive |
 |---|---|---|
 | `CudaNaive` | 2,481 G/s (2.48 TFLOP/s) | 1.0× |
-| `CudaReordered` | 2,587 G/s (2.59 TFLOP/s) | **1.04×** |
-| `CudaBlocked` (TILE=16) | 2,481 G/s (2.48 TFLOP/s) | **1.0×** |
-| `CudaRegTile` (block=128) | 6,255 G/s (6.26 TFLOP/s) | **2.52×** |
+| `CudaReordered` | 2,481 G/s (2.48 TFLOP/s) | **1.0×** |
+| `CudaBlocked` (TILE=16) | 2,304 G/s (2.30 TFLOP/s) | 0.93× |
+| `CudaRegTile` (block=128) | 5,728 G/s (5.73 TFLOP/s) | **2.31×** |
+| `CudaDoubleBuf` (cp.async) | 5,744 G/s (5.74 TFLOP/s) | **2.32×** |
+| `CudaVectorized` (float4 + swizzle) | 4,887 G/s (4.89 TFLOP/s) | **1.97×** |
+| `CudaWmma` (Tensor Cores, fp16) | 4,798 G/s (4.80 TFLOP/s) | **1.93×** |
+| `CudaMmaLdmatrix` (raw mma.sync, fp16) | 5,082 G/s (5.08 TFLOP/s) | **2.05×** |
+| `CudaHopperWgmma` | SKIPPED — requires real sm_90a hardware | — |
 
 ---
 

@@ -147,8 +147,11 @@ static void BM_CudaVectorized(benchmark::State& state) {
 
 // ---------------------------------------------------------------------------
 // Level 6 -- Raw Tensor Cores via mma.sync + ldmatrix -- fp32 only, sm_80+.
-// UNVERIFIED: see gemm_kernels.cu's kernel_mma_ldmatrix file comment; no
-// CUDA hardware/toolkit was available anywhere in this project.
+// VERIFIED on real hardware (RTX 5080, Blackwell sm_120): the A-fragment
+// ldmatrix.x4 address mapping had its row/col quadrant bits swapped
+// (produced numerically wrong output, not a crash) -- fixed and
+// cross-checked against a reference implementation; see gemm_kernels.cu's
+// kernel_mma_ldmatrix file comment for the full writeup.
 // ---------------------------------------------------------------------------
 template <std::size_t N>
 static void BM_CudaMmaLdmatrix(benchmark::State& state) {
@@ -161,7 +164,6 @@ static void BM_CudaMmaLdmatrix(benchmark::State& state) {
     state.counters["N"] = double(N);
     state.counters["precision"] = 16;  // fp16 MMA
     state.counters["tensor_cores"] = 1;
-    state.counters["unverified"] = 1;
 }
 
 // ---------------------------------------------------------------------------

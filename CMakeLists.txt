@@ -158,19 +158,37 @@ endif()
 
 add_compile_options(
     # --- GCC / Clang / AppleClang ---
-    $<$<AND:$<CXX_COMPILER_ID:GNU,Clang,AppleClang>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>:-O3>
-    $<$<AND:$<BOOL:${HPC_MARCH}>,$<CXX_COMPILER_ID:GNU,Clang,AppleClang>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>:-march=${HPC_MARCH}>
-    $<$<AND:$<CXX_COMPILER_ID:GNU,Clang,AppleClang>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>:-ffast-math>
-    $<$<AND:$<CXX_COMPILER_ID:GNU,Clang,AppleClang>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>:-funroll-loops>
-    $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-fno-omit-frame-pointer>
+    # COMPILE_LANGUAGE:CXX guards are required on every entry here: without
+    # it, $<CXX_COMPILER_ID:...> only asserts "the project's CXX compiler
+    # is this vendor" -- it does NOT restrict the flag to CXX sources -- so
+    # on a CUDA-enabled build these host flags leak into every nvcc
+    # invocation too. On Linux/macOS this went unnoticed because nvcc's
+    # -forward-unknown-to-host-compiler quietly hands GCC/Clang-style flags
+    # like -ffast-math/-march=native straight to the host compiler. On
+    # Windows it does NOT go unnoticed: nvcc's own argument parser chokes
+    # on the unguarded MSVC block below (see next comment) with "nvcc fatal
+    # : A single input file is required for a non-link phase when an
+    # outputfile is specified" -- caught only once real CUDA hardware
+    # (Windows + MSVC + nvcc) was available to build on.
+    $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:GNU,Clang,AppleClang>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>:-O3>
+    $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<BOOL:${HPC_MARCH}>,$<CXX_COMPILER_ID:GNU,Clang,AppleClang>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>:-march=${HPC_MARCH}>
+    $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:GNU,Clang,AppleClang>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>:-ffast-math>
+    $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:GNU,Clang,AppleClang>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>:-funroll-loops>
+    $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:GNU,Clang,AppleClang>>:-fno-omit-frame-pointer>
     # --- MSVC ---
     # /O2          : Full optimisation (equivalent to -O2/-O3)
     # /fp:fast     : Fast floating-point model (equivalent to -ffast-math)
     # /Oy-         : Preserve frame pointers for profiling
     # NOTE: /arch flag is added below after AVX-512 detection.
-    $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>:/O2>
-    $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>:/fp:fast>
-    $<$<CXX_COMPILER_ID:MSVC>:/Oy->
+    # Unguarded, nvcc (13.2, Windows) misparses these raw "/"-prefixed
+    # tokens on its own command line and fails with "A single input file is
+    # required for a non-link phase when an outputfile is specified" --
+    # they must reach nvcc only via -Xcompiler, never directly, hence the
+    # COMPILE_LANGUAGE:CXX guard (nvcc's CUDA-language compile rule adds
+    # its own /O2 etc. separately, already correctly wrapped).
+    $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:MSVC>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>:/O2>
+    $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:MSVC>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>:/fp:fast>
+    $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:MSVC>>:/Oy->
 )
 
 # Default MSVC SIMD arch — may be overridden to /arch:AVX512 below.
