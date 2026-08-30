@@ -315,9 +315,32 @@ Five variants: `gemm_blocked_prefetch` · `gemm_avx2_blocked_prefetch` ·
 
 ## Algorithm 9 — CUDA Kernels (`cuda.hpp` + `src/cuda/gemm_kernels.cu`)
 
-Six GPU kernels across five optimization levels, compiled by nvcc.
-On CPU-only machines a stub is compiled; all CUDA benchmarks/tests print
-`SKIPPED: 'No CUDA device available'` at runtime.
+Nine GPU kernels across eight optimization levels (0 through 7), compiled
+by nvcc. On CPU-only machines a stub is compiled; all CUDA benchmarks/tests
+print `SKIPPED: 'No CUDA device available'` at runtime.
+
+**Verification status.** Levels 0-4 predate this file's most recent
+changes and are exercised by this repo's test suite; the historical
+benchmark numbers in the top-level README came from a run on a separate
+Intel+NVIDIA machine. Levels 5-7, and a correctness fix to Level 2/3
+described below, were added in an environment with **no CUDA toolkit or
+GPU at all** (this repo's CUDA work has always been developed on an Apple
+Silicon Mac) — none of this file's CUDA code has ever been compiled with
+nvcc. Level 5 (vectorized loads + swizzle) is a straightforward extension
+of Level 2's proven structure and carries normal confidence. Level 6 (raw
+mma.sync + ldmatrix) and especially Level 7 (Hopper wgmma + TMA) are
+explicitly best-effort and unverified — see their sections below and each
+kernel's file comment in `gemm_kernels.cu` for per-section confidence notes.
+
+**Correctness fix (Levels 2-3).** `kernel_reg_tile`'s and
+`kernel_double_buf`'s shared-memory load previously computed
+`row = threadIdx.x / kBM` directly as an index into the 16-row tile — with
+256 threads and kBM=128, that expression can only ever produce 0 or 1,
+silently leaving 14 of the tile's 16 rows uninitialized before the k-loop
+read them. Found via arithmetic inspection while extending this file (not
+via a failing test — this repo has never been able to run these tests on
+real hardware to catch it that way) and fixed with a strided load loop,
+matching the pattern `kernel_wmma` already used correctly.
 
 ---
 
@@ -448,6 +471,96 @@ wmma::store_matrix_sync(C_ptr, c_frag, N, wmma::mem_row_major);
 
 ---
 
+### Level 5 — `gemm_cuda_vectorized` — float4/double2 loads + shared-memory XOR swizzle
+
+Same register-tile shape as Level 2 (128x128 block, 8x8 per thread), with
+two changes: global→shared loads use 128-bit vector instructions instead
+of one scalar per thread per element, and shared memory uses an XOR
+"swizzle" instead of +1 padding.
+
+```
+B's fast dimension (N) matches Bs's fast dimension -> load AND store vectorized:
+  Vec v = *reinterpret_cast<const Vec*>(&B[row][colBase]);
+  Bs[row][swizzle_slot(row, colBase/W, slots) * W] = v;   // vectorized store
+
+A's fast dimension (K) does NOT match As's fast (transposed to M) -> load
+vectorized, scatter-store scalar:
+  Vec v = *reinterpret_cast<const Vec*>(&A[row][kBase]);  // 4 (or 2) K-values
+  for e in 0..W-1: As[kBase+e][swizzle_slot(kBase+e, row/W, slots)*W + row%W] = v[e];
+
+swizzle_slot(row, slot, slots) = slot ^ (row & (slots-1))   // self-inverse XOR
+```
+
+**Correctness does not depend on bank-conflict elimination**: the same
+`swizzle_slot()` call is used at every write site and every read site, so
+whatever permutation it computes is applied and undone consistently —
+only the *performance* claim (fewer conflicts than padding) is unverified
+without a profiler on real hardware. **Requires K and N to be multiples of
+the vector width** (4 for float, 2 for double) for the vectorized loads to
+stay 16-byte aligned; the host dispatch falls back to `gemm_cuda_reg_tile`
+otherwise, which is always correct for any shape.
+
+---
+
+### Level 6 — `gemm_cuda_mma_ldmatrix` — raw Tensor Cores via mma.sync + ldmatrix (fp32 only, sm_80+)
+
+**UNVERIFIED** — see this file's verification-status note above and
+`gemm_kernels.cu`'s file comment for `kernel_mma_ldmatrix`. Computes the
+same thing as Level 4 (fp16 in, fp32 accumulate) one level below the WMMA
+C++ API:
+
+```
+// ldmatrix.x4: hardware distributes an 8x8x4-quadrant tile across the warp's
+// 32 threads into the EXACT registers mma.sync expects -- no manual
+// per-element fragment placement (unlike a from-scratch tensor-core kernel):
+ldmatrix.sync.aligned.m8n8.x4.shared.b16 {a0,a1,a2,a3}, [a_addr];       // A, .row -- no .trans (A stored natural row-major here)
+ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 {b0,b1}, [b_addr];      // B, .col -- .trans (B stored natural row-major, needs transposing load)
+mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {d0..d3}, {a0..a3}, {b0,b1}, {d0..d3};
+```
+
+Native tile is **16x8x16** (not WMMA's 16x16x16 — mma.sync's f16 shape is
+narrower in N), so each warp issues two side-by-side MMAs to cover the
+same 16x16 area WMMA computes in one call. Falls back to `gemm_cuda_wmma`
+on sm_70-75 (Volta/Turing, which lack the m16n8k16 shape).
+
+---
+
+### Level 7 — `gemm_cuda_hopper_wgmma` — warp specialization + TMA (fp32 only, sm_90a)
+
+**BEST-EFFORT, EXPLICITLY UNVERIFIED, LIKELY NON-FUNCTIONAL** — written per
+direct user request with that understanding in advance. sm_90a wgmma + TMA
+have no public C++ intrinsic surface at all; every input here is raw
+inline PTX and a driver-API tensor-map descriptor, hand-written against
+the PTX ISA's prose description with no compiler or hardware anywhere in
+this project to check it against. Hand-written kernels using these
+primitives essentially don't exist outside CUTLASS/cuDNN internals.
+
+```
+Producer warpgroup (128 threads, only 1 issues instructions):
+    cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::complete_tx::bytes
+        [smem_tile], [tensor_map, {k, m}], [full_mbarrier];   // async global->shared, whole tile in ONE instruction
+
+Consumer warpgroup (128 threads, all participate):
+    mbarrier.try_wait.parity.shared.b64 ...                  // wait for producer
+    wgmma.mma_async.sync.aligned.m64n64k16.f32.f16.f16 {d0..d31}, descA, descB, scale_d;
+    wgmma.commit_group.sync.aligned;
+    wgmma.wait_group.sync.aligned 0;
+```
+
+TMA descriptors (`CUtensorMap`) are built once on the host via the driver
+API's `cuTensorMapEncodeTiled` (no CUDA-runtime-API equivalent exists).
+`wgmma` reads its A/B operands directly from shared memory via 64-bit
+"matrix descriptors" — no per-thread fragment loading step at all, unlike
+`mma.sync` above. This kernel's file comment in `gemm_kernels.cu` flags
+per-section confidence levels; the shared-memory descriptor bit layout and
+the accumulator-output register mapping are the least certain parts.
+Deliberately minimal scope: single-buffered (not deeply pipelined), and
+requires M, N, K to be exact multiples of 64/64/16 (no tail handling).
+Falls back to `gemm_cuda_mma_ldmatrix`, then `gemm_cuda_wmma`, then
+`gemm_cuda_double_buf`, in that order.
+
+---
+
 ### Performance ladder (RTX 4090, f32, N=4096)
 
 | Kernel | Level | Bottleneck | ~TFLOP/s | % of SIMT peak |
@@ -457,13 +570,24 @@ wmma::store_matrix_sync(C_ptr, c_frag, N, wmma::mem_row_major);
 | `gemm_cuda_reg_tile` 128x128 | 2 | Compute-bound | 80-120 | 50-75% |
 | `gemm_cuda_double_buf` | 3 | Latency hidden | 120-140 | 75-85% |
 | `gemm_cuda_wmma` (fp16 TC) | 4 | Tensor Core bound | 250-300 | — (TC peak) |
+| `gemm_cuda_vectorized` | 5 | Compute-bound, fewer load instrs | not benchmarked\* | — |
+| `gemm_cuda_mma_ldmatrix` | 6 | Tensor Core bound | not benchmarked\* | — |
+| `gemm_cuda_hopper_wgmma` | 7 | Tensor Core + TMA bound | not benchmarked\* | — |
 | cuBLAS SGEMM | ref | All of the above | 140-165 | 85-100% |
 | cuBLAS TF32 TC | ref | Tensor Core bound | 300-330 | — |
 
-> **Summary:** Going from Level 1 to Level 2 (register tiling) is the biggest
-> single jump — from 3-9% to 50-75% of peak. Level 3 (double buffering + cp.async)
-> closes the gap to cuBLAS SIMT. Level 4 (Tensor Cores) requires accepting fp16
-> precision in the matrix multiply and achieves 2-3x beyond any SIMT kernel.
+\* Levels 5-7 have never run on a GPU — see the verification-status note at
+the top of this section. The Level 0-4 numbers above are historical,
+carried over from before those levels existed, from a separate machine
+this project no longer has access to.
+
+> **Summary (Levels 0-4, historical):** Going from Level 1 to Level 2
+> (register tiling) is the biggest single jump — from 3-9% to 50-75% of
+> peak. Level 3 (double buffering + cp.async) closes the gap to cuBLAS
+> SIMT. Level 4 (Tensor Cores) requires accepting fp16 precision in the
+> matrix multiply and achieves 2-3x beyond any SIMT kernel. Levels 5-7
+> extend this ladder with progressively lower-level, progressively less
+> verified hardware primitives — see each level's section above.
 
 ---
 
@@ -473,8 +597,13 @@ wmma::store_matrix_sync(C_ptr, c_frag, N, wmma::mem_row_major);
 // All CUDA kernels:
 if (hpc::gemm::cuda_device_count() == 0) { state.SkipWithMessage("No CUDA device"); }
 
-// WMMA only (additionally):
-if (!hpc::gemm::cuda_has_tensor_cores()) { state.SkipWithMessage("sm_70+ required"); }
+// WMMA / mma_ldmatrix (additionally):
+if (!hpc::gemm::cuda_has_tensor_cores()) { state.SkipWithMessage("sm_70+ required"); }  // WMMA
+if (!hpc::gemm::cuda_has_ampere())       { state.SkipWithMessage("sm_80+ required"); }  // mma_ldmatrix
+
+// Hopper wgmma (additionally) -- UNVERIFIED, will SKIP on every machine
+// this repo has actually been run on:
+if (!hpc::gemm::cuda_has_hopper()) { state.SkipWithMessage("sm_90a required"); }
 
 // Double-buf reports whether cp.async is active:
 state.counters["ampere_async"] = hpc::gemm::cuda_has_ampere() ? 1.0 : 0.0;

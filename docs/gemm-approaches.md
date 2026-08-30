@@ -59,7 +59,7 @@ for when it does (and doesn't) help.
 | **SVE / SVE2** | `sve.hpp` | Scalable (VLA), 128–2048-bit, width read at runtime | `svld1_f32/f64`, `svmla_f32/f64_x`, `svdup_n_f32/f64`, `svwhilelt_b32/b64` (predicated tail — no scalar remainder loop), `svcntw()/svcntd()` | reorder, block, register-tile, predication |
 | **SME2** (ARM) | `sme.hpp` | ZA tile: SVL×SVL 2-D accumulator (16×16 f32 / 8×8 f64 on Apple M4) | `svmopa_za32/za64_f32/f64_m` (outer-product-accumulate, **not** FMA), `svzero_za`, `svld1_hor_za32/64`, `svst1_hor_za32/64`, `svcntsw()/svcntsd()` | panel-packing (repacked "reorder"), K-tile "block" — see note below |
 | **Apple AMX** (via Accelerate) | `amx.hpp` | Opaque — vendor-controlled | `cblas_sgemm`, `cblas_dgemm` (standard BLAS call, `<Accelerate/Accelerate.h>`) | none exposed — Apple's implementation, not ours (see note below) |
-| **CUDA (GPU)** | `cuda.hpp` + `src/cuda/gemm_kernels.cu` | Thread → 1 elem (naive) up to 8×8 register tile/thread (`reg_tile`) | `__shared__` tile buffers, `__syncthreads()`, `__pipeline_memcpy_async`/`cp.async` (double-buffer), `wmma::fragment`/`wmma::mma_sync` (Tensor Cores) | shared-memory tiling, register tiling, double buffering, Tensor Core tile-multiply |
+| **CUDA (GPU)** | `cuda.hpp` + `src/cuda/gemm_kernels.cu` | Thread → 1 elem (naive) up to 8×8 register tile/thread (`reg_tile`) | `__shared__` tile buffers, `__syncthreads()`, `__pipeline_memcpy_async`/`cp.async` (double-buffer), `wmma::fragment`/`wmma::mma_sync` (Tensor Cores), `float4`/`double2` vectorized loads + XOR smem swizzle, `ldmatrix.sync`+`mma.sync` PTX (raw Tensor Cores), `wgmma.mma_async`+TMA (Hopper, best-effort) | shared-memory tiling, register tiling, double buffering, vectorized loads, Tensor Core tile-multiply (3 abstraction levels), warp specialization |
 
 ---
 
@@ -102,13 +102,25 @@ Because that's a single opaque call with no tiling/blocking parameter,
 wrappers — see `amx.hpp`'s file header for the full reasoning.
 
 **CUDA's tile progression is the clearest illustration of all three
-techniques stacked.** `gemm_cuda_naive` (no shared memory) →
+techniques stacked, and then some.** `gemm_cuda_naive` (no shared memory) →
 `gemm_cuda_blocked` (shared-memory tiling, the GPU analogue of L2
 blocking) → `gemm_cuda_reg_tile` (each thread owns an 8×8 register tile of
 `C`, not just one element) → `gemm_cuda_double_buf` (prefetches the next
 k-tile into a second shared-memory buffer while computing on the current
 one, hiding load latency) → `gemm_cuda_wmma` (Tensor Core tile-multiply,
-the GPU's own outer-product-style hardware, analogous to SME/AMX on CPU).
+the GPU's own outer-product-style hardware, analogous to SME/AMX on CPU)
+→ `gemm_cuda_vectorized` (128-bit `float4`/`double2` loads + a
+self-consistent XOR shared-memory swizzle instead of padding) →
+`gemm_cuda_mma_ldmatrix` (the *same* Tensor Core computation as WMMA, one
+level lower: hand-issued `ldmatrix.sync` + `mma.sync` PTX instead of the
+C++ `wmma::` API) → `gemm_cuda_hopper_wgmma` (producer/consumer warp
+specialization: one warpgroup issues TMA bulk-tensor loads while another
+runs `wgmma.mma_async` directly against shared memory). **Verification
+drops sharply toward the end of this list**: Levels 0-4 have historical
+benchmark data from a separate machine; Levels 5-7 were written with zero
+CUDA toolkit or GPU access, and the last one (Hopper wgmma+TMA) is
+explicitly a best-effort sketch the user asked for with that understanding
+— see `src/gemm/README.md`'s CUDA section for the full, per-level caveat.
 
 ---
 

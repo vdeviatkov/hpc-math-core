@@ -19,8 +19,8 @@ This repository starts from first principles — readable scalar code — and ad
 | 4 | `gemm_neon_{naive,reordered,blocked}` | 128-bit Q-register tile (ARM NEON / AdvSIMD), `vfmaq` FMA | ✅ |
 | 4 | `gemm_sve_{naive,reordered,blocked}` | VLA SVE: runtime VL, `svwhilelt` predicates, zero scalar tails | ✅ |
 | 5 | `gemm_{scalar,avx2,avx512,neon,sve}_blocked_prefetch` | `__builtin_prefetch` on A rows, B k-tiles and C write rows; distance sweep D∈{2,4,8,16} | ✅ |
-| 6 | `gemm_cuda_{naive,reordered,blocked,reg_tile,double_buf,wmma}` | CUDA: shared-memory tiling → register tiling → double buffering → Tensor Core WMMA | ✅ |
-| 7 | `gemm_sme_{naive,reordered,blocked}` | ARM SME2: `FMOPA` outer-product accumulate into a ZA tile — verified on Apple M4 Max, up to **380 GFLOP/s single-threaded f32** | ✅ |
+| 6 | `gemm_cuda_{naive,reordered,blocked,reg_tile,double_buf,wmma,vectorized,mma_ldmatrix,hopper_wgmma}` | CUDA: shared-memory tiling → register tiling → double buffering → Tensor Core WMMA → vectorized loads/swizzle → raw mma.sync/ldmatrix → Hopper warp specialization/TMA. **Levels 5-7 (vectorized/mma_ldmatrix/hopper_wgmma) have never run on a GPU — no CUDA hardware anywhere in this project; hopper_wgmma is explicit best-effort.** | ⚠️ |
+| 7 | `gemm_sme_{naive,reordered,blocked}` | ARM SME2: `FMOPA` outer-product accumulate into a ZA tile — verified on Apple M4 Max, up to **386 GFLOP/s single-threaded f32** | ✅ |
 | 8 | `gemm_amx_{naive,reordered,blocked}` | Apple AMX coprocessor via Accelerate.framework (`cblas_sgemm`/`cblas_dgemm`) — verified on Apple M4 Max, up to **3.3 TFLOP/s f32** | ✅ |
 
 Each SIMD family is **skipped automatically** if the ISA is absent on the build CPU — no `#ifdef` pollution in benchmark registrations, no silent fallback timing. See [§ ISA availability](#isa-availability--skipping) below. SME is **opt-in at configure time** (`-DHPC_ENABLE_SME=ON`, off by default — real SIGILL risk on a wrong flag combination); AMX is **on by default on Apple platforms** (`-DHPC_ENABLE_AMX=ON`, since it only links a standard system framework) — see [§ SME and AMX build flags](#sme-and-amx-build-flags) for the full story.
@@ -65,8 +65,8 @@ hpc-math-core/
 │       └── CMakeLists.txt
 ├── tests/
 │   ├── CMakeLists.txt
-│   ├── test_gemm.cpp                   Google Test suite — CPU kernels (330 tests)
-│   ├── test_gemm_cuda.cpp              Google Test suite — CUDA kernels (40 tests, skipped if no GPU)
+│   ├── test_gemm.cpp                   Google Test suite — CPU kernels (355 tests)
+│   ├── test_gemm_cuda.cpp              Google Test suite — CUDA kernels (54 tests, skipped if no GPU)
 │   └── cuda/
 │       └── CMakeLists.txt
 └── docs/
@@ -97,7 +97,7 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release
 # 2. Build everything (CPU + CUDA if available, stubs otherwise)
 cmake --build build --parallel
 
-# 3. Run all tests (330 CPU + 40 CUDA; CUDA tests skip if no GPU)
+# 3. Run all tests (355 CPU + 54 CUDA; CUDA tests skip if no GPU)
 cd build && ctest --output-on-failure
 
 # 4. Run CPU benchmarks

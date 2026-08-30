@@ -358,6 +358,16 @@ if(CMAKE_CUDA_COMPILER)
 
     # Detect compute capability for the installed GPUs so we can pass
     # the right -arch flag.  Falls back to sm_70 (Volta) if nothing is found.
+    #
+    # gemm_cuda_hopper_wgmma (Level 7, see src/gemm/README.md) needs the
+    # Hopper-specific "90a" architecture target (wgmma/TMA are excluded
+    # from the portable "90" family-compatible feature set) to actually
+    # emit those instructions -- "native" only picks that up automatically
+    # if built ON a Hopper GPU. Cross-compiling for Hopper from elsewhere:
+    #   cmake -B build -DCMAKE_CUDA_ARCHITECTURES=90a ..
+    # On any other target, the wgmma/TMA code path is compiled out (see the
+    # __CUDA_ARCH__ >= 900 guard in gemm_kernels.cu) and gemm_cuda_hopper_wgmma
+    # transparently falls back to gemm_cuda_mma_ldmatrix / gemm_cuda_wmma.
     find_package(CUDAToolkit REQUIRED)
     if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
         set(CMAKE_CUDA_ARCHITECTURES native)
@@ -380,7 +390,11 @@ if(CMAKE_CUDA_COMPILER)
         CUDA_STANDARD_REQUIRED  ON
         CUDA_SEPARABLE_COMPILATION OFF
     )
-    target_link_libraries(hpc_math_cuda PUBLIC hpc_math_core CUDA::cudart)
+    # CUDA::cuda_driver (libcuda) is needed in addition to the usual
+    # CUDA::cudart -- gemm_cuda_hopper_wgmma's TMA descriptor setup calls
+    # cuTensorMapEncodeTiled, which is a driver-API-only function with no
+    # CUDA-runtime-API equivalent.
+    target_link_libraries(hpc_math_cuda PUBLIC hpc_math_core CUDA::cudart CUDA::cuda_driver)
 
     message(STATUS "Building CUDA benchmark  : benchmarks/bench_gemm_cuda")
     message(STATUS "Building CUDA test suite : tests/hpc_tests_cuda")

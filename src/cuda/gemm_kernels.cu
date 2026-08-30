@@ -87,6 +87,21 @@
 #include <mma.h>
 using namespace nvcuda;
 
+// Driver API -- needed only for the Hopper TMA descriptor
+// (cuTensorMapEncodeTiled has no CUDA-runtime-API equivalent). Always
+// included (it is a plain host header, part of every CUDA toolkit
+// installation); the functions it declares are only ever CALLED when
+// cuda_has_hopper() is true at runtime. Requires linking CUDA::cuda_driver
+// (see CMakeLists.txt) in addition to the usual CUDA::cudart.
+//
+// NOTE: CUtensorMap, cuTensorMapEncodeTiled, and __grid_constant__ (used by
+// kernel_hopper_wgmma further down) are CUDA 12.0+ additions. This file
+// has not been tested against any specific CUDA version (no toolkit was
+// available anywhere in this project -- see gemm_cuda_hopper_wgmma's much
+// larger "UNVERIFIED" caveat below); building against CUDA <12.0 would
+// fail to compile this translation unit at all, not just this one kernel.
+#include <cuda.h>
+
 // cp.async requires sm_80+ (Ampere)
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
   #include <cuda_pipeline_primitives.h>
@@ -94,6 +109,7 @@ using namespace nvcuda;
 #endif
 
 #include <cstddef>
+#include <cstdint>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -211,6 +227,14 @@ __global__ void kernel_blocked(const T* __restrict__ A,
 //
 // Inner loop: outer product of As column and Bs row -> 8x8 FMAs per k step.
 // Bank conflict avoidance: +1 padding on the inner dimension.
+//
+// CORRECTNESS FIX (see git history): the shared-memory load previously used
+// `threadIdx.x / kBM` / `threadIdx.x % kBM` directly as the (row, col) index
+// into the kBK x kBM tile. With 256 threads and kBM=128, that expression can
+// only ever produce row in {0, 1} -- rows 2..15 of As/Bs were silently left
+// uninitialized before being read by every k-iteration below. Fixed with a
+// strided loop (256 threads x 8 iterations = 2048 elements), matching the
+// already-correct pattern used by kernel_wmma further down this file.
 // ============================================================================
 template <typename T>
 __global__ void __launch_bounds__(256)
@@ -242,27 +266,35 @@ kernel_reg_tile(const T* __restrict__ A,
     T reg_B[kTN] = {};
 
     // Thread's responsibility for loading shared memory.
-    // 256 threads load 128*16 = 2048 elements of As (8 each).
-    // 256 threads load 16*128 = 2048 elements of Bs (8 each).
-    const int loadARow = threadIdx.x / kBM;   // 0..15  (kBK dimension)
-    const int loadACol = threadIdx.x % kBM;   // 0..127 (kBM dimension)
-    const int loadBRow = threadIdx.x / kBN;   // 0..15  (kBK dimension)
-    const int loadBCol = threadIdx.x % kBN;   // 0..127 (kBN dimension)
+    // 256 threads load 128*16 = 2048 elements of As (8 each) and
+    // 16*128 = 2048 elements of Bs (8 each), via a strided loop --
+    // NOT a single direct index (256 threads cannot cover 2048 elements
+    // one-to-one; see kAElems/kBElems below).
+    constexpr int kAElems = kBK * kBM;  // 2048
+    constexpr int kBElems = kBK * kBN;  // 2048
 
     const int nTilesK = (K + kBK - 1) / kBK;
 
     for (int tileK = 0; tileK < nTilesK; ++tileK) {
         // Load A sub-tile into As[kBK][kBM] (transposed for column-major access).
-        // A[blockRow*kBM + loadACol][tileK*kBK + loadARow]
-        const int aRow = blockRow * kBM + loadACol;
-        const int aCol = tileK * kBK + loadARow;
-        As[loadARow][loadACol] = (aRow < M && aCol < K) ? A[aRow * K + aCol] : T{0};
+        // A[blockRow*kBM + c][tileK*kBK + r]
+        for (int idx = threadIdx.x; idx < kAElems; idx += blockDim.x) {
+            const int r = idx / kBM;   // 0..15  (kBK dimension)
+            const int c = idx % kBM;   // 0..127 (kBM dimension)
+            const int aRow = blockRow * kBM + c;
+            const int aCol = tileK * kBK + r;
+            As[r][c] = (aRow < M && aCol < K) ? A[aRow * K + aCol] : T{0};
+        }
 
         // Load B sub-tile into Bs[kBK][kBN].
-        // B[tileK*kBK + loadBRow][blockCol*kBN + loadBCol]
-        const int bRow = tileK * kBK + loadBRow;
-        const int bCol = blockCol * kBN + loadBCol;
-        Bs[loadBRow][loadBCol] = (bRow < K && bCol < N) ? B[bRow * N + bCol] : T{0};
+        // B[tileK*kBK + r][blockCol*kBN + c]
+        for (int idx = threadIdx.x; idx < kBElems; idx += blockDim.x) {
+            const int r = idx / kBN;   // 0..15  (kBK dimension)
+            const int c = idx % kBN;   // 0..127 (kBN dimension)
+            const int bRow = tileK * kBK + r;
+            const int bCol = blockCol * kBN + c;
+            Bs[r][c] = (bRow < K && bCol < N) ? B[bRow * N + bCol] : T{0};
+        }
 
         __syncthreads();
 
@@ -350,10 +382,12 @@ kernel_double_buf(const T* __restrict__ A,
     T reg_A[kTM] = {};
     T reg_B[kTN] = {};
 
-    const int loadARow = threadIdx.x / LBM;
-    const int loadACol = threadIdx.x % LBM;
-    const int loadBRow = threadIdx.x / LBN;
-    const int loadBCol = threadIdx.x % LBN;
+    // CORRECTNESS FIX (see git history / kernel_reg_tile above): a single
+    // `threadIdx.x / LBM` cannot enumerate all kBK=16 rows with only 256
+    // threads and LBM<=128 -- the original code left most of As/Bs
+    // uninitialized. Use a strided loop instead, same as kernel_reg_tile.
+    constexpr int kAElems = kBK * LBM;
+    constexpr int kBElems = kBK * LBN;
 
     const int nTilesK = (K + kBK - 1) / kBK;
 
@@ -361,25 +395,48 @@ kernel_double_buf(const T* __restrict__ A,
     // Helper lambda: load tile tileK into shared-memory buffer buf.
     // On Ampere+: issues async copy and does NOT synchronise.
     // On older:   copies synchronously and issues __syncthreads.
+    //
+    // NOTE: the boundary check (aRow<M && aCol<K) reads from global memory
+    // into the local `a_val`/`b_val` register BEFORE __pipeline_memcpy_async
+    // is called, so the async copy here is local(register)->shared, not
+    // global->shared. This preserves the double-buffer *structure* (compute
+    // on `cur` overlaps with issuing the load for `nxt`) but does not use
+    // cp.async to hide global memory latency the way a direct
+    // global-pointer-to-shared-pointer __pipeline_memcpy_async call would --
+    // that would additionally require unconditional in-bounds tiles (no
+    // per-element ternary) to pass a raw global address through. Left as-is:
+    // this is a pre-existing design characteristic, not part of the bug fix
+    // above, and reworking it is out of scope here.
     // -------------------------------------------------------------------
     auto load_tile = [&](int tileK, int buf) {
-        const int aRow = blockRow * LBM + loadACol;
-        const int aCol = tileK * kBK + loadARow;
-        const T a_val  = (aRow < M && aCol < K) ? A[aRow * K + aCol] : T{0};
-
-        const int bRow = tileK * kBK + loadBRow;
-        const int bCol = blockCol * LBN + loadBCol;
-        const T b_val  = (bRow < K && bCol < N) ? B[bRow * N + bCol] : T{0};
-
+        for (int idx = threadIdx.x; idx < kAElems; idx += blockDim.x) {
+            const int r = idx / LBM;
+            const int c = idx % LBM;
+            const int aRow = blockRow * LBM + c;
+            const int aCol = tileK * kBK + r;
+            const T a_val  = (aRow < M && aCol < K) ? A[aRow * K + aCol] : T{0};
 #ifdef HPC_HAVE_CP_ASYNC
-        // Async copy: write directly to shared memory without occupying
-        // registers or stalling the warp.
-        __pipeline_memcpy_async(&As[buf][loadARow][loadACol], &a_val, sizeof(T));
-        __pipeline_memcpy_async(&Bs[buf][loadBRow][loadBCol], &b_val, sizeof(T));
-        __pipeline_commit();
+            // Async copy: write directly to shared memory without occupying
+            // registers or stalling the warp.
+            __pipeline_memcpy_async(&As[buf][r][c], &a_val, sizeof(T));
 #else
-        As[buf][loadARow][loadACol] = a_val;
-        Bs[buf][loadBRow][loadBCol] = b_val;
+            As[buf][r][c] = a_val;
+#endif
+        }
+        for (int idx = threadIdx.x; idx < kBElems; idx += blockDim.x) {
+            const int r = idx / LBN;
+            const int c = idx % LBN;
+            const int bRow = tileK * kBK + r;
+            const int bCol = blockCol * LBN + c;
+            const T b_val  = (bRow < K && bCol < N) ? B[bRow * N + bCol] : T{0};
+#ifdef HPC_HAVE_CP_ASYNC
+            __pipeline_memcpy_async(&Bs[buf][r][c], &b_val, sizeof(T));
+#else
+            Bs[buf][r][c] = b_val;
+#endif
+        }
+#ifdef HPC_HAVE_CP_ASYNC
+        __pipeline_commit();
 #endif
     };
 
@@ -429,6 +486,185 @@ kernel_double_buf(const T* __restrict__ A,
     }
 
     // Store register tile.
+    #pragma unroll
+    for (int m = 0; m < kTM; ++m)
+        #pragma unroll
+        for (int n = 0; n < kTN; ++n) {
+            const int gi = cRow + m, gj = cCol + n;
+            if (gi < M && gj < N)
+                C[gi * N + gj] = reg_C[m][n];
+        }
+}
+
+// ============================================================================
+// Kernel 5b: Vectorized loads (float4/double2) + shared-memory XOR swizzle
+// (Level 5)
+//
+// Same register-tile shape as kernel_reg_tile (kBM x kBN = 128x128,
+// kBK=16, kTM x kTN = 8x8 per thread), with two changes:
+//
+//  1. Global -> shared loads use 128-bit vector instructions (float4 for
+//     float, double2 for double) instead of one scalar per thread per
+//     element, cutting the instruction count for the load phase by 4x/2x.
+//
+//     - B's fast (contiguous) dimension in global memory is N, which is
+//       ALSO Bs's fast dimension in shared memory -- so B's load is a
+//       straight vectorized load *and* a vectorized store.
+//     - A's fast (contiguous) dimension in global memory is K, but As is
+//       stored TRANSPOSED (As[k][m], to give the compute loop column
+//       access) -- so A's load is a vectorized LOAD (4/2 consecutive K
+//       values for one fixed row) followed by a SCALAR scatter-store (each
+//       of those K values lands in a different As row, same column).
+//
+//     Vectorized loads require the source address to be 16-byte aligned.
+//     cudaMalloc guarantees the base pointer is (well) aligned, and every
+//     offset used here (`aColBase`, `bColBase`) is constructed to be a
+//     multiple of the vector width -- but only if K (for A) and N (for B)
+//     are ALSO multiples of the vector width. The host-side launcher
+//     therefore only dispatches to this kernel when that holds; otherwise
+//     it falls back to kernel_reg_tile (see `launch()` below).
+//
+//  2. Shared memory uses an XOR "swizzle" instead of the +1-padding trick
+//     used everywhere else in this file, to spread accesses across banks
+//     without wasting a column. `swizzle_slot(row, slot, slots_per_row)`
+//     permutes which physical vector-slot a logical (row, slot) pair maps
+//     to. CORRECTNESS DOES NOT DEPEND ON THIS BEING BANK-CONFLICT-FREE: the
+//     exact same function is called at every write site (A's scalar
+//     scatter-store, B's vectorized store) and every read site (the k-loop
+//     below), so whatever permutation it computes is applied and undone
+//     consistently. Only the *performance* claim (fewer bank conflicts than
+//     padding) is unverified without a profiler on real hardware -- the
+//     *result* is correct regardless, which is why this technique is safe
+//     to include even though this repo has no GPU to validate the perf
+//     benefit against.
+// ============================================================================
+
+// 128-bit vector type selector: float4 for float, double2 for double.
+template <typename T> struct VecTraits;
+template <> struct VecTraits<float>  { using Vec = float4;  static constexpr int kWidth = 4; };
+template <> struct VecTraits<double> { using Vec = double2; static constexpr int kWidth = 2; };
+
+// XOR swizzle over vector-slots within one row of a tile. `slots_per_row`
+// must be a power of two (true for every instantiation in this file: 32 for
+// float's kBM/kBN=128 with kWidth=4, 64 for double's kBM/kBN=128 with
+// kWidth=2). Self-inverse: calling this twice with the same (row,
+// slots_per_row) undoes itself, since XOR-by-a-constant is its own inverse.
+__device__ __forceinline__ int swizzle_slot(int row, int slot, int slots_per_row) {
+    return slot ^ (row & (slots_per_row - 1));
+}
+
+template <typename T>
+__global__ void __launch_bounds__(256)
+kernel_vectorized(const T* __restrict__ A,
+                  const T* __restrict__ B,
+                  T* __restrict__ C,
+                  int M, int K, int N) {
+    using Vec = typename VecTraits<T>::Vec;
+    constexpr int kVecW   = VecTraits<T>::kWidth;
+    constexpr int kASlots = kBM / kVecW;  // 32 (f32) / 64 (f64)
+    constexpr int kBSlots = kBN / kVecW;  // 32 (f32) / 64 (f64)
+
+    const int blockRow = blockIdx.y;
+    const int blockCol = blockIdx.x;
+    const int threadRow = threadIdx.x / (kBN / kTN);
+    const int threadCol = threadIdx.x % (kBN / kTN);
+    const int cRow = blockRow * kBM + threadRow * kTM;
+    const int cCol = blockCol * kBN + threadCol * kTN;
+
+    // No +1 padding here -- swizzle_slot() handles bank conflicts instead,
+    // and padding would break the alignment vectorized stores rely on.
+    __shared__ alignas(16) T As[kBK][kBM];
+    __shared__ alignas(16) T Bs[kBK][kBN];
+
+    T reg_C[kTM][kTN] = {};
+    T reg_A[kTM] = {};
+    T reg_B[kTN] = {};
+
+    const int nTilesK = (K + kBK - 1) / kBK;
+
+    // A: vectorize along K (A's own contiguous dimension). kAVecsPerCol
+    // vector-loads per output column m, each yielding kVecW consecutive
+    // k-values that get scattered (scalar stores) into kVecW different rows
+    // of the transposed As at the same column m.
+    constexpr int kAVecsPerCol = kBK / kVecW;          // 4 (f32) / 8 (f64)
+    constexpr int kATotalVecs  = kBM * kAVecsPerCol;   // 512 (f32) / 1024 (f64)
+    // B: vectorize along N (B's own contiguous dimension, and Bs's fast
+    // dimension too) -- both the load AND the store are vectorized here.
+    constexpr int kBTotalVecs  = kBK * kBSlots;        // 512 (f32) / 1024 (f64)
+
+    for (int tileK = 0; tileK < nTilesK; ++tileK) {
+        // --- A: vectorized load, scalar scatter-store (transposed) ---
+        for (int idx = threadIdx.x; idx < kATotalVecs; idx += blockDim.x) {
+            const int m    = idx / kAVecsPerCol;         // 0..kBM-1
+            const int kvec = idx % kAVecsPerCol;         // 0..kAVecsPerCol-1
+            const int aRow = blockRow * kBM + m;
+            const int aColBase = tileK * kBK + kvec * kVecW;
+
+            Vec v{};
+            // K % kVecW == 0 is guaranteed by the host-side dispatch check
+            // (see launch() below), so `aColBase < K` alone is sufficient
+            // to guarantee the whole vector [aColBase, aColBase+kVecW) is
+            // in-bounds -- see the file's kernel_vectorized dispatch note.
+            if (aRow < M && aColBase < K) {
+                v = *reinterpret_cast<const Vec*>(&A[aRow * K + aColBase]);
+            }
+            const T* velems = reinterpret_cast<const T*>(&v);
+            #pragma unroll
+            for (int e = 0; e < kVecW; ++e) {
+                const int k = kvec * kVecW + e;
+                const int logical_slot = m / kVecW;
+                const int lane         = m % kVecW;
+                const int phys_slot    = swizzle_slot(k, logical_slot, kASlots);
+                As[k][phys_slot * kVecW + lane] = velems[e];
+            }
+        }
+
+        // --- B: vectorized load AND vectorized store ---
+        for (int idx = threadIdx.x; idx < kBTotalVecs; idx += blockDim.x) {
+            const int k    = idx / kBSlots;              // 0..kBK-1
+            const int nvec = idx % kBSlots;               // 0..kBSlots-1 (logical)
+            const int bRow = tileK * kBK + k;
+            const int bColBase = blockCol * kBN + nvec * kVecW;
+
+            Vec v{};
+            // N % kVecW == 0 is likewise guaranteed by the host dispatch.
+            if (bRow < K && bColBase < N) {
+                v = *reinterpret_cast<const Vec*>(&B[bRow * N + bColBase]);
+            }
+            const int phys_slot = swizzle_slot(k, nvec, kBSlots);
+            *reinterpret_cast<Vec*>(&Bs[k][phys_slot * kVecW]) = v;
+        }
+
+        __syncthreads();
+
+        #pragma unroll
+        for (int k = 0; k < kBK; ++k) {
+            #pragma unroll
+            for (int m = 0; m < kTM; ++m) {
+                const int col           = threadRow * kTM + m;
+                const int logical_slot  = col / kVecW;
+                const int lane          = col % kVecW;
+                const int phys_slot     = swizzle_slot(k, logical_slot, kASlots);
+                reg_A[m] = As[k][phys_slot * kVecW + lane];
+            }
+            #pragma unroll
+            for (int n = 0; n < kTN; ++n) {
+                const int col           = threadCol * kTN + n;
+                const int logical_slot  = col / kVecW;
+                const int lane          = col % kVecW;
+                const int phys_slot     = swizzle_slot(k, logical_slot, kBSlots);
+                reg_B[n] = Bs[k][phys_slot * kVecW + lane];
+            }
+            #pragma unroll
+            for (int m = 0; m < kTM; ++m)
+                #pragma unroll
+                for (int n = 0; n < kTN; ++n)
+                    reg_C[m][n] += reg_A[m] * reg_B[n];
+        }
+
+        __syncthreads();
+    }
+
     #pragma unroll
     for (int m = 0; m < kTM; ++m)
         #pragma unroll
@@ -552,6 +788,530 @@ kernel_wmma(const float* __restrict__ A,
     }
 }
 
+// ============================================================================
+// Kernel 7: Raw Tensor Core MMA via mma.sync + ldmatrix (Level 6)
+// Deliberately kept as a SEPARATE kernel from kernel_wmma above, not a
+// refactor of it -- the point is to compare the two abstraction levels.
+//
+// *** UNVERIFIED -- read before trusting this kernel ***
+// This has never been compiled or run: no CUDA toolkit or GPU was available
+// in the environment that wrote it (see README.md's CUDA section and this
+// file's top-of-file note). It follows the PTX ISA's documented instruction
+// shapes and the standard published ldmatrix+mma.sync idiom as precisely as
+// could be reproduced without a reference compile. Unlike a missing
+// #include or a type error, a wrong thread-to-fragment mapping here would
+// silently produce numerically wrong output rather than fail to build or
+// crash -- this is exactly the class of bug the rest of this file's kernels
+// (which use documented C++ APIs: wmma::, __pipeline_memcpy_async, or plain
+// indexed loads) do not risk, and it is exactly why the WMMA kernel above
+// exists as a *separate*, comparatively lower-risk Tensor Core kernel.
+//
+// What this kernel does, one level below WMMA:
+//   WMMA (kernel_wmma):  wmma::load_matrix_sync / wmma::mma_sync -- the
+//                        compiler manages which register holds which matrix
+//                        element; native tile is 16x16x16.
+//   Here:                ldmatrix.sync.aligned.m8n8.x{2,4}.shared.b16 loads
+//                        raw shared-memory addresses into the *exact*
+//                        per-thread registers mma.sync.m16n8k16 expects --
+//                        the hardware does the 32-thread distribution, but
+//                        WHICH address each thread supplies, and whether the
+//                        load needs `.trans`, is this kernel's responsibility
+//                        by hand. Native tile is 16x8x16 (note: 8 wide, not
+//                        16 -- mma.sync's f16 m16n8k16 shape has a narrower
+//                        N than WMMA's 16x16x16, so each warp here issues
+//                        TWO side-by-side MMAs to cover the same 16x16 area
+//                        kernel_wmma computes with one wmma::mma_sync call).
+//
+// Operand layout requirement (fixed by the instruction: only ".row.col" is
+// defined for this shape/type combination -- there is no ".row.row" f16
+// m16n8k16 variant):
+//   A operand must be `.row`  (M x K, K the fast/contiguous axis)
+//   B operand must be `.col`  (K x N, K the fast/contiguous axis)
+//
+// This kernel stores As[[M][K]] in shared memory in A's OWN natural
+// row-major layout (K contiguous) specifically so the A operand needs NO
+// transpose -- unlike every FMA-based kernel earlier in this file, which
+// transposes A into As[K][M] for compute-loop column access. That
+// optimization doesn't apply here (mma.sync does the whole 16x8x16 MMA in
+// one hardware instruction; there is no manual per-element compute loop to
+// optimize for). B is stored Bs[K][N] (N contiguous, B's own natural
+// row-major layout) which is the OPPOSITE of the `.col` (K-contiguous)
+// operand B needs -- so B's ldmatrix call below uses `.trans` to have the
+// instruction transpose it during the load. ldmatrix's `.trans` only
+// changes the internal register shuffle, not the per-thread source-address
+// convention, so this does not change how `b_addr` is computed.
+//
+// ldmatrix address convention (PTX ISA "Warp-level Matrix Load
+// Instruction: ldmatrix"): for `.x4`, each of the 32 lanes supplies ONE
+// address; lanes are grouped in fours of eight (lane/8 = which of the 4
+// 8x8 quadrants, lane%8 = which row within that quadrant), and each
+// supplied address is the START of an 8-contiguous-element row read from
+// shared memory. `.x2` uses only the first 16 lanes' addresses (lane/8 = 0
+// or 1, lane%8 = row); this kernel has every lane (including 16-31)
+// compute a valid, in-bounds address via `lane % 16` for the `.x2` (B)
+// call, since ldmatrix is a warp-collective instruction and every
+// participating lane must supply *some* valid address even where the
+// result is unused.
+//
+// mma.sync.m16n8k16.f32 accumulator layout (PTX ISA "Matrix Fragments for
+// mma.m16n8k16" -- the one piece of this kernel with an independent,
+// well-known citation trail beyond this author's reconstruction):
+//   groupID = lane / 4, threadInGroup = lane % 4
+//   acc[0] -> C[groupID,          threadInGroup*2]
+//   acc[1] -> C[groupID,          threadInGroup*2 + 1]
+//   acc[2] -> C[groupID + 8,      threadInGroup*2]
+//   acc[3] -> C[groupID + 8,      threadInGroup*2 + 1]
+//
+// Requires sm_80+ (Ampere) for the f16 m16n8k16 shape (guarded by
+// __CUDA_ARCH__ below; the host dispatch additionally checks
+// cuda_has_ampere() before ever launching this kernel). Falls back to
+// kernel_wmma on sm_70-75 (Volta/Turing) via the host dispatch.
+// ============================================================================
+
+static constexpr int kMmaM = 16;   // mma.sync m16n8k16 native shape
+static constexpr int kMmaN = 8;
+static constexpr int kMmaK = 16;
+
+// 4x4 warps per block; each warp owns TWO side-by-side 16x8 tiles (16x16
+// total) to match kernel_wmma's per-warp output area for a fair comparison.
+static constexpr int kMmaWarpM  = 4;
+static constexpr int kMmaWarpN  = 4;
+static constexpr int kMmaBlockM = kMmaWarpM * kMmaM;         // 64
+static constexpr int kMmaBlockN = kMmaWarpN * kMmaN * 2;     // 64
+static constexpr int kMmaBlockK = kMmaK;                      // 16
+
+__global__ void __launch_bounds__(512)
+kernel_mma_ldmatrix(const float* __restrict__ A,
+                    const float* __restrict__ B,
+                    float* __restrict__ C,
+                    int M, int K, int N) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+    const int blockRow = blockIdx.y;
+    const int blockCol = blockIdx.x;
+    const int warpId  = threadIdx.x / 32;
+    const int lane    = threadIdx.x % 32;
+    const int warpRow = warpId / kMmaWarpN;   // 0..3
+    const int warpCol = warpId % kMmaWarpN;   // 0..3
+
+    const int cWarpRow  = blockRow * kMmaBlockM + warpRow * kMmaM;
+    const int cWarpCol0 = blockCol * kMmaBlockN + warpCol * (kMmaN * 2);
+    const int cWarpCol1 = cWarpCol0 + kMmaN;
+
+    // A: natural row-major layout (K contiguous) -- matches `.row` directly.
+    // B: natural row-major layout (N contiguous) -- needs `.trans` below.
+    __shared__ __half As[kMmaBlockM][kMmaBlockK];
+    __shared__ __half Bs[kMmaBlockK][kMmaBlockN];
+
+    // mma.m16n8k16.f32 output: 4 f32 registers/thread per 16x8 tile.
+    float acc0[4] = {0.f, 0.f, 0.f, 0.f};
+    float acc1[4] = {0.f, 0.f, 0.f, 0.f};
+
+    const int nTilesK = (K + kMmaBlockK - 1) / kMmaBlockK;
+    const int tid = threadIdx.x;
+
+    for (int tileK = 0; tileK < nTilesK; ++tileK) {
+        // Shared-memory load (fp32 -> fp16), same strided idiom as kernel_wmma.
+        for (int idx = tid; idx < kMmaBlockM * kMmaBlockK; idx += blockDim.x) {
+            const int m = idx / kMmaBlockK;
+            const int k = idx % kMmaBlockK;
+            const int aRow = blockRow * kMmaBlockM + m;
+            const int aCol = tileK * kMmaBlockK + k;
+            const float val = (aRow < M && aCol < K) ? A[aRow * K + aCol] : 0.f;
+            As[m][k] = __float2half(val);
+        }
+        for (int idx = tid; idx < kMmaBlockK * kMmaBlockN; idx += blockDim.x) {
+            const int k = idx / kMmaBlockN;
+            const int n = idx % kMmaBlockN;
+            const int bRow = tileK * kMmaBlockK + k;
+            const int bCol = blockCol * kMmaBlockN + n;
+            const float val = (bRow < K && bCol < N) ? B[bRow * N + bCol] : 0.f;
+            Bs[k][n] = __float2half(val);
+        }
+        __syncthreads();
+
+        if (cWarpRow < M) {
+            // --- A fragment: 16(M)x16(K) tile, 4 quadrants, ldmatrix.x4 (no .trans) ---
+            const int quadIdx  = lane / 8;              // 0..3
+            const int quadRow  = lane % 8;               // 0..7
+            const int aM = warpRow * kMmaM + (quadIdx / 2) * 8 + quadRow;
+            const int aK = (quadIdx % 2) * 8;
+            const __half* a_addr = &As[aM][aK];
+
+            unsigned a_frag[4];
+            asm volatile(
+                "ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3}, [%4];\n"
+                : "=r"(a_frag[0]), "=r"(a_frag[1]), "=r"(a_frag[2]), "=r"(a_frag[3])
+                : "l"(__cvta_generic_to_shared(a_addr)));
+
+            for (int which = 0; which < 2; ++which) {
+                // --- B fragment: 16(K)x8(N) tile, 2 quadrants, ldmatrix.x2 + .trans ---
+                const int bLane    = lane % 16;
+                const int bQuadIdx = bLane / 8;          // 0..1
+                const int bQuadRow = bLane % 8;           // 0..7
+                const int bK = bQuadIdx * 8 + bQuadRow;
+                const int bN = warpCol * (kMmaN * 2) + which * kMmaN;
+                const __half* b_addr = &Bs[bK][bN];
+
+                unsigned b_frag[2];
+                asm volatile(
+                    "ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 {%0,%1}, [%2];\n"
+                    : "=r"(b_frag[0]), "=r"(b_frag[1])
+                    : "l"(__cvta_generic_to_shared(b_addr)));
+
+                float* acc = (which == 0) ? acc0 : acc1;
+                asm volatile(
+                    "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+                    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
+                    : "+f"(acc[0]), "+f"(acc[1]), "+f"(acc[2]), "+f"(acc[3])
+                    : "r"(a_frag[0]), "r"(a_frag[1]), "r"(a_frag[2]), "r"(a_frag[3]),
+                      "r"(b_frag[0]), "r"(b_frag[1]));
+            }
+        }
+
+        __syncthreads();
+    }
+
+    if (cWarpRow < M) {
+        const int groupID = lane / 4;
+        const int tig     = lane % 4;
+        auto store_frag = [&](const float* acc, int cCol) {
+            const int rows[2] = {groupID, groupID + 8};
+            const int cols[2] = {tig * 2, tig * 2 + 1};
+            #pragma unroll
+            for (int rr = 0; rr < 2; ++rr)
+                #pragma unroll
+                for (int cc = 0; cc < 2; ++cc) {
+                    const int gi = cWarpRow + rows[rr];
+                    const int gj = cCol + cols[cc];
+                    if (gi < M && gj < N)
+                        C[gi * N + gj] = acc[rr * 2 + cc];
+                }
+        };
+        store_frag(acc0, cWarpCol0);
+        store_frag(acc1, cWarpCol1);
+    }
+#else
+    // sm_75 and below: the f16 m16n8k16 mma.sync shape used above does not
+    // exist. This branch is never launched on such hardware (host dispatch
+    // checks cuda_has_ampere() first) -- it exists only so the file still
+    // compiles when -arch targets sm_75 or older.
+    (void)A; (void)B; (void)C; (void)M; (void)K; (void)N;
+#endif
+}
+
+// ============================================================================
+// Kernel 8: Hopper warp specialization + TMA (wgmma) -- Level 7
+//
+// ****************************************************************
+// *** BEST-EFFORT, LIKELY-BROKEN, EXPLICITLY UNVERIFIED KERNEL. ***
+// ****************************************************************
+// The user asked for this specific technique with the explicit
+// understanding, agreed in advance, that it would be written as an honest
+// best-effort sketch rather than working code: sm_90a wgmma + TMA has no
+// public C++ intrinsic surface at all (unlike WMMA, unlike even mma.sync/
+// ldmatrix above) -- every input is raw inline PTX and a driver-API
+// tensor-map descriptor, hand-written against the PTX ISA's prose
+// description with no compiler or hardware available anywhere in this
+// project to check it against. Hand-written kernels using these primitives
+// essentially do not exist outside CUTLASS/cuDNN internals; even NVIDIA's
+// own examples build this through the CUTLASS template library, not by
+// hand. Treat every bit-layout and register-mapping comment below as "my
+// best reading of the documentation", not as a verified fact -- several are
+// flagged with an explicit confidence level.
+//
+// What this kernel demonstrates (the two requested techniques):
+//
+//   TMA (Tensor Memory Accelerator): a single thread issues one
+//   instruction (`cp.async.bulk.tensor.2d...`) that asynchronously copies
+//   an entire 2-D tile from global to shared memory, using a descriptor
+//   (`CUtensorMap`) built ONCE on the host via the driver API
+//   (`cuTensorMapEncodeTiled`) that encodes the tensor's global shape,
+//   strides, and box (tile) size. This replaces the "every thread computes
+//   its own address and issues its own load" pattern every other kernel in
+//   this file uses.
+//
+//   Warp specialization: threads in a thread block take on ROLES rather
+//   than all executing identical code. Here, one warpgroup (128 threads)
+//   is the PRODUCER -- it does nothing but issue TMA loads and signal
+//   completion via an mbarrier -- while a second warpgroup is the CONSUMER
+//   -- it waits on that mbarrier, then issues `wgmma.mma_async`
+//   (warpgroup-wide MMA, operating on all 128 consumer threads at once)
+//   directly against the shared-memory tile the producer just staged, with
+//   no per-thread fragment loading step at all (wgmma reads its operands
+//   from shared memory via a 64-bit "matrix descriptor", not from
+//   registers the way mma.sync does).
+//
+// Scope deliberately kept minimal (a single-buffered, non-deeply-pipelined
+// producer/consumer handshake, exact-multiple-of-tile-size M/N/K only, no
+// tail handling) -- a full multi-stage pipeline is exactly the kind of
+// thing CUTLASS exists to get right, and adding more untestable complexity
+// here would not make this kernel more trustworthy.
+//
+// Requires sm_90a specifically (not just sm_90 -- wgmma/TMA are excluded
+// from the portable "family" compute-capability feature set and need the
+// architecture-specific target). Falls back to kernel_mma_ldmatrix (or
+// kernel_wmma) via the host dispatch on non-Hopper hardware.
+// ============================================================================
+
+// ----------------------------------------------------------------------------
+// fp32 -> fp16 staging kernel: TMA needs its source tensor already resident
+// in global memory in the target element type (fp16 here), unlike the WMMA/
+// mma.sync kernels above, which convert on-the-fly per shared-memory tile.
+// Confidence: HIGH (this is a completely ordinary elementwise kernel).
+// ----------------------------------------------------------------------------
+__global__ void kernel_f32_to_f16(const float* __restrict__ src,
+                                  __half* __restrict__ dst,
+                                  int count) {
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < count)
+        dst[idx] = __float2half(src[idx]);
+}
+
+// Thread-block tile: one warpgroup (128 threads) computes one 64x64 output
+// tile per k-step of 16 (wgmma.m64n64k16 f16 native shape). Declared
+// OUTSIDE the sm_90a guard below (plain compile-time constants, not
+// device-arch-specific) so the host-side launch() dispatcher can also see
+// them for grid-size computation.
+static constexpr int kWgmmaM = 64;
+static constexpr int kWgmmaN = 64;
+static constexpr int kWgmmaK = 16;
+static constexpr int kWgmmaWarpgroupThreads = 128;
+
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
+
+// ----------------------------------------------------------------------------
+// Shared-memory matrix descriptor for wgmma operands (PTX ISA "Asynchronous
+// Warpgroup Level Matrix Shared Memory Layout" / matrix descriptor format).
+// Confidence: MEDIUM -- the field existence (start address, leading-dim
+// offset, stride-dim offset, swizzle mode, all in units of 16 bytes) is
+// well attested across public Hopper-kernel writeups; the EXACT bit offsets
+// below are this author's best reconstruction and are the single most
+// likely place in this file for a silent mismatch.
+// ----------------------------------------------------------------------------
+__device__ __forceinline__ uint64_t make_smem_desc(const void* smem_ptr,
+                                                    int leading_dim_bytes,
+                                                    int stride_dim_bytes) {
+    uint64_t addr = static_cast<uint64_t>(__cvta_generic_to_shared(smem_ptr));
+    uint64_t desc = 0;
+    desc |= (addr >> 4) & 0x3FFF;                                   // bits 0-13
+    desc |= (static_cast<uint64_t>(leading_dim_bytes >> 4) & 0x3FFF) << 16;  // bits 16-29
+    desc |= (static_cast<uint64_t>(stride_dim_bytes  >> 4) & 0x3FFF) << 32;  // bits 32-45
+    // Swizzle mode left at 0 (none) -- bits 62-63. A real implementation
+    // would match this to the swizzle mode baked into the TMA descriptor
+    // that populated this shared-memory tile; left at "none" here to avoid
+    // compounding an already-uncertain bit layout with an unverified
+    // swizzle-mode interaction.
+    return desc;
+}
+
+__global__ void __launch_bounds__(256)  // 2 warpgroups: producer + consumer
+kernel_hopper_wgmma(const __half* __restrict__ A16,  // pre-converted, row-major MxK
+                    const __half* __restrict__ B16,  // pre-converted, row-major KxN
+                    float* __restrict__ C,
+                    int M, int K, int N,
+                    const __grid_constant__ CUtensorMap tensorMapA,
+                    const __grid_constant__ CUtensorMap tensorMapB) {
+    const int warpgroupId = threadIdx.x / kWgmmaWarpgroupThreads;  // 0 = producer, 1 = consumer
+    const bool isProducer  = (warpgroupId == 0);
+
+    const int blockRow = blockIdx.y;
+    const int blockCol = blockIdx.x;
+
+    __shared__ alignas(128) __half As[kWgmmaM][kWgmmaK];
+    __shared__ alignas(128) __half Bs[kWgmmaK][kWgmmaN];
+    // Two mbarriers: `full` (producer -> consumer: "tile is loaded"),
+    // `empty` (consumer -> producer: "tile has been consumed, reuse it").
+    // Single-buffered by design (see file-level scope note above) -- a
+    // production pipeline would use N buffers and N mbarrier pairs.
+    __shared__ uint64_t full_bar;
+    __shared__ uint64_t empty_bar;
+
+    if (threadIdx.x == 0) {
+        // mbarrier.init expects the *thread count* that will arrive on it.
+        // `full_bar`: 1 arrival expected (the single TMA-issuing thread,
+        // whose "arrive" is implicit in the TMA instruction's
+        // mbarrier::complete_tx qualifier). `empty_bar`: all 128 consumer
+        // threads must finish reading before the producer reuses the tile.
+        asm volatile("mbarrier.init.shared.b64 [%0], 1;\n"
+                    :: "l"(__cvta_generic_to_shared(&full_bar)));
+        asm volatile("mbarrier.init.shared.b64 [%0], %1;\n"
+                    :: "l"(__cvta_generic_to_shared(&empty_bar)),
+                       "r"(kWgmmaWarpgroupThreads));
+    }
+    __syncthreads();
+
+    // Accumulator: wgmma.m64n64k16.f32 output distributed across the 128
+    // consumer threads. Confidence: LOW on the exact per-thread (row,col)
+    // mapping used at STORE time below -- see the comment there. The
+    // register COUNT (32 f32 per thread for a 64x64 tile / 128 threads =
+    // 32 elements/thread) is a simple area/thread-count computation and is
+    // high confidence; which 32 (row,col) pairs a given thread owns is not.
+    float acc[32] = {};
+
+    const int nTilesK = (K + kWgmmaK - 1) / kWgmmaK;
+
+    for (int tileK = 0; tileK < nTilesK; ++tileK) {
+        if (isProducer) {
+            if (threadIdx.x == 0) {
+                if (tileK > 0) {
+                    // Wait for the consumer to finish with the PREVIOUS
+                    // tile's data before overwriting it (single-buffered).
+                    asm volatile(
+                        "{\n"
+                        ".reg .pred p;\n"
+                        "L_WAIT_EMPTY:\n"
+                        "mbarrier.try_wait.parity.shared.b64 p, [%0], 0;\n"
+                        "@!p bra L_WAIT_EMPTY;\n"
+                        "}\n"
+                        :: "l"(__cvta_generic_to_shared(&empty_bar)));
+                }
+                // Issue the two TMA bulk-tensor loads (A tile, B tile).
+                // Coordinates are in ELEMENTS, per the CUtensorMap's own
+                // element type -- (col, row) order per TMA's convention of
+                // fastest-varying dimension first.
+                asm volatile(
+                    "cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::"
+                    "complete_tx::bytes [%0], [%1, {%2, %3}], [%4];\n"
+                    :: "l"(__cvta_generic_to_shared(&As[0][0])),
+                       "l"(reinterpret_cast<uint64_t>(&tensorMapA)),
+                       "r"(tileK * kWgmmaK), "r"(blockRow * kWgmmaM),
+                       "l"(__cvta_generic_to_shared(&full_bar)));
+                asm volatile(
+                    "cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::"
+                    "complete_tx::bytes [%0], [%1, {%2, %3}], [%4];\n"
+                    :: "l"(__cvta_generic_to_shared(&Bs[0][0])),
+                       "l"(reinterpret_cast<uint64_t>(&tensorMapB)),
+                       "r"(blockCol * kWgmmaN), "r"(tileK * kWgmmaK),
+                       "l"(__cvta_generic_to_shared(&full_bar)));
+            }
+            // Non-issuing producer threads simply idle this iteration --
+            // real warp-specialized kernels usually give the producer
+            // warpgroup additional prefetch/bookkeeping work; omitted here
+            // to keep an already-speculative kernel as small as possible.
+        } else {
+            // Consumer: wait for the producer's TMA loads to complete.
+            if (threadIdx.x == kWgmmaWarpgroupThreads) {
+                asm volatile(
+                    "{\n"
+                    ".reg .pred p;\n"
+                    "L_WAIT_FULL:\n"
+                    "mbarrier.try_wait.parity.shared.b64 p, [%0], %1;\n"
+                    "@!p bra L_WAIT_FULL;\n"
+                    "}\n"
+                    :: "l"(__cvta_generic_to_shared(&full_bar)), "r"(tileK & 1));
+            }
+            __syncwarp();  // only meaningful within the issuing warp; see note below
+
+            const uint64_t descA = make_smem_desc(&As[0][0], kWgmmaK * 2, kWgmmaM * kWgmmaK * 2);
+            const uint64_t descB = make_smem_desc(&Bs[0][0], kWgmmaN * 2, kWgmmaK * kWgmmaN * 2);
+
+            // wgmma.mma_async: warpgroup-wide, all 128 consumer threads
+            // issue the IDENTICAL instruction (SIMT-cooperative, like
+            // wmma:: / mma.sync, but at warpgroup granularity). Accumulator
+            // registers persist across calls (scale-d=1 after the first).
+            // Confidence: MEDIUM on the instruction syntax/operand count
+            // (32 accumulator registers matches the documented m64n64k16.f32
+            // shape); LOW on whether `p` (scale-d) and the two trailing
+            // 0-immediates (trans-a, trans-b) are in the right operand
+            // positions for this PTX ISA version.
+            asm volatile(
+                "wgmma.mma_async.sync.aligned.m64n64k16.f32.f16.f16 "
+                "{%0,%1,%2,%3,%4,%5,%6,%7,%8,%9,%10,%11,%12,%13,%14,%15,"
+                "%16,%17,%18,%19,%20,%21,%22,%23,%24,%25,%26,%27,%28,%29,%30,%31}, "
+                "%32, %33, %34, 0, 0;\n"
+                : "+f"(acc[0]),  "+f"(acc[1]),  "+f"(acc[2]),  "+f"(acc[3]),
+                  "+f"(acc[4]),  "+f"(acc[5]),  "+f"(acc[6]),  "+f"(acc[7]),
+                  "+f"(acc[8]),  "+f"(acc[9]),  "+f"(acc[10]), "+f"(acc[11]),
+                  "+f"(acc[12]), "+f"(acc[13]), "+f"(acc[14]), "+f"(acc[15]),
+                  "+f"(acc[16]), "+f"(acc[17]), "+f"(acc[18]), "+f"(acc[19]),
+                  "+f"(acc[20]), "+f"(acc[21]), "+f"(acc[22]), "+f"(acc[23]),
+                  "+f"(acc[24]), "+f"(acc[25]), "+f"(acc[26]), "+f"(acc[27]),
+                  "+f"(acc[28]), "+f"(acc[29]), "+f"(acc[30]), "+f"(acc[31])
+                : "l"(descA), "l"(descB), "r"(tileK > 0 ? 1 : 0));
+            asm volatile("wgmma.commit_group.sync.aligned;\n");
+            asm volatile("wgmma.wait_group.sync.aligned 0;\n");
+
+            // Signal the producer that this tile's shared-memory buffer is
+            // free to be overwritten with the next one.
+            __syncthreads();  // all 128 consumer threads done reading
+            if (threadIdx.x == kWgmmaWarpgroupThreads) {
+                asm volatile("mbarrier.arrive.shared.b64 _, [%0];\n"
+                            :: "l"(__cvta_generic_to_shared(&empty_bar)));
+            }
+        }
+    }
+
+    // Store the accumulator to global C.
+    // Confidence: LOW -- see the accumulator declaration comment above.
+    // This uses a placeholder linear decomposition (NOT a verified wgmma
+    // output layout) purely so the kernel has SOME defined store behaviour;
+    // treat any numerical result from this kernel as unverified even in
+    // the cases where it happens to compile and run.
+    if (!isProducer) {
+        const int consumerTid = threadIdx.x - kWgmmaWarpgroupThreads;  // 0..127
+        #pragma unroll
+        for (int e = 0; e < 32; ++e) {
+            const int flat = consumerTid * 32 + e;   // 0..4095 -- placeholder mapping
+            const int r = flat / kWgmmaN;
+            const int c = flat % kWgmmaN;
+            const int gi = blockRow * kWgmmaM + r;
+            const int gj = blockCol * kWgmmaN + c;
+            if (gi < M && gj < N)
+                C[gi * N + gj] = acc[e];
+        }
+    }
+}
+
+#else  // __CUDA_ARCH__ < 900 (or host compilation pass for a non-Hopper-only build)
+
+// sm_90a-only: this branch exists purely so the translation unit compiles
+// when no -arch target is Hopper. Never launched on such hardware (host
+// dispatch checks cuda_has_hopper() first).
+__global__ void kernel_hopper_wgmma(const __half* __restrict__, const __half* __restrict__,
+                                    float* __restrict__, int, int, int,
+                                    const __grid_constant__ CUtensorMap,
+                                    const __grid_constant__ CUtensorMap) {}
+
+#endif  // __CUDA_ARCH__ >= 900
+
+// ----------------------------------------------------------------------------
+// Host-side TMA descriptor construction (driver API).
+// Confidence: MEDIUM -- cuTensorMapEncodeTiled's signature and parameter
+// meanings are drawn from the CUDA driver API reference; the specific
+// element/data-type and swizzle/interleave/L2-promotion/OOB-fill enum
+// values chosen below (all "none"/"default") are the least risky choice
+// for each field, not a performance-tuned configuration.
+// ----------------------------------------------------------------------------
+static CUtensorMap make_tensor_map_2d(const __half* globalAddr, std::uint64_t rows,
+                                      std::uint64_t cols, std::uint32_t boxRows,
+                                      std::uint32_t boxCols) {
+    CUtensorMap tensorMap{};
+    // TMA addresses tensors as {fastest-varying dim, ..., slowest-varying
+    // dim}; for a row-major [rows x cols] fp16 matrix, cols is fastest.
+    const cuuint64_t globalDim[2]     = {cols, rows};
+    const cuuint64_t globalStrides[1] = {cols * sizeof(__half)};  // rank-1: only the non-fastest dim needs an explicit stride
+    const cuuint32_t boxDim[2]        = {boxCols, boxRows};
+    const cuuint32_t elementStrides[2] = {1, 1};
+
+    const CUresult res = cuTensorMapEncodeTiled(
+        &tensorMap,
+        CU_TENSOR_MAP_DATA_TYPE_FLOAT16,
+        /*tensorRank=*/2,
+        const_cast<void*>(static_cast<const void*>(globalAddr)),
+        globalDim,
+        globalStrides,
+        boxDim,
+        elementStrides,
+        CU_TENSOR_MAP_INTERLEAVE_NONE,
+        CU_TENSOR_MAP_SWIZZLE_NONE,
+        CU_TENSOR_MAP_L2_PROMOTION_NONE,
+        CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+    if (res != CUDA_SUCCESS) {
+        throw std::runtime_error("cuTensorMapEncodeTiled failed (code " +
+                                 std::to_string(static_cast<int>(res)) + ")");
+    }
+    return tensorMap;
+}
 
 // ============================================================================
 // Host-side device count query
@@ -581,6 +1341,7 @@ static bool device_has_capability(int major, int minor) noexcept {
 
 bool cuda_has_tensor_cores() noexcept { return device_has_capability(7, 0); }
 bool cuda_has_ampere()       noexcept { return device_has_capability(8, 0); }
+bool cuda_has_hopper()       noexcept { return device_has_capability(9, 0); }
 
 // ============================================================================
 // RAII device buffer
@@ -602,7 +1363,8 @@ struct DeviceBuffer {
 // Generic host launcher
 // ============================================================================
 
-enum class GemmKind { Naive, Reordered, Blocked, RegTile, DoubleBuf, Wmma };
+enum class GemmKind { Naive, Reordered, Blocked, RegTile, DoubleBuf, Wmma,
+                      Vectorized, MmaLdmatrix, HopperWgmma };
 
 template <typename T>
 static void launch(GemmKind kind, const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
@@ -664,6 +1426,110 @@ static void launch(GemmKind kind, const Matrix<T>& A, const Matrix<T>& B, Matrix
                 kernel_double_buf<T><<<grid2, block2>>>(dA.ptr, dB.ptr, dC.ptr, M, K, N);
             }
         }
+
+    } else if (kind == GemmKind::Vectorized) {
+        // Vectorized loads require K and N to be multiples of the 128-bit
+        // vector width (4 elements for float, 2 for double) -- see
+        // kernel_vectorized's file comment. Falls back to the (now-fixed)
+        // kernel_reg_tile otherwise, which is always correct for any shape.
+        constexpr int kVecW = VecTraits<T>::kWidth;
+        if (K % kVecW == 0 && N % kVecW == 0) {
+            const dim3 block(256);
+            const dim3 grid((N + kBN-1)/kBN, (M + kBM-1)/kBM);
+            kernel_vectorized<T><<<grid, block>>>(dA.ptr, dB.ptr, dC.ptr, M, K, N);
+        } else {
+            const dim3 block(256);
+            const dim3 grid((N + kBN-1)/kBN, (M + kBM-1)/kBM);
+            kernel_reg_tile<T><<<grid, block>>>(dA.ptr, dB.ptr, dC.ptr, M, K, N);
+        }
+
+    } else if (kind == GemmKind::MmaLdmatrix) {
+        // Raw mma.sync + ldmatrix is fp32-only (like WMMA) and needs sm_80+
+        // for the f16 m16n8k16 shape used. Falls back to kernel_wmma
+        // (sm_70+) otherwise.
+        if constexpr (!std::is_same_v<T, float>) {
+            throw std::runtime_error("gemm_cuda_mma_ldmatrix is only supported for float");
+        } else {
+            if (cuda_has_ampere()) {
+                const dim3 block(kMmaWarpM * kMmaWarpN * 32);  // 512 threads
+                const dim3 grid((N + kMmaBlockN-1)/kMmaBlockN, (M + kMmaBlockM-1)/kMmaBlockM);
+                kernel_mma_ldmatrix<<<grid, block>>>(
+                    reinterpret_cast<const float*>(dA.ptr),
+                    reinterpret_cast<const float*>(dB.ptr),
+                    reinterpret_cast<float*>(dC.ptr), M, K, N);
+            } else if (cuda_has_tensor_cores()) {
+                const dim3 block(kWarpM * kWarpN * 32);
+                const dim3 grid((N + kBlockN-1)/kBlockN, (M + kBlockM-1)/kBlockM);
+                kernel_wmma<<<grid, block>>>(
+                    reinterpret_cast<const float*>(dA.ptr),
+                    reinterpret_cast<const float*>(dB.ptr),
+                    reinterpret_cast<float*>(dC.ptr), M, K, N);
+            } else {
+                constexpr int FLBM = kDBufBM<float>;
+                constexpr int FLBN = kDBufBN<float>;
+                const dim3 block2(256);
+                const dim3 grid2((N + FLBN-1)/FLBN, (M + FLBM-1)/FLBM);
+                kernel_double_buf<T><<<grid2, block2>>>(dA.ptr, dB.ptr, dC.ptr, M, K, N);
+            }
+        }
+
+    } else if (kind == GemmKind::HopperWgmma) {
+        // UNVERIFIED -- see kernel_hopper_wgmma's file comment. fp32-only,
+        // sm_90a-only; requires M/N/K to be exact multiples of the wgmma
+        // tile shape (no tail handling in this deliberately-minimal sketch).
+        // Falls back to MmaLdmatrix/Wmma/double_buf otherwise, in that order.
+        if constexpr (!std::is_same_v<T, float>) {
+            throw std::runtime_error("gemm_cuda_hopper_wgmma is only supported for float");
+        } else {
+            const bool exactTiles = (M % kWgmmaM == 0) && (N % kWgmmaN == 0) && (K % kWgmmaK == 0);
+            if (cuda_has_hopper() && exactTiles) {
+                // Stage A, B into fp16 global buffers -- TMA needs its
+                // source tensor already resident in the target element type.
+                DeviceBuffer<__half> dA16(static_cast<std::size_t>(M) * K);
+                DeviceBuffer<__half> dB16(static_cast<std::size_t>(K) * N);
+                {
+                    const int threads = 256;
+                    const int blocksA = (M * K + threads - 1) / threads;
+                    const int blocksB = (K * N + threads - 1) / threads;
+                    kernel_f32_to_f16<<<blocksA, threads>>>(
+                        reinterpret_cast<const float*>(dA.ptr), dA16.ptr, M * K);
+                    kernel_f32_to_f16<<<blocksB, threads>>>(
+                        reinterpret_cast<const float*>(dB.ptr), dB16.ptr, K * N);
+                    CUDA_CHECK(cudaGetLastError());
+                }
+                const CUtensorMap tensorMapA = make_tensor_map_2d(
+                    dA16.ptr, static_cast<std::uint64_t>(M), static_cast<std::uint64_t>(K),
+                    kWgmmaM, kWgmmaK);
+                const CUtensorMap tensorMapB = make_tensor_map_2d(
+                    dB16.ptr, static_cast<std::uint64_t>(K), static_cast<std::uint64_t>(N),
+                    kWgmmaK, kWgmmaN);
+                const dim3 block(2 * kWgmmaWarpgroupThreads);  // producer + consumer warpgroups
+                const dim3 grid(N / kWgmmaN, M / kWgmmaM);
+                kernel_hopper_wgmma<<<grid, block>>>(
+                    dA16.ptr, dB16.ptr, reinterpret_cast<float*>(dC.ptr), M, K, N,
+                    tensorMapA, tensorMapB);
+            } else if (cuda_has_ampere()) {
+                const dim3 block(kMmaWarpM * kMmaWarpN * 32);
+                const dim3 grid((N + kMmaBlockN-1)/kMmaBlockN, (M + kMmaBlockM-1)/kMmaBlockM);
+                kernel_mma_ldmatrix<<<grid, block>>>(
+                    reinterpret_cast<const float*>(dA.ptr),
+                    reinterpret_cast<const float*>(dB.ptr),
+                    reinterpret_cast<float*>(dC.ptr), M, K, N);
+            } else if (cuda_has_tensor_cores()) {
+                const dim3 block(kWarpM * kWarpN * 32);
+                const dim3 grid((N + kBlockN-1)/kBlockN, (M + kBlockM-1)/kBlockM);
+                kernel_wmma<<<grid, block>>>(
+                    reinterpret_cast<const float*>(dA.ptr),
+                    reinterpret_cast<const float*>(dB.ptr),
+                    reinterpret_cast<float*>(dC.ptr), M, K, N);
+            } else {
+                constexpr int FLBM = kDBufBM<float>;
+                constexpr int FLBN = kDBufBN<float>;
+                const dim3 block2(256);
+                const dim3 grid2((N + FLBN-1)/FLBN, (M + FLBM-1)/FLBM);
+                kernel_double_buf<T><<<grid2, block2>>>(dA.ptr, dB.ptr, dC.ptr, M, K, N);
+            }
+        }
     }
 
     CUDA_CHECK(cudaGetLastError());
@@ -699,6 +1565,18 @@ void gemm_cuda_double_buf(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) 
 void gemm_cuda_wmma(const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C) {
     launch<float>(GemmKind::Wmma, A, B, C);
 }
+template <typename T>
+void gemm_cuda_vectorized(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
+    launch<T>(GemmKind::Vectorized, A, B, C);
+}
+// Raw mma.sync + ldmatrix is float-only, like WMMA.
+void gemm_cuda_mma_ldmatrix(const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C) {
+    launch<float>(GemmKind::MmaLdmatrix, A, B, C);
+}
+// Hopper wgmma+TMA is float-only. UNVERIFIED -- see kernel_hopper_wgmma.
+void gemm_cuda_hopper_wgmma(const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C) {
+    launch<float>(GemmKind::HopperWgmma, A, B, C);
+}
 
 // ============================================================================
 // Explicit instantiations
@@ -714,6 +1592,8 @@ template void gemm_cuda_reg_tile<float>(const Matrix<float>&, const Matrix<float
 template void gemm_cuda_reg_tile<double>(const Matrix<double>&, const Matrix<double>&, Matrix<double>&);
 template void gemm_cuda_double_buf<float>(const Matrix<float>&, const Matrix<float>&, Matrix<float>&);
 template void gemm_cuda_double_buf<double>(const Matrix<double>&, const Matrix<double>&, Matrix<double>&);
+template void gemm_cuda_vectorized<float>(const Matrix<float>&, const Matrix<float>&, Matrix<float>&);
+template void gemm_cuda_vectorized<double>(const Matrix<double>&, const Matrix<double>&, Matrix<double>&);
 
 }  // namespace hpc::gemm
 
