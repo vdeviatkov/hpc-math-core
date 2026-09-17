@@ -348,8 +348,8 @@ found and fixed five genuine, previously-unexercised bugs:
 
 See each kernel's section below and its file comment in `gemm_kernels.cu`
 (search "found running on real hardware") for the full per-bug writeup,
-and the top-level README's
-[§ CUDA kernels](../../README.md#cuda-kernels-bench_gemm_cuda) for
+and
+[§ CUDA kernels](../../docs/benchmarks.md#nvidia-rtx-5080--cuda) for
 measured throughput. **Level 7 (Hopper wgmma + TMA) remains genuinely
 unverified** — it requires real `sm_90a` hardware, which even this
 Blackwell GPU is not (`cuda_has_hopper()` correctly returns false and the
@@ -631,8 +631,8 @@ hardware (RTX 5080, Blackwell sm_120)**. Motivated by a direct comparison
 against cuBLAS: Levels 4/6 (`gemm_cuda_wmma`/`gemm_cuda_mma_ldmatrix`)
 measured only ~5 TFLOP/s each on this GPU, while cuBLAS's own dense-FP16
 Tensor Core path measured ~118 TFLOP/s compute-only on the same hardware
-(see the top-level README's
-[§ Reference cuBLAS](../../README.md#reference-cublas---is-100-200-tflops-reachable-on-this-gpu)).
+(see
+[§ Reference cuBLAS](../../docs/benchmarks.md#reference-cublas---is-100-200-tflops-reachable-on-this-gpu)).
 That ~24x gap is almost entirely pipelining and tile size, not precision
 or instruction choice — every kernel above already uses fp16 Tensor
 Cores. This kernel closes most of that gap the way CUTLASS-style kernels
@@ -752,8 +752,8 @@ generically.
 ### Performance ladder (measured on NVIDIA RTX 5080, Blackwell sm_120, f32, N=4096)
 
 Real measured numbers from `bench_gemm_cuda` (2026-08-29) — see the
-top-level README's
-[§ CUDA speedup summary](../../README.md#cuda-speedup-summary-f32-n4096)
+measured throughput in
+[§ CUDA speedup summary](../../docs/benchmarks.md#cuda-speedup-summary-f32-n4096)
 for the full benchmark table this is drawn from. All CUDA benchmarks
 include host↔device transfer time.
 
@@ -790,8 +790,8 @@ see its section above. It remains genuinely unverified.
 > TFLOP/s) — by applying exactly the multi-stage-pipelining and
 > bigger-tile fixes the previous version of this note said Level 7 (and
 > production libraries like cuBLAS/CUTLASS) were "reaching for." See
-> Level 8's section above and the top-level README's
-> [§ Reference cuBLAS](../../README.md#reference-cublas---is-100-200-tflops-reachable-on-this-gpu)
+> Level 8's section above and
+> [§ Reference cuBLAS](../../docs/benchmarks.md#reference-cublas---is-100-200-tflops-reachable-on-this-gpu)
 > for the full compute-only comparison and what closing the remaining gap
 > to cuBLAS would still require (deeper pipelining, WMMA-specific
 > shared-memory swizzling, split-K).
@@ -825,9 +825,9 @@ state.counters["ampere_async"] = hpc::gemm::cuda_has_ampere() ? 1.0 : 0.0;
 
 ## Algorithm 10 — ARM SME2 (Scalable Matrix Extension)
 
-**Verified end-to-end on Apple M4 Max** — see the top-level README for
+**Verified end-to-end on Apple M4 Max** — see [docs/benchmarks.md](../../docs/benchmarks.md) for
 measured GFLOP/s. Opt-in via `-DHPC_ENABLE_SME=ON` (see
-[§ SME and AMX build flags](../../README.md#sme-and-amx-build-flags)).
+[§ SME and AMX build flags](../../docs/build.md#sme-and-amx-build-flags)).
 
 ### Why this is a different primitive, not "wider NEON/SVE"
 
@@ -928,10 +928,10 @@ x86 — falls back to `gemm_sve_blocked` (SVE hardware), `gemm_neon_blocked`
 
 ## Algorithm 11 — Apple AMX (via Accelerate.framework)
 
-**Verified on Apple M4 Max** — see the top-level README for measured
+**Verified on Apple M4 Max** — see [docs/benchmarks.md](../../docs/benchmarks.md) for measured
 GFLOP/s (up to 3.3 TFLOP/s f32). On by default on Apple platforms
 (`HPC_ENABLE_AMX`, see
-[§ SME and AMX build flags](../../README.md#sme-and-amx-build-flags)).
+[§ SME and AMX build flags](../../docs/build.md#sme-and-amx-build-flags)).
 
 ### Which "AMX" this is
 
@@ -999,4 +999,4 @@ down the x86/scalar chain).
 
 ## Benchmark Results
 
-See [../../README.md](../../README.md) for full benchmark tables, speedup analysis, and key observations.
+See [docs/benchmarks.md](../../docs/benchmarks.md) for full benchmark tables, speedup analysis, and key observations.

@@ -5,7 +5,7 @@ family used in this repo. For the full derivation (loop diagrams, register
 tiling math, per-kernel memory-access tables) see
 [src/gemm/README.md](../src/gemm/README.md). For the cache theory behind
 *why* loop order matters, see [cache-behavior.md](cache-behavior.md). For
-measured GFLOP/s, see the top-level [README.md](../README.md).
+measured GFLOP/s, see [benchmarks.md](benchmarks.md).
 
 ---
 
@@ -133,9 +133,9 @@ transposed WMMA fragments, a swapped `ldmatrix` quadrant mapping), then
 motivated writing Level 8 after a cuBLAS reference comparison showed
 Levels 4/6's ~5 TFLOP/s was far below this GPU's ~118 TFLOP/s realistic
 Tensor Core ceiling; Level 8 reaches ~82 TFLOP/s (~16× Level 4, ~70% of
-cuBLAS) using only the documented `wmma::` API. See the top-level README's
-[§ CUDA kernels](../README.md#cuda-kernels-bench_gemm_cuda) and
-[§ Reference cuBLAS](../README.md#reference-cublas---is-100-200-tflops-reachable-on-this-gpu)
+cuBLAS) using only the documented `wmma::` API. See
+[benchmarks.md § NVIDIA RTX 5080 — CUDA](benchmarks.md#nvidia-rtx-5080--cuda) and
+[§ Reference cuBLAS](benchmarks.md#reference-cublas---is-100-200-tflops-reachable-on-this-gpu)
 for the full writeups. **Level 7 (Hopper `wgmma`+TMA) remains unverified**:
 it requires real `sm_90a` hardware, which even this Blackwell GPU is not,
 and correctly `SKIP`s at runtime — it is explicitly a best-effort sketch

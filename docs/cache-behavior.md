@@ -158,3 +158,31 @@ Peak compute = cores × SIMD width × FMA throughput × frequency
 ```
 This motivates the SIMD implementations in Steps 2 and 3.
 
+
+---
+
+## 9. GPU Memory Hierarchy
+
+The same latency ladder exists on a GPU, with one extra tier — per-SM shared memory — that the CUDA kernels in [src/gemm/README.md](../src/gemm/README.md#algorithm-9--cuda-kernels-cudahpp--srccudagemm_kernelscu) exploit explicitly.
+
+```
+                  ┌────────────────────────────────────────────────┐
+                  │  GPU (e.g. NVIDIA A100 80 GB)                  │
+  ┌───────────────┴──────────────┐  ┌──────────────────────────┐   │
+  │  SM 0  (Streaming Multiproc) │  │  SM 1  …  SM 107         │   │
+  │  ┌─────────┐  ┌───────────┐  │  │                          │   │
+  │  │Registers│  │  Shared   │  │  │   (same structure)       │   │
+  │  │ 256 KB  │  │  Memory / │  │  │                          │   │
+  │  │per SM   │  │  L1 Cache │  │  │                          │   │
+  │  │  ~1 cy  │  │  192 KB   │  │  │                          │   │
+  │  │         │  │  ~4 cy    │  │  │                          │   │
+  │  └─────────┘  └─────┬─────┘  │  │                          │   │
+  └────────────────────-┼────────┘  └──────────────────────────┘   │
+                        │  L2 Cache: 40–72 MB shared across SMs     │
+                        │  ~200 cy, ~5 TB/s                         │
+                        │  HBM2e / HBM3 DRAM: 80 GB                │
+                        │  ~400–3900 GB/s                           │
+                        └────────────────────────────────────────────
+```
+
+**Warp coalescence:** 32 threads in a warp issue memory loads together. If consecutive threads access consecutive addresses, the hardware merges them into a single 128-byte transaction. In our kernels, thread `(ty, tx)` computes `C(i, j)` where `j = blockCol*TILE + tx` — so consecutive threads in a warp differ only in `tx`, giving coalesced access to B rows and C rows.

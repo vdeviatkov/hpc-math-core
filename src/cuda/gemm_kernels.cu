@@ -2102,7 +2102,7 @@ void gemm_cuda_cublas_tf32(const Matrix<float>& A, const Matrix<float>& B, Matri
 // Every kernel above -- including gemm_cuda_cublas/_tf32 just above -- times
 // a FULL round trip (cudaMalloc + H2D copy + compute + D2H copy) on every
 // call, by design, so every kernel in this file is measured the same way
-// (see the top-level README's "all CUDA benchmarks include host<->device
+// (see docs/benchmarks.md's "all CUDA benchmarks include host<->device
 // transfer time" note). That is the wrong methodology to answer "what is
 // this GPU's actual achievable compute throughput" at problem sizes large
 // enough to matter: at N=16384 the ~3.2 GB of host<->device traffic plus
