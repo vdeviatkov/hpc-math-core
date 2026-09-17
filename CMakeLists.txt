@@ -152,7 +152,7 @@ int main() { probe(); return 0; }
     if(NOT _HPC_SME_FOUND)
         message(WARNING "HPC_ENABLE_SME=ON but no candidate flag produced SME code that "
                          "actually runs on this (compiler, hardware) pair — gemm_sme_* will "
-                         "fall back to SVE/NEON/scalar at compile time (no SIGILL risk).")
+                         "not be compiled (declared = delete; benchmarks report SKIPPED).")
     endif()
 endif()
 
@@ -239,7 +239,6 @@ if(HPC_ENABLE_AVX512)
             endif()
         endforeach()
     endif()
-    add_compile_definitions(HPC_HAS_AVX512)
     message(STATUS "AVX-512 extensions enabled")
 endif()
 
@@ -267,16 +266,16 @@ set(HPC_AMX_ENABLED FALSE)
 if(HPC_ENABLE_AMX)
     if(NOT APPLE)
         message(WARNING "HPC_ENABLE_AMX=ON but not building for Apple — Accelerate.framework "
-                         "is Apple-only; gemm_amx_* will fall back to gemm_avx512_*/scalar.")
+                         "is Apple-only; gemm_amx_* will not be compiled.")
     else()
         find_library(HPC_ACCELERATE_FRAMEWORK Accelerate)
         if(HPC_ACCELERATE_FRAMEWORK)
             set(HPC_AMX_ENABLED TRUE)
-            add_compile_definitions(HPC_HAS_AMX ACCELERATE_NEW_LAPACK)
+            add_compile_definitions(HPC_ACCELERATE_AVAILABLE ACCELERATE_NEW_LAPACK)
             message(STATUS "Apple AMX enabled via Accelerate.framework (${HPC_ACCELERATE_FRAMEWORK})")
         else()
             message(WARNING "HPC_ENABLE_AMX=ON but Accelerate.framework was not found — "
-                             "gemm_amx_* will fall back to gemm_avx512_*/scalar.")
+                             "gemm_amx_* will not be compiled.")
         endif()
     endif()
 endif()

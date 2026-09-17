@@ -85,57 +85,72 @@ constexpr const char* precision_label() {
 }
 
 // ---------------------------------------------------------------------------
-// Compile-time ISA capability flags
-// These are evaluated once at compile time; each SIMD benchmark body calls
-// skip_if_unavailable() which issues state.SkipWithMessage() so the
-// benchmark appears in the output as SKIPPED rather than running a silent
-// fallback scalar kernel.  The scalar Naive/Reordered/Blocked kernels have
-// no such guard — they always run on every target.
+// ISA availability
+//
+// hpc/isa.hpp decides at compile time which kernel families exist in this
+// build; on a target without an ISA that family's gemm_* functions are
+// declared `= delete`. run_gemm() below therefore takes the availability
+// flag as a template parameter: when it is false the benchmark reports
+// SKIPPED and the `else` branch — the only place the kernel is named — is a
+// discarded statement that is never instantiated. The benchmark name still
+// appears in the output, so the full kernel catalogue is always visible and
+// nothing can silently time a substitute kernel.
 // ---------------------------------------------------------------------------
 
-/// Returns true when AVX2 + FMA are available at compile time.
-static constexpr bool kHaveAvx2 =
-#ifdef __AVX2__
-    true;
-#else
-    false;
-#endif
+using hpc::kHaveAmx;
+using hpc::kHaveAvx2;
+using hpc::kHaveAvx512;
+using hpc::kHaveNeon;
+using hpc::kHaveSme;
+using hpc::kHaveSve;
 
-/// Returns true when AVX-512F is available at compile time.
-static constexpr bool kHaveAvx512 =
-#ifdef __AVX512F__
-    true;
-#else
-    false;
-#endif
+static constexpr const char* kNoAvx2   = "AVX2 not available on this target";
+static constexpr const char* kNoAvx512 = "AVX-512 not available on this target";
+static constexpr const char* kNoNeon   = "NEON not available on this target";
+static constexpr const char* kNoSve    = "SVE not available on this target";
+static constexpr const char* kNoSme    = "SME not available on this target (build with -DHPC_ENABLE_SME=ON on Apple M4+)";
+static constexpr const char* kNoAmx    = "AMX not available (Accelerate.framework requires Apple platforms; "
+                                         "build with -DHPC_ENABLE_AMX=ON, default on Apple)";
 
-/// Returns true when ARM NEON is available at compile time.
-static constexpr bool kHaveNeon =
-#ifdef __ARM_NEON
-    true;
-#else
-    false;
-#endif
+/// No-op `extra` for run_gemm.
+static void no_extra_counters(benchmark::State&) {}
 
-/// Returns true when ARM SVE is available at compile time.
-static constexpr bool kHaveSve =
-#ifdef __ARM_FEATURE_SVE
-    true;
-#else
-    false;
-#endif
-
-/// Returns true when ARM SME is available at compile time. Requires
-/// -DHPC_ENABLE_SME=ON at configure time (see CMakeLists.txt) — SME is
-/// opt-in because, unlike the other ISA flags here, no single compiler flag
-/// is guaranteed to produce SME code that actually runs without SIGILL on
-/// every target (see src/gemm/sme.hpp for the Apple Silicon specifics).
-static constexpr bool kHaveSme =
-#ifdef __ARM_FEATURE_SME
-    true;
-#else
-    false;
-#endif
+/**
+ * @brief Time one N×N GEMM kernel, or report it as SKIPPED.
+ *
+ * @tparam N         Matrix dimension.
+ * @tparam T         Element type (float / double).
+ * @tparam Available Compile-time ISA flag (hpc::kHave*). When false the
+ *                   kernel lambda is never instantiated.
+ * @param  kernel    Generic callable `(A, B, C)` invoking the kernel — must be
+ *                   a generic lambda so that the call stays dependent and is
+ *                   only resolved inside the instantiated branch.
+ * @param  extra     Callable adding kernel-specific counters (tile, vl, …).
+ */
+template <std::size_t N, typename T, bool Available, typename Kernel,
+          typename Extra = void (*)(benchmark::State&)>
+static void run_gemm(benchmark::State& state, const char* unavailable_msg, Kernel kernel,
+                     Extra extra = no_extra_counters) {
+    if constexpr (!Available) {
+        (void)kernel;
+        (void)extra;
+        state.SkipWithMessage(unavailable_msg);
+    } else {
+        hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
+        fill_random(A, 1);
+        fill_random(B, 2);
+        for (auto _ : state) {
+            kernel(A, B, C);
+            benchmark::DoNotOptimize(C.data());
+            benchmark::ClobberMemory();
+        }
+        state.counters["GFLOP/s"] = benchmark::Counter(
+            flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
+        state.counters["N"]         = static_cast<double>(N);
+        state.counters["precision"] = static_cast<double>(sizeof(T) * 8);
+        extra(state);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Benchmark templates — templated on both matrix size N and element type T.
@@ -146,20 +161,9 @@ static constexpr bool kHaveSme =
  */
 template <std::size_t N, typename T = double>
 static void BM_Naive(benchmark::State& state) {
-    hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
-    fill_random(A, 1);
-    fill_random(B, 2);
-
-    for (auto _ : state) {
-        hpc::gemm::gemm_naive(A, B, C);
-        benchmark::DoNotOptimize(C.data());
-        benchmark::ClobberMemory();
-    }
-
-    state.counters["GFLOP/s"] = benchmark::Counter(
-        flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
-    state.counters["N"]         = static_cast<double>(N);
-    state.counters["precision"] = static_cast<double>(sizeof(T) * 8);  // 32 or 64
+    run_gemm<N, T, true>(
+        state, nullptr,
+        [](auto& A, auto& B, auto& C) { hpc::gemm::gemm_naive(A, B, C); });
 }
 
 /**
@@ -167,20 +171,9 @@ static void BM_Naive(benchmark::State& state) {
  */
 template <std::size_t N, typename T = double>
 static void BM_Reordered(benchmark::State& state) {
-    hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
-    fill_random(A, 1);
-    fill_random(B, 2);
-
-    for (auto _ : state) {
-        hpc::gemm::gemm_reordered(A, B, C);
-        benchmark::DoNotOptimize(C.data());
-        benchmark::ClobberMemory();
-    }
-
-    state.counters["GFLOP/s"] = benchmark::Counter(
-        flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
-    state.counters["N"]         = static_cast<double>(N);
-    state.counters["precision"] = static_cast<double>(sizeof(T) * 8);
+    run_gemm<N, T, true>(
+        state, nullptr,
+        [](auto& A, auto& B, auto& C) { hpc::gemm::gemm_reordered(A, B, C); });
 }
 
 /**
@@ -192,21 +185,10 @@ static void BM_Reordered(benchmark::State& state) {
  */
 template <std::size_t N, typename T = double>
 static void BM_Blocked(benchmark::State& state) {
-    hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
-    fill_random(A, 1);
-    fill_random(B, 2);
-
-    for (auto _ : state) {
-        hpc::gemm::gemm_blocked(A, B, C);
-        benchmark::DoNotOptimize(C.data());
-        benchmark::ClobberMemory();
-    }
-
-    state.counters["GFLOP/s"] = benchmark::Counter(
-        flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
-    state.counters["N"]         = static_cast<double>(N);
-    state.counters["tile"]      = static_cast<double>(hpc::gemm::kDefaultTile);
-    state.counters["precision"] = static_cast<double>(sizeof(T) * 8);
+    run_gemm<N, T, true>(
+        state, nullptr,
+        [](auto& A, auto& B, auto& C) { hpc::gemm::gemm_blocked(A, B, C); },
+        [](benchmark::State& s) { s.counters["tile"] = static_cast<double>(hpc::gemm::kDefaultTile); });
 }
 
 /**
@@ -218,22 +200,9 @@ static void BM_Blocked(benchmark::State& state) {
  */
 template <std::size_t N, typename T = double>
 static void BM_Avx2Naive(benchmark::State& state) {
-    if (!kHaveAvx2) {
-        state.SkipWithMessage("AVX2 not available on this target");
-        return;
-    }
-    hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
-    fill_random(A, 1);
-    fill_random(B, 2);
-    for (auto _ : state) {
-        hpc::gemm::gemm_avx2_naive(A, B, C);
-        benchmark::DoNotOptimize(C.data());
-        benchmark::ClobberMemory();
-    }
-    state.counters["GFLOP/s"] = benchmark::Counter(
-        flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
-    state.counters["N"]         = static_cast<double>(N);
-    state.counters["precision"] = static_cast<double>(sizeof(T) * 8);
+    run_gemm<N, T, kHaveAvx2>(
+        state, kNoAvx2,
+        [](auto& A, auto& B, auto& C) { hpc::gemm::gemm_avx2_naive(A, B, C); });
 }
 
 /**
@@ -245,22 +214,9 @@ static void BM_Avx2Naive(benchmark::State& state) {
  */
 template <std::size_t N, typename T = double>
 static void BM_Avx2Reordered(benchmark::State& state) {
-    if (!kHaveAvx2) {
-        state.SkipWithMessage("AVX2 not available on this target");
-        return;
-    }
-    hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
-    fill_random(A, 1);
-    fill_random(B, 2);
-    for (auto _ : state) {
-        hpc::gemm::gemm_avx2_reordered(A, B, C);
-        benchmark::DoNotOptimize(C.data());
-        benchmark::ClobberMemory();
-    }
-    state.counters["GFLOP/s"] = benchmark::Counter(
-        flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
-    state.counters["N"]         = static_cast<double>(N);
-    state.counters["precision"] = static_cast<double>(sizeof(T) * 8);
+    run_gemm<N, T, kHaveAvx2>(
+        state, kNoAvx2,
+        [](auto& A, auto& B, auto& C) { hpc::gemm::gemm_avx2_reordered(A, B, C); });
 }
 
 /**
@@ -272,27 +228,9 @@ static void BM_Avx2Reordered(benchmark::State& state) {
  */
 template <std::size_t N, typename T = double>
 static void BM_Avx2Blocked(benchmark::State& state) {
-    if (!kHaveAvx2) {
-        state.SkipWithMessage("AVX2 not available on this target");
-        return;
-    }
-    hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
-    fill_random(A, 1);
-    fill_random(B, 2);
-    for (auto _ : state) {
-        hpc::gemm::gemm_avx2_blocked(A, B, C);
-        benchmark::DoNotOptimize(C.data());
-        benchmark::ClobberMemory();
-    }
-    state.counters["GFLOP/s"] = benchmark::Counter(
-        flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
-    state.counters["N"]         = static_cast<double>(N);
-    state.counters["precision"] = static_cast<double>(sizeof(T) * 8);
-#ifdef __AVX2__
-    state.counters["avx2"] = 1;
-#else
-    state.counters["avx2"] = 0;
-#endif
+    run_gemm<N, T, kHaveAvx2>(
+        state, kNoAvx2,
+        [](auto& A, auto& B, auto& C) { hpc::gemm::gemm_avx2_blocked(A, B, C); });
 }
 
 // ---------------------------------------------------------------------------
@@ -415,27 +353,9 @@ BENCHMARK(BM_Avx2Blocked<4096, float>)
  */
 template <std::size_t N, typename T = double>
 static void BM_Avx512Naive(benchmark::State& state) {
-    if (!kHaveAvx512) {
-        state.SkipWithMessage("AVX-512 not available on this target");
-        return;
-    }
-    hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
-    fill_random(A, 1);
-    fill_random(B, 2);
-    for (auto _ : state) {
-        hpc::gemm::gemm_avx512_naive(A, B, C);
-        benchmark::DoNotOptimize(C.data());
-        benchmark::ClobberMemory();
-    }
-    state.counters["GFLOP/s"] = benchmark::Counter(
-        flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
-    state.counters["N"]         = static_cast<double>(N);
-    state.counters["precision"] = static_cast<double>(sizeof(T) * 8);
-#ifdef __AVX512F__
-    state.counters["avx512"] = 1;
-#else
-    state.counters["avx512"] = 0;
-#endif
+    run_gemm<N, T, kHaveAvx512>(
+        state, kNoAvx512,
+        [](auto& A, auto& B, auto& C) { hpc::gemm::gemm_avx512_naive(A, B, C); });
 }
 
 /**
@@ -444,27 +364,9 @@ static void BM_Avx512Naive(benchmark::State& state) {
  */
 template <std::size_t N, typename T = double>
 static void BM_Avx512Reordered(benchmark::State& state) {
-    if (!kHaveAvx512) {
-        state.SkipWithMessage("AVX-512 not available on this target");
-        return;
-    }
-    hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
-    fill_random(A, 1);
-    fill_random(B, 2);
-    for (auto _ : state) {
-        hpc::gemm::gemm_avx512_reordered(A, B, C);
-        benchmark::DoNotOptimize(C.data());
-        benchmark::ClobberMemory();
-    }
-    state.counters["GFLOP/s"] = benchmark::Counter(
-        flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
-    state.counters["N"]         = static_cast<double>(N);
-    state.counters["precision"] = static_cast<double>(sizeof(T) * 8);
-#ifdef __AVX512F__
-    state.counters["avx512"] = 1;
-#else
-    state.counters["avx512"] = 0;
-#endif
+    run_gemm<N, T, kHaveAvx512>(
+        state, kNoAvx512,
+        [](auto& A, auto& B, auto& C) { hpc::gemm::gemm_avx512_reordered(A, B, C); });
 }
 
 /**
@@ -473,27 +375,9 @@ static void BM_Avx512Reordered(benchmark::State& state) {
  */
 template <std::size_t N, typename T = double>
 static void BM_Avx512Blocked(benchmark::State& state) {
-    if (!kHaveAvx512) {
-        state.SkipWithMessage("AVX-512 not available on this target");
-        return;
-    }
-    hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
-    fill_random(A, 1);
-    fill_random(B, 2);
-    for (auto _ : state) {
-        hpc::gemm::gemm_avx512_blocked(A, B, C);
-        benchmark::DoNotOptimize(C.data());
-        benchmark::ClobberMemory();
-    }
-    state.counters["GFLOP/s"] = benchmark::Counter(
-        flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
-    state.counters["N"]         = static_cast<double>(N);
-    state.counters["precision"] = static_cast<double>(sizeof(T) * 8);
-#ifdef __AVX512F__
-    state.counters["avx512"] = 1;
-#else
-    state.counters["avx512"] = 0;
-#endif
+    run_gemm<N, T, kHaveAvx512>(
+        state, kNoAvx512,
+        [](auto& A, auto& B, auto& C) { hpc::gemm::gemm_avx512_blocked(A, B, C); });
 }
 
 // ---- AVX-512 Naive ----------------------------------------------------------
@@ -574,27 +458,9 @@ BENCHMARK(BM_Avx512Blocked<4096, float>)
  */
 template <std::size_t N, typename T = double>
 static void BM_NeonNaive(benchmark::State& state) {
-    if (!kHaveNeon) {
-        state.SkipWithMessage("NEON not available on this target");
-        return;
-    }
-    hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
-    fill_random(A, 1);
-    fill_random(B, 2);
-    for (auto _ : state) {
-        hpc::gemm::gemm_neon_naive(A, B, C);
-        benchmark::DoNotOptimize(C.data());
-        benchmark::ClobberMemory();
-    }
-    state.counters["GFLOP/s"] = benchmark::Counter(
-        flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
-    state.counters["N"]         = static_cast<double>(N);
-    state.counters["precision"] = static_cast<double>(sizeof(T) * 8);
-#ifdef __ARM_NEON
-    state.counters["neon"] = 1;
-#else
-    state.counters["neon"] = 0;
-#endif
+    run_gemm<N, T, kHaveNeon>(
+        state, kNoNeon,
+        [](auto& A, auto& B, auto& C) { hpc::gemm::gemm_neon_naive(A, B, C); });
 }
 
 /**
@@ -603,27 +469,9 @@ static void BM_NeonNaive(benchmark::State& state) {
  */
 template <std::size_t N, typename T = double>
 static void BM_NeonReordered(benchmark::State& state) {
-    if (!kHaveNeon) {
-        state.SkipWithMessage("NEON not available on this target");
-        return;
-    }
-    hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
-    fill_random(A, 1);
-    fill_random(B, 2);
-    for (auto _ : state) {
-        hpc::gemm::gemm_neon_reordered(A, B, C);
-        benchmark::DoNotOptimize(C.data());
-        benchmark::ClobberMemory();
-    }
-    state.counters["GFLOP/s"] = benchmark::Counter(
-        flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
-    state.counters["N"]         = static_cast<double>(N);
-    state.counters["precision"] = static_cast<double>(sizeof(T) * 8);
-#ifdef __ARM_NEON
-    state.counters["neon"] = 1;
-#else
-    state.counters["neon"] = 0;
-#endif
+    run_gemm<N, T, kHaveNeon>(
+        state, kNoNeon,
+        [](auto& A, auto& B, auto& C) { hpc::gemm::gemm_neon_reordered(A, B, C); });
 }
 
 /**
@@ -632,27 +480,9 @@ static void BM_NeonReordered(benchmark::State& state) {
  */
 template <std::size_t N, typename T = double>
 static void BM_NeonBlocked(benchmark::State& state) {
-    if (!kHaveNeon) {
-        state.SkipWithMessage("NEON not available on this target");
-        return;
-    }
-    hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
-    fill_random(A, 1);
-    fill_random(B, 2);
-    for (auto _ : state) {
-        hpc::gemm::gemm_neon_blocked(A, B, C);
-        benchmark::DoNotOptimize(C.data());
-        benchmark::ClobberMemory();
-    }
-    state.counters["GFLOP/s"] = benchmark::Counter(
-        flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
-    state.counters["N"]         = static_cast<double>(N);
-    state.counters["precision"] = static_cast<double>(sizeof(T) * 8);
-#ifdef __ARM_NEON
-    state.counters["neon"] = 1;
-#else
-    state.counters["neon"] = 0;
-#endif
+    run_gemm<N, T, kHaveNeon>(
+        state, kNoNeon,
+        [](auto& A, auto& B, auto& C) { hpc::gemm::gemm_neon_blocked(A, B, C); });
 }
 
 // ---- NEON Naive ------------------------------------------------------------
@@ -723,29 +553,14 @@ BENCHMARK(BM_NeonBlocked<4096, float>)
  */
 template <std::size_t N, typename T = double>
 static void BM_SveNaive(benchmark::State& state) {
-    if (!kHaveSve) {
-        state.SkipWithMessage("SVE not available on this target");
-        return;
-    }
-    hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
-    fill_random(A, 1);
-    fill_random(B, 2);
-    for (auto _ : state) {
-        hpc::gemm::gemm_sve_naive(A, B, C);
-        benchmark::DoNotOptimize(C.data());
-        benchmark::ClobberMemory();
-    }
-    state.counters["GFLOP/s"] = benchmark::Counter(
-        flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
-    state.counters["N"]         = static_cast<double>(N);
-    state.counters["precision"] = static_cast<double>(sizeof(T) * 8);
-#ifdef __ARM_FEATURE_SVE
-    state.counters["sve"] = 1;
-    state.counters["vl"]  = static_cast<double>((sizeof(T) == 4) ? svcntw() : svcntd());
-#else
-    state.counters["sve"] = 0;
-    state.counters["vl"]  = 0;
+    run_gemm<N, T, kHaveSve>(
+        state, kNoSve,
+        [](auto& A, auto& B, auto& C) { hpc::gemm::gemm_sve_naive(A, B, C); },
+        []([[maybe_unused]] benchmark::State& s) {
+#if HPC_HAS_SVE
+            s.counters["vl"] = static_cast<double>((sizeof(T) == 4) ? svcntw() : svcntd());
 #endif
+        });
 }
 
 /**
@@ -754,29 +569,14 @@ static void BM_SveNaive(benchmark::State& state) {
  */
 template <std::size_t N, typename T = double>
 static void BM_SveReordered(benchmark::State& state) {
-    if (!kHaveSve) {
-        state.SkipWithMessage("SVE not available on this target");
-        return;
-    }
-    hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
-    fill_random(A, 1);
-    fill_random(B, 2);
-    for (auto _ : state) {
-        hpc::gemm::gemm_sve_reordered(A, B, C);
-        benchmark::DoNotOptimize(C.data());
-        benchmark::ClobberMemory();
-    }
-    state.counters["GFLOP/s"] = benchmark::Counter(
-        flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
-    state.counters["N"]         = static_cast<double>(N);
-    state.counters["precision"] = static_cast<double>(sizeof(T) * 8);
-#ifdef __ARM_FEATURE_SVE
-    state.counters["sve"] = 1;
-    state.counters["vl"]  = static_cast<double>((sizeof(T) == 4) ? svcntw() : svcntd());
-#else
-    state.counters["sve"] = 0;
-    state.counters["vl"]  = 0;
+    run_gemm<N, T, kHaveSve>(
+        state, kNoSve,
+        [](auto& A, auto& B, auto& C) { hpc::gemm::gemm_sve_reordered(A, B, C); },
+        []([[maybe_unused]] benchmark::State& s) {
+#if HPC_HAS_SVE
+            s.counters["vl"] = static_cast<double>((sizeof(T) == 4) ? svcntw() : svcntd());
 #endif
+        });
 }
 
 /**
@@ -785,29 +585,14 @@ static void BM_SveReordered(benchmark::State& state) {
  */
 template <std::size_t N, typename T = double>
 static void BM_SveBlocked(benchmark::State& state) {
-    if (!kHaveSve) {
-        state.SkipWithMessage("SVE not available on this target");
-        return;
-    }
-    hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
-    fill_random(A, 1);
-    fill_random(B, 2);
-    for (auto _ : state) {
-        hpc::gemm::gemm_sve_blocked(A, B, C);
-        benchmark::DoNotOptimize(C.data());
-        benchmark::ClobberMemory();
-    }
-    state.counters["GFLOP/s"] = benchmark::Counter(
-        flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
-    state.counters["N"]         = static_cast<double>(N);
-    state.counters["precision"] = static_cast<double>(sizeof(T) * 8);
-#ifdef __ARM_FEATURE_SVE
-    state.counters["sve"] = 1;
-    state.counters["vl"]  = static_cast<double>((sizeof(T) == 4) ? svcntw() : svcntd());
-#else
-    state.counters["sve"] = 0;
-    state.counters["vl"]  = 0;
+    run_gemm<N, T, kHaveSve>(
+        state, kNoSve,
+        [](auto& A, auto& B, auto& C) { hpc::gemm::gemm_sve_blocked(A, B, C); },
+        []([[maybe_unused]] benchmark::State& s) {
+#if HPC_HAS_SVE
+            s.counters["vl"] = static_cast<double>((sizeof(T) == 4) ? svcntw() : svcntd());
 #endif
+        });
 }
 
 // ---- SVE Naive -------------------------------------------------------------
@@ -875,29 +660,14 @@ BENCHMARK(BM_SveBlocked<4096, float>)->Unit(benchmark::kMicrosecond)->Name("SveB
  */
 template <std::size_t N, typename T = double>
 static void BM_SmeNaive(benchmark::State& state) {
-    if (!kHaveSme) {
-        state.SkipWithMessage("SME not available on this target (build with -DHPC_ENABLE_SME=ON on Apple M4+)");
-        return;
-    }
-    hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
-    fill_random(A, 1);
-    fill_random(B, 2);
-    for (auto _ : state) {
-        hpc::gemm::gemm_sme_naive(A, B, C);
-        benchmark::DoNotOptimize(C.data());
-        benchmark::ClobberMemory();
-    }
-    state.counters["GFLOP/s"] = benchmark::Counter(
-        flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
-    state.counters["N"]         = static_cast<double>(N);
-    state.counters["precision"] = static_cast<double>(sizeof(T) * 8);
-#ifdef __ARM_FEATURE_SME
-    state.counters["sme"] = 1;
-    state.counters["svl"] = static_cast<double>((sizeof(T) == 4) ? svcntsw() : svcntsd());
-#else
-    state.counters["sme"] = 0;
-    state.counters["svl"] = 0;
+    run_gemm<N, T, kHaveSme>(
+        state, kNoSme,
+        [](auto& A, auto& B, auto& C) { hpc::gemm::gemm_sme_naive(A, B, C); },
+        []([[maybe_unused]] benchmark::State& s) {
+#if HPC_HAS_SME
+            s.counters["svl"] = static_cast<double>((sizeof(T) == 4) ? svcntsw() : svcntsd());
 #endif
+        });
 }
 
 /**
@@ -907,29 +677,14 @@ static void BM_SmeNaive(benchmark::State& state) {
  */
 template <std::size_t N, typename T = double>
 static void BM_SmeReordered(benchmark::State& state) {
-    if (!kHaveSme) {
-        state.SkipWithMessage("SME not available on this target (build with -DHPC_ENABLE_SME=ON on Apple M4+)");
-        return;
-    }
-    hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
-    fill_random(A, 1);
-    fill_random(B, 2);
-    for (auto _ : state) {
-        hpc::gemm::gemm_sme_reordered(A, B, C);
-        benchmark::DoNotOptimize(C.data());
-        benchmark::ClobberMemory();
-    }
-    state.counters["GFLOP/s"] = benchmark::Counter(
-        flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
-    state.counters["N"]         = static_cast<double>(N);
-    state.counters["precision"] = static_cast<double>(sizeof(T) * 8);
-#ifdef __ARM_FEATURE_SME
-    state.counters["sme"] = 1;
-    state.counters["svl"] = static_cast<double>((sizeof(T) == 4) ? svcntsw() : svcntsd());
-#else
-    state.counters["sme"] = 0;
-    state.counters["svl"] = 0;
+    run_gemm<N, T, kHaveSme>(
+        state, kNoSme,
+        [](auto& A, auto& B, auto& C) { hpc::gemm::gemm_sme_reordered(A, B, C); },
+        []([[maybe_unused]] benchmark::State& s) {
+#if HPC_HAS_SME
+            s.counters["svl"] = static_cast<double>((sizeof(T) == 4) ? svcntsw() : svcntsd());
 #endif
+        });
 }
 
 /**
@@ -940,29 +695,14 @@ static void BM_SmeReordered(benchmark::State& state) {
  */
 template <std::size_t N, typename T = double>
 static void BM_SmeBlocked(benchmark::State& state) {
-    if (!kHaveSme) {
-        state.SkipWithMessage("SME not available on this target (build with -DHPC_ENABLE_SME=ON on Apple M4+)");
-        return;
-    }
-    hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
-    fill_random(A, 1);
-    fill_random(B, 2);
-    for (auto _ : state) {
-        hpc::gemm::gemm_sme_blocked(A, B, C);
-        benchmark::DoNotOptimize(C.data());
-        benchmark::ClobberMemory();
-    }
-    state.counters["GFLOP/s"] = benchmark::Counter(
-        flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
-    state.counters["N"]         = static_cast<double>(N);
-    state.counters["precision"] = static_cast<double>(sizeof(T) * 8);
-#ifdef __ARM_FEATURE_SME
-    state.counters["sme"] = 1;
-    state.counters["svl"] = static_cast<double>((sizeof(T) == 4) ? svcntsw() : svcntsd());
-#else
-    state.counters["sme"] = 0;
-    state.counters["svl"] = 0;
+    run_gemm<N, T, kHaveSme>(
+        state, kNoSme,
+        [](auto& A, auto& B, auto& C) { hpc::gemm::gemm_sme_blocked(A, B, C); },
+        []([[maybe_unused]] benchmark::State& s) {
+#if HPC_HAS_SME
+            s.counters["svl"] = static_cast<double>((sizeof(T) == 4) ? svcntsw() : svcntsd());
 #endif
+        });
 }
 
 // ---- SME Naive --------------------------------------------------------------
@@ -1033,23 +773,9 @@ BENCHMARK(BM_SmeBlocked<4096, float>)->Unit(benchmark::kMicrosecond)->Name("SmeB
  */
 template <std::size_t N, typename T = double>
 static void BM_AmxNaive(benchmark::State& state) {
-    if (!hpc::gemm::amx_runtime_available()) {
-        state.SkipWithMessage("AMX not available (Accelerate.framework requires Apple platforms; "
-                               "build with -DHPC_ENABLE_AMX=ON, default on Apple)");
-        return;
-    }
-    hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
-    fill_random(A, 1);
-    fill_random(B, 2);
-    for (auto _ : state) {
-        hpc::gemm::gemm_amx_naive(A, B, C);
-        benchmark::DoNotOptimize(C.data());
-        benchmark::ClobberMemory();
-    }
-    state.counters["GFLOP/s"] = benchmark::Counter(
-        flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
-    state.counters["N"]         = static_cast<double>(N);
-    state.counters["precision"] = static_cast<double>(sizeof(T) * 8);
+    run_gemm<N, T, kHaveAmx>(
+        state, kNoAmx,
+        [](auto& A, auto& B, auto& C) { hpc::gemm::gemm_amx_naive(A, B, C); });
 }
 
 /**
@@ -1058,23 +784,9 @@ static void BM_AmxNaive(benchmark::State& state) {
  */
 template <std::size_t N, typename T = double>
 static void BM_AmxReordered(benchmark::State& state) {
-    if (!hpc::gemm::amx_runtime_available()) {
-        state.SkipWithMessage("AMX not available (Accelerate.framework requires Apple platforms; "
-                               "build with -DHPC_ENABLE_AMX=ON, default on Apple)");
-        return;
-    }
-    hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
-    fill_random(A, 1);
-    fill_random(B, 2);
-    for (auto _ : state) {
-        hpc::gemm::gemm_amx_reordered(A, B, C);
-        benchmark::DoNotOptimize(C.data());
-        benchmark::ClobberMemory();
-    }
-    state.counters["GFLOP/s"] = benchmark::Counter(
-        flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
-    state.counters["N"]         = static_cast<double>(N);
-    state.counters["precision"] = static_cast<double>(sizeof(T) * 8);
+    run_gemm<N, T, kHaveAmx>(
+        state, kNoAmx,
+        [](auto& A, auto& B, auto& C) { hpc::gemm::gemm_amx_reordered(A, B, C); });
 }
 
 /**
@@ -1083,23 +795,9 @@ static void BM_AmxReordered(benchmark::State& state) {
  */
 template <std::size_t N, typename T = double>
 static void BM_AmxBlocked(benchmark::State& state) {
-    if (!hpc::gemm::amx_runtime_available()) {
-        state.SkipWithMessage("AMX not available (Accelerate.framework requires Apple platforms; "
-                               "build with -DHPC_ENABLE_AMX=ON, default on Apple)");
-        return;
-    }
-    hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
-    fill_random(A, 1);
-    fill_random(B, 2);
-    for (auto _ : state) {
-        hpc::gemm::gemm_amx_blocked(A, B, C);
-        benchmark::DoNotOptimize(C.data());
-        benchmark::ClobberMemory();
-    }
-    state.counters["GFLOP/s"] = benchmark::Counter(
-        flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
-    state.counters["N"]         = static_cast<double>(N);
-    state.counters["precision"] = static_cast<double>(sizeof(T) * 8);
+    run_gemm<N, T, kHaveAmx>(
+        state, kNoAmx,
+        [](auto& A, auto& B, auto& C) { hpc::gemm::gemm_amx_blocked(A, B, C); });
 }
 
 // ---- AMX Naive / Reordered / Blocked (f64) ----------------------------------
@@ -1175,95 +873,46 @@ BENCHMARK(BM_AmxBlocked<4096, float>)->Unit(benchmark::kMicrosecond)->Name("AmxB
 /// Scalar blocked + prefetch, distance PfDist.
 template <std::size_t N, typename T = double, std::size_t PfDist = hpc::gemm::kDefaultPrefetchDist>
 static void BM_BlockedPf(benchmark::State& state) {
-    hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
-    fill_random(A, 1);
-    fill_random(B, 2);
-    for (auto _ : state) {
-        hpc::gemm::gemm_blocked_prefetch<T, PfDist>(A, B, C);
-        benchmark::DoNotOptimize(C.data());
-        benchmark::ClobberMemory();
-    }
-    state.counters["GFLOP/s"] = benchmark::Counter(
-        flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
-    state.counters["N"]         = static_cast<double>(N);
-    state.counters["pf_dist"]   = static_cast<double>(PfDist);
-    state.counters["precision"] = static_cast<double>(sizeof(T) * 8);
+    run_gemm<N, T, true>(
+        state, nullptr,
+        [](auto& A, auto& B, auto& C) { hpc::gemm::gemm_blocked_prefetch<T, PfDist>(A, B, C); },
+        [](benchmark::State& s) { s.counters["pf_dist"] = static_cast<double>(PfDist); });
 }
 
 /// AVX2 blocked + prefetch, distance PfDist.
 template <std::size_t N, typename T = double, std::size_t PfDist = hpc::gemm::kDefaultPrefetchDist>
 static void BM_Avx2BlockedPf(benchmark::State& state) {
-    if (!kHaveAvx2) { state.SkipWithMessage("AVX2 not available on this target"); return; }
-    hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
-    fill_random(A, 1);
-    fill_random(B, 2);
-    for (auto _ : state) {
-        hpc::gemm::gemm_avx2_blocked_prefetch<T, PfDist>(A, B, C);
-        benchmark::DoNotOptimize(C.data());
-        benchmark::ClobberMemory();
-    }
-    state.counters["GFLOP/s"] = benchmark::Counter(
-        flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
-    state.counters["N"]         = static_cast<double>(N);
-    state.counters["pf_dist"]   = static_cast<double>(PfDist);
-    state.counters["precision"] = static_cast<double>(sizeof(T) * 8);
+    run_gemm<N, T, kHaveAvx2>(
+        state, kNoAvx2,
+        [](auto& A, auto& B, auto& C) { hpc::gemm::gemm_avx2_blocked_prefetch<T, PfDist>(A, B, C); },
+        [](benchmark::State& s) { s.counters["pf_dist"] = static_cast<double>(PfDist); });
 }
 
 /// AVX-512 blocked + prefetch, distance PfDist.
 template <std::size_t N, typename T = double, std::size_t PfDist = hpc::gemm::kDefaultPrefetchDist>
 static void BM_Avx512BlockedPf(benchmark::State& state) {
-    if (!kHaveAvx512) { state.SkipWithMessage("AVX-512 not available on this target"); return; }
-    hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
-    fill_random(A, 1);
-    fill_random(B, 2);
-    for (auto _ : state) {
-        hpc::gemm::gemm_avx512_blocked_prefetch<T, PfDist>(A, B, C);
-        benchmark::DoNotOptimize(C.data());
-        benchmark::ClobberMemory();
-    }
-    state.counters["GFLOP/s"] = benchmark::Counter(
-        flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
-    state.counters["N"]         = static_cast<double>(N);
-    state.counters["pf_dist"]   = static_cast<double>(PfDist);
-    state.counters["precision"] = static_cast<double>(sizeof(T) * 8);
+    run_gemm<N, T, kHaveAvx512>(
+        state, kNoAvx512,
+        [](auto& A, auto& B, auto& C) { hpc::gemm::gemm_avx512_blocked_prefetch<T, PfDist>(A, B, C); },
+        [](benchmark::State& s) { s.counters["pf_dist"] = static_cast<double>(PfDist); });
 }
 
 /// NEON blocked + prefetch, distance PfDist.
 template <std::size_t N, typename T = double, std::size_t PfDist = hpc::gemm::kDefaultPrefetchDist>
 static void BM_NeonBlockedPf(benchmark::State& state) {
-    if (!kHaveNeon) { state.SkipWithMessage("NEON not available on this target"); return; }
-    hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
-    fill_random(A, 1);
-    fill_random(B, 2);
-    for (auto _ : state) {
-        hpc::gemm::gemm_neon_blocked_prefetch<T, PfDist>(A, B, C);
-        benchmark::DoNotOptimize(C.data());
-        benchmark::ClobberMemory();
-    }
-    state.counters["GFLOP/s"] = benchmark::Counter(
-        flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
-    state.counters["N"]         = static_cast<double>(N);
-    state.counters["pf_dist"]   = static_cast<double>(PfDist);
-    state.counters["precision"] = static_cast<double>(sizeof(T) * 8);
+    run_gemm<N, T, kHaveNeon>(
+        state, kNoNeon,
+        [](auto& A, auto& B, auto& C) { hpc::gemm::gemm_neon_blocked_prefetch<T, PfDist>(A, B, C); },
+        [](benchmark::State& s) { s.counters["pf_dist"] = static_cast<double>(PfDist); });
 }
 
 /// SVE blocked + prefetch, distance PfDist.
 template <std::size_t N, typename T = double, std::size_t PfDist = hpc::gemm::kDefaultPrefetchDist>
 static void BM_SveBlockedPf(benchmark::State& state) {
-    if (!kHaveSve) { state.SkipWithMessage("SVE not available on this target"); return; }
-    hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
-    fill_random(A, 1);
-    fill_random(B, 2);
-    for (auto _ : state) {
-        hpc::gemm::gemm_sve_blocked_prefetch<T, PfDist>(A, B, C);
-        benchmark::DoNotOptimize(C.data());
-        benchmark::ClobberMemory();
-    }
-    state.counters["GFLOP/s"] = benchmark::Counter(
-        flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
-    state.counters["N"]         = static_cast<double>(N);
-    state.counters["pf_dist"]   = static_cast<double>(PfDist);
-    state.counters["precision"] = static_cast<double>(sizeof(T) * 8);
+    run_gemm<N, T, kHaveSve>(
+        state, kNoSve,
+        [](auto& A, auto& B, auto& C) { hpc::gemm::gemm_sve_blocked_prefetch<T, PfDist>(A, B, C); },
+        [](benchmark::State& s) { s.counters["pf_dist"] = static_cast<double>(PfDist); });
 }
 
 // ---------------------------------------------------------------------------

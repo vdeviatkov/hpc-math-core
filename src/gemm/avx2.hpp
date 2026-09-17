@@ -64,19 +64,19 @@
  *   AMD:   Zen 1 (2017) and later
  *   NOT:   Apple Silicon (M-series is ARM NEON, not x86 AVX)
  *
- * When __AVX2__ is not defined, all three kernels fall back to their scalar
- * equivalents so the project builds and produces correct results on any target.
+ * The header detects __AVX2__ at compile time (HPC_HAS_AVX2 in hpc/isa.hpp).
+ * If the ISA is absent this header declares all three kernels `= delete`
+ * (see hpc/isa.hpp): calling them is a compile-time error, never a silent
+ * substitution of a slower kernel under the same name.
  *
  * To enable explicitly without -march=native:
  *   cmake -DCMAKE_CXX_FLAGS="-mavx2 -mfma" ...
  */
 
-#include "gemm/blocked.hpp"
-#include "gemm/naive.hpp"
-#include "gemm/reordered.hpp"
+#include "hpc/isa.hpp"
 #include "hpc/matrix.hpp"
 
-#ifdef __AVX2__
+#if HPC_HAS_AVX2
     #include <immintrin.h>
 #endif
 
@@ -104,7 +104,7 @@ inline constexpr std::size_t kF64RegCols = 2;   // YMM vectors per C row   (2×4
 // Shared AVX2 micro-kernels (used only by gemm_avx2_blocked)
 // ============================================================================
 
-#ifdef __AVX2__
+#if HPC_HAS_AVX2
 
 /// f32 register-tiled micro-kernel: C[i..i+3][j..j+15] += A[i..i+3][k..k+k_len) × B[k..][j..)
 inline void avx2_micro_f32_4x16(const float* __restrict__ a,  // A(i, k_blk) — stride lda
@@ -184,7 +184,7 @@ inline void avx2_micro_f64_4x8(const double* __restrict__ a, const double* __res
     _mm256_storeu_pd(c3 + 4, c31);
 }
 
-#endif  // __AVX2__
+#endif  // HPC_HAS_AVX2
 
 // ============================================================================
 // Kernel 1: gemm_avx2_naive  —  i → j → k,  SIMD on the k-loop
@@ -219,14 +219,13 @@ inline void avx2_micro_f64_4x8(const double* __restrict__ a, const double* __res
  *
  * This kernel is included purely as a measurement point:
  * it shows that SIMD alone cannot overcome poor memory access patterns.
- *
- * Falls back to gemm_naive on non-AVX2 targets.
  */
+#if !HPC_HAS_AVX2
+template <typename T>
+void gemm_avx2_naive(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) = delete;  // AVX2 not available on this target
+#else
 template <typename T>
 void gemm_avx2_naive(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
-#ifndef __AVX2__
-    gemm_naive(A, B, C);
-#else
     static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>,
                   "gemm_avx2_naive: T must be float or double");
 
@@ -297,8 +296,8 @@ void gemm_avx2_naive(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
             }
         }
     }
-#endif
 }
+#endif  // HPC_HAS_AVX2
 
 // ============================================================================
 // Kernel 2: gemm_avx2_reordered  —  i → k → j,  SIMD on the j-loop
@@ -330,14 +329,13 @@ void gemm_avx2_naive(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
  *   No gather required. Every cache line of B and C is fully used.
  *   This is the "minimum viable AVX2" kernel and shows the base SIMD benefit
  *   without any blocking — it degrades at large N when C row i exceeds L1.
- *
- * Falls back to gemm_reordered on non-AVX2 targets.
  */
+#if !HPC_HAS_AVX2
+template <typename T>
+void gemm_avx2_reordered(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) = delete;  // AVX2 not available on this target
+#else
 template <typename T>
 void gemm_avx2_reordered(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
-#ifndef __AVX2__
-    gemm_reordered(A, B, C);
-#else
     static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>,
                   "gemm_avx2_reordered: T must be float or double");
 
@@ -387,8 +385,8 @@ void gemm_avx2_reordered(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
             }
         }
     }
-#endif
 }
+#endif  // HPC_HAS_AVX2
 
 // ============================================================================
 // Kernel 3: gemm_avx2_blocked  —  tiled i → k → j,  register-tiled micro-kernel
@@ -415,14 +413,13 @@ void gemm_avx2_reordered(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
  *   (4 rows × 16 f32 = 256 B) in registers for kAvx2TileK iterations before
  *   any store occurs. Combined with outer tiling that fits B and A tiles in L2,
  *   this maximally utilises FMA throughput.
- *
- * Falls back to gemm_blocked on non-AVX2 targets.
  */
+#if !HPC_HAS_AVX2
+template <typename T>
+void gemm_avx2_blocked(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) = delete;  // AVX2 not available on this target
+#else
 template <typename T>
 void gemm_avx2_blocked(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
-#ifndef __AVX2__
-    gemm_blocked(A, B, C);
-#else
     static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>,
                   "gemm_avx2_blocked: T must be float or double");
 
@@ -498,8 +495,8 @@ void gemm_avx2_blocked(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
             }
         }
     }
-#endif
 }
+#endif  // HPC_HAS_AVX2
 
 // ---------------------------------------------------------------------------
 // Convenience alias: gemm_avx2 → gemm_avx2_blocked  (backward compat)

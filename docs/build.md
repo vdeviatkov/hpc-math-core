@@ -169,22 +169,25 @@ comparison against `gemm_sme_*`/`gemm_avx512_*`/`gemm_neon_*`.
 
 ## ISA availability & skipping
 
-Every SIMD benchmark body begins with a compile-time guard:
+Which kernel families exist in a build is decided once, at compile time, by the `HPC_HAS_*` macros in [`include/hpc/isa.hpp`](../include/hpc/isa.hpp) (each always defined to 0 or 1). Where an ISA is absent that family's `gemm_*` functions are declared `= delete`, so calling one is a compile-time error — **there is no silent fallback** to a slower kernel under the same name.
 
-```cpp
-if (!kHaveNeon) { state.SkipWithMessage("NEON not available on this target"); return; }
-```
+- **Benchmarks** report the family as `SKIPPED` without instantiating it:
 
-CUDA benchmarks use a runtime device count check:
+  ```cpp
+  run_gemm<N, T, kHaveNeon>(state, kNoNeon,
+      [](auto& A, auto& B, auto& C) { hpc::gemm::gemm_neon_blocked(A, B, C); });
+  ```
 
-```cpp
-if (hpc::gemm::cuda_device_count() == 0) {
-    state.SkipWithMessage("No CUDA device available");
-    return;
-}
-```
+  The name still appears in the output, so you always see the full kernel catalogue and know exactly which paths ran.
+- **Tests** for the family are not compiled (`#if HPC_HAS_NEON … #endif`), so the test count reported on a machine is exactly the set of kernels that ran there.
+- **CUDA** is the one runtime check — GPU presence is a property of the machine, not the build:
 
-The benchmark name still appears in the output — as `SKIPPED` — so you always see the full kernel catalogue and know exactly which paths ran. No silent fallback to a slower scalar kernel that would corrupt the numbers.
+  ```cpp
+  if (hpc::gemm::cuda_device_count() == 0) {
+      state.SkipWithMessage("No CUDA device available");
+      return;
+  }
+  ```
 
 | Machine | Runs | Skipped |
 |---|---|---|
@@ -222,7 +225,7 @@ The benchmark name still appears in the output — as `SKIPPED` — so you alway
 | **`build-macos`** | `macos-14` (Apple M) | Apple Clang | All CPU tests (scalar, NEON, prefetch, **AMX**); AVX2/AVX-512/CUDA/SME skipped (`HPC_ENABLE_SME` defaults OFF; `HPC_ENABLE_AMX` defaults ON on Apple) |
 | **`build-cuda-stub`** | `ubuntu-24.04` | GCC 14 (no nvcc) | CMake finds no nvcc → stub library; CUDA bench + tests built and run; every CUDA row prints `SKIPPED` |
 
-None of the CI runners above pass `-DHPC_ENABLE_SME=ON` — GitHub-hosted runners have no Apple M4-class hardware, so it stays at its default OFF and `gemm_sme_*` is exercised only via its (also-tested) fallback chain. `build-macos` DOES exercise real `gemm_amx_*` (Accelerate.framework ships in the `macos-14` runner's SDK, and `HPC_ENABLE_AMX` defaults ON there), so the AMX dispatch — though not the specific numbers in [benchmarks.md](benchmarks.md), which come from a local M4 Max run — is continuously verified. The SME and AMX benchmark numbers in [benchmarks.md](benchmarks.md) both come from a manual local run on Apple M4 Max hardware.
+None of the CI runners above pass `-DHPC_ENABLE_SME=ON` — GitHub-hosted runners have no Apple M4-class hardware, so it stays at its default OFF and `gemm_sme_*` is not compiled there. `build-macos` DOES exercise real `gemm_amx_*` (Accelerate.framework ships in the `macos-14` runner's SDK, and `HPC_ENABLE_AMX` defaults ON there), so the AMX dispatch — though not the specific numbers in [benchmarks.md](benchmarks.md), which come from a local M4 Max run — is continuously verified. The SME and AMX benchmark numbers in [benchmarks.md](benchmarks.md) both come from a manual local run on Apple M4 Max hardware.
 
 Each job restores **ccache** and the **FetchContent cache** (`build/_deps`), configures with `cmake -G Ninja -DCMAKE_BUILD_TYPE=Release`, builds in parallel, and uploads JUnit XML from `ctest --output-junit`.
 

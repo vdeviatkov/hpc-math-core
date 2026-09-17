@@ -136,15 +136,16 @@
  *   several vendors, not yet broadly available at time of writing)
  *   NOT on: Apple M1/M2/M3, AWS Graviton3/4, Fujitsu A64FX, x86 (Intel/AMD)
  *
- * The header detects __ARM_FEATURE_SME at compile time.
- * If absent, all three kernels fall back to their SVE equivalents (which
- * themselves fall back to NEON, then AVX2, then scalar).
+ * The header detects __ARM_FEATURE_SME at compile time (HPC_HAS_SME in hpc/isa.hpp).
+ * If the ISA is absent this header declares all three kernels `= delete`
+ * (see hpc/isa.hpp): calling them is a compile-time error, never a silent
+ * substitution of a slower kernel under the same name.
  */
 
-#include "gemm/sve.hpp"  // fallback chain: SME → SVE → NEON → AVX2 → scalar
+#include "hpc/isa.hpp"
 #include "hpc/matrix.hpp"
 
-#ifdef __ARM_FEATURE_SME
+#if HPC_HAS_SME
     #include <arm_sme.h>
 #endif
 
@@ -166,7 +167,7 @@ namespace hpc::gemm {
 // 16 * 256 * 4B = 16 KB — comfortably L1-resident regardless of K.
 inline constexpr std::size_t kSmeTileK = 256;
 
-#ifdef __ARM_FEATURE_SME
+#if HPC_HAS_SME
 // Forward declarations: the gemm_sme_* templates below call these before
 // their (streaming-mode) definitions appear later in the file. Two-phase
 // name lookup requires either a prior declaration or ADL; ADL does not
@@ -194,7 +195,7 @@ void sme_gemm_blocked_f64_impl(const double* __restrict A, const double* __restr
                                 double* __restrict C, std::int64_t M, std::int64_t N,
                                 std::int64_t K, std::int64_t lda, std::int64_t ldb,
                                 std::int64_t ldc);
-#endif  // __ARM_FEATURE_SME
+#endif  // HPC_HAS_SME
 
 // ============================================================================
 // Kernel 1: gemm_sme_naive — per-(i0,j0,k) scalar column gather + FMOPA
@@ -221,14 +222,13 @@ void sme_gemm_blocked_f64_impl(const double* __restrict A, const double* __restr
  * intrinsics are illegal in SME streaming mode (see file header), so this
  * kernel pays the strided-A cost with 1 scalar load per row per k, redone
  * for every j0-tile — O(N/SVL) more scalar work than gemm_sme_reordered.
- *
- * Falls back to gemm_sve_naive on non-SME targets.
  */
+#if !HPC_HAS_SME
+template <typename T>
+void gemm_sme_naive(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) = delete;  // ARM_FEATURE_SME not available on this target
+#else
 template <typename T>
 void gemm_sme_naive(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
-#ifndef __ARM_FEATURE_SME
-    gemm_sve_naive(A, B, C);
-#else
     static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>,
                   "gemm_sme_naive: T must be float or double");
 
@@ -252,10 +252,10 @@ void gemm_sme_naive(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
     } else {
         sme_gemm_naive_f64_impl(a_ptr, b_ptr, c_ptr, M, N, K, lda, ldb, ldc);
     }
-#endif
 }
+#endif  // HPC_HAS_SME
 
-#ifdef __ARM_FEATURE_SME
+#if HPC_HAS_SME
 
 __arm_locally_streaming __arm_new("za")
 inline void sme_gemm_naive_f32_impl(const float* __restrict A, const float* __restrict B,
@@ -317,7 +317,7 @@ inline void sme_gemm_naive_f64_impl(const double* __restrict A, const double* __
     }
 }
 
-#endif  // __ARM_FEATURE_SME
+#endif  // HPC_HAS_SME
 
 // ============================================================================
 // Kernel 2: gemm_sme_reordered — pack A panel once per i0-tile, reuse
@@ -347,14 +347,13 @@ inline void sme_gemm_naive_f64_impl(const double* __restrict A, const double* __
  * N in [256, 1024] — the highest CPU throughput in this repo by a wide
  * margin. Degrades once the packed panel (SVL*K*sizeof(T) bytes) exceeds
  * L1/L2 — see gemm_sme_blocked for the fix.
- *
- * Falls back to gemm_sve_reordered on non-SME targets.
  */
+#if !HPC_HAS_SME
+template <typename T>
+void gemm_sme_reordered(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) = delete;  // ARM_FEATURE_SME not available on this target
+#else
 template <typename T>
 void gemm_sme_reordered(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
-#ifndef __ARM_FEATURE_SME
-    gemm_sve_reordered(A, B, C);
-#else
     static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>,
                   "gemm_sme_reordered: T must be float or double");
 
@@ -374,10 +373,10 @@ void gemm_sme_reordered(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
     } else {
         sme_gemm_reordered_f64_impl(A.data(), B.data(), C.data(), M, N, K, lda, ldb, ldc);
     }
-#endif
 }
+#endif  // HPC_HAS_SME
 
-#ifdef __ARM_FEATURE_SME
+#if HPC_HAS_SME
 
 __arm_locally_streaming __arm_new("za")
 inline void sme_gemm_reordered_f32_impl(const float* __restrict A, const float* __restrict B,
@@ -443,7 +442,7 @@ inline void sme_gemm_reordered_f64_impl(const double* __restrict A, const double
     }
 }
 
-#endif  // __ARM_FEATURE_SME
+#endif  // HPC_HAS_SME
 
 // ============================================================================
 // Kernel 3: gemm_sme_blocked — K-tiled panel pack, ZA reloaded across tiles
@@ -477,14 +476,13 @@ inline void sme_gemm_reordered_f64_impl(const double* __restrict A, const double
  * for N <= 1024 (where the unbounded panel already fits cache) and wins
  * clearly once it doesn't: 254 vs 210 GFLOP/s at N=2048; 172 vs 127 GFLOP/s
  * at N=4096.
- *
- * Falls back to gemm_sve_blocked on non-SME targets.
  */
+#if !HPC_HAS_SME
+template <typename T>
+void gemm_sme_blocked(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) = delete;  // ARM_FEATURE_SME not available on this target
+#else
 template <typename T>
 void gemm_sme_blocked(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
-#ifndef __ARM_FEATURE_SME
-    gemm_sve_blocked(A, B, C);
-#else
     static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>,
                   "gemm_sme_blocked: T must be float or double");
 
@@ -504,10 +502,10 @@ void gemm_sme_blocked(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
     } else {
         sme_gemm_blocked_f64_impl(A.data(), B.data(), C.data(), M, N, K, lda, ldb, ldc);
     }
-#endif
 }
+#endif  // HPC_HAS_SME
 
-#ifdef __ARM_FEATURE_SME
+#if HPC_HAS_SME
 
 __arm_locally_streaming __arm_new("za")
 inline void sme_gemm_blocked_f32_impl(const float* __restrict A, const float* __restrict B,
@@ -595,7 +593,7 @@ inline void sme_gemm_blocked_f64_impl(const double* __restrict A, const double* 
     }
 }
 
-#endif  // __ARM_FEATURE_SME
+#endif  // HPC_HAS_SME
 
 // ---------------------------------------------------------------------------
 // Convenience alias: gemm_sme → gemm_sme_blocked

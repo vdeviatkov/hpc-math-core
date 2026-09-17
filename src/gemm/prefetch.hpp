@@ -132,11 +132,12 @@ void gemm_blocked_prefetch(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C)
 // ============================================================================
 // 2.  AVX2 blocked + prefetch
 // ============================================================================
+#if !HPC_HAS_AVX2
+template <typename T, std::size_t PfDist = kDefaultPrefetchDist>
+void gemm_avx2_blocked_prefetch(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) = delete;  // AVX2 not available on this target
+#else
 template <typename T, std::size_t PfDist = kDefaultPrefetchDist>
 void gemm_avx2_blocked_prefetch(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
-#ifndef __AVX2__
-    (void)A; (void)B; (void)C;
-#else
     static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>);
     const std::size_t M   = A.rows();
     const std::size_t K   = A.cols();
@@ -201,17 +202,18 @@ void gemm_avx2_blocked_prefetch(const Matrix<T>& A, const Matrix<T>& B, Matrix<T
             }
         }
     }
-#endif
 }
+#endif  // HPC_HAS_AVX2
 
 // ============================================================================
 // 3.  AVX-512 blocked + prefetch
 // ============================================================================
+#if !HPC_HAS_AVX512
+template <typename T, std::size_t PfDist = kDefaultPrefetchDist>
+void gemm_avx512_blocked_prefetch(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) = delete;  // AVX512F not available on this target
+#else
 template <typename T, std::size_t PfDist = kDefaultPrefetchDist>
 void gemm_avx512_blocked_prefetch(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
-#ifndef __AVX512F__
-    (void)A; (void)B; (void)C;
-#else
     static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>);
     const std::size_t M   = A.rows();
     const std::size_t K   = A.cols();
@@ -276,17 +278,18 @@ void gemm_avx512_blocked_prefetch(const Matrix<T>& A, const Matrix<T>& B, Matrix
             }
         }
     }
-#endif
 }
+#endif  // HPC_HAS_AVX512
 
 // ============================================================================
 // 4.  NEON blocked + prefetch
 // ============================================================================
+#if !HPC_HAS_NEON
+template <typename T, std::size_t PfDist = kDefaultPrefetchDist>
+void gemm_neon_blocked_prefetch(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) = delete;  // ARM_NEON not available on this target
+#else
 template <typename T, std::size_t PfDist = kDefaultPrefetchDist>
 void gemm_neon_blocked_prefetch(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
-#ifndef __ARM_NEON
-    (void)A; (void)B; (void)C;
-#else
     static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>);
     const std::size_t M   = A.rows();
     const std::size_t K   = A.cols();
@@ -353,17 +356,18 @@ void gemm_neon_blocked_prefetch(const Matrix<T>& A, const Matrix<T>& B, Matrix<T
             }
         }
     }
-#endif
 }
+#endif  // HPC_HAS_NEON
 
 // ============================================================================
 // 5.  SVE blocked + prefetch
 // ============================================================================
+#if !HPC_HAS_SVE
+template <typename T, std::size_t PfDist = kDefaultPrefetchDist>
+void gemm_sve_blocked_prefetch(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) = delete;  // ARM_FEATURE_SVE not available on this target
+#else
 template <typename T, std::size_t PfDist = kDefaultPrefetchDist>
 void gemm_sve_blocked_prefetch(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
-#ifndef __ARM_FEATURE_SVE
-    (void)A; (void)B; (void)C;
-#else
     static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>);
     const std::size_t M   = A.rows();
     const std::size_t K   = A.cols();
@@ -432,8 +436,8 @@ void gemm_sve_blocked_prefetch(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>
             }
         }
     }
-#endif
 }
+#endif  // HPC_HAS_SVE
 
 }  // namespace hpc::gemm
 

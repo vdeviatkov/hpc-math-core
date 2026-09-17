@@ -103,25 +103,25 @@
  * iOS only, on Apple Silicon (M1 and later) or Intel Macs (where it
  * dispatches to AVX instead of AMX — still a valid, fast BLAS, just not
  * exercising the AMX coprocessor this file is about).
- * NOT on: Linux, Windows, or any non-Apple platform — falls back to
- * gemm_avx512_blocked (which itself falls back further down the x86/scalar
- * chain).
+ * NOT on: Linux, Windows, or any non-Apple platform.
  *
- * The header detects HPC_HAS_AMX, defined by CMakeLists.txt's
- * HPC_ENABLE_AMX option (default ON on Apple platforms, since linking
- * Accelerate.framework carries none of the SIGILL/runtime-permission risk
- * that gated HPC_ENABLE_AVX512/HPC_ENABLE_SME being opt-in).
+ * The header uses HPC_HAS_AMX from hpc/isa.hpp, which is 1 only when
+ * CMakeLists.txt's HPC_ENABLE_AMX option found Accelerate.framework
+ * (default ON on Apple platforms, since linking Accelerate carries none of
+ * the SIGILL/runtime-permission risk that keeps HPC_ENABLE_AVX512 and
+ * HPC_ENABLE_SME opt-in). Where it is 0 all three kernels are declared
+ * `= delete`: calling them is a compile-time error, never a silent
+ * substitution of a different kernel under the AMX name.
  */
 
-#include "gemm/avx512.hpp"  // fallback chain: AMX → AVX-512 → AVX2 → scalar
+#include "hpc/isa.hpp"
 #include "hpc/matrix.hpp"
 
-#if defined(HPC_HAS_AMX) && defined(__APPLE__)
+#if HPC_HAS_AMX
     #ifndef ACCELERATE_NEW_LAPACK
         #define ACCELERATE_NEW_LAPACK
     #endif
     #include <Accelerate/Accelerate.h>
-    #define HPC_AMX_ACTIVE 1
 #endif
 
 #include <cassert>
@@ -130,7 +130,16 @@
 
 namespace hpc::gemm {
 
-#ifdef HPC_AMX_ACTIVE
+#if !HPC_HAS_AMX
+
+template <typename T>
+void gemm_amx_naive(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) = delete;      // Accelerate.framework not available on this target
+template <typename T>
+void gemm_amx_reordered(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) = delete;  // Accelerate.framework not available on this target
+template <typename T>
+void gemm_amx_blocked(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) = delete;    // Accelerate.framework not available on this target
+
+#else
 
 /// Row-major C = A * B via Accelerate's single-precision BLAS (cblas_sgemm).
 inline void amx_accelerate_gemm(const float* A, const float* B, float* C, std::size_t M,
@@ -157,24 +166,6 @@ void amx_dispatch(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
     amx_accelerate_gemm(A.data(), B.data(), C.data(), M, N, K);
 }
 
-#endif  // HPC_AMX_ACTIVE
-
-/**
- * @brief Always-declared runtime AMX availability check (mirrors
- *        hpc::gemm::cuda_device_count() in cuda.hpp). Trivial here — unlike
- *        the Intel-AMX design this replaced, Accelerate.framework carries
- *        no runtime permission handshake — but kept as a function (rather
- *        than a compile-time constant benchmarks read directly) so
- *        bench_gemm.cpp's skip-guard code is identical across ISA families.
- */
-inline bool amx_runtime_available() {
-#ifdef HPC_AMX_ACTIVE
-    return true;
-#else
-    return false;
-#endif
-}
-
 // ============================================================================
 // gemm_amx_naive / gemm_amx_reordered / gemm_amx_blocked
 //
@@ -186,32 +177,22 @@ inline bool amx_runtime_available() {
 /// @copydoc amx_dispatch — see file header for why this equals gemm_amx_reordered/_blocked.
 template <typename T>
 void gemm_amx_naive(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
-#ifndef HPC_AMX_ACTIVE
-    gemm_avx512_naive(A, B, C);
-#else
     amx_dispatch(A, B, C);
-#endif
 }
 
 /// @copydoc amx_dispatch — see file header for why this equals gemm_amx_naive/_blocked.
 template <typename T>
 void gemm_amx_reordered(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
-#ifndef HPC_AMX_ACTIVE
-    gemm_avx512_reordered(A, B, C);
-#else
     amx_dispatch(A, B, C);
-#endif
 }
 
 /// @copydoc amx_dispatch — see file header for why this equals gemm_amx_naive/_reordered.
 template <typename T>
 void gemm_amx_blocked(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
-#ifndef HPC_AMX_ACTIVE
-    gemm_avx512_blocked(A, B, C);
-#else
     amx_dispatch(A, B, C);
-#endif
 }
+
+#endif  // HPC_HAS_AMX
 
 // ---------------------------------------------------------------------------
 // Convenience alias: gemm_amx → gemm_amx_blocked

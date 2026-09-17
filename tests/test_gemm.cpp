@@ -13,6 +13,12 @@
  *
  * All floating-point comparisons use EXPECT_NEAR with an epsilon that
  * accounts for double-precision rounding in the accumulation.
+ *
+ * ISA families (AVX2, AVX-512, NEON, SVE, SME, AMX) are compiled only where
+ * the ISA is available (HPC_HAS_* from hpc/isa.hpp) — their kernels are
+ * declared `= delete` elsewhere, so there is nothing to test and no
+ * fallback that could pass in their place. The test count reported on a
+ * machine is therefore exactly the set of kernels that ran on it.
  */
 
 #include "gemm/amx.hpp"
@@ -22,6 +28,7 @@
 #include "gemm/reordered.hpp"
 #include "gemm/sme.hpp"
 #include "gemm/sve.hpp"
+#include "hpc/isa.hpp"
 #include "hpc/matrix.hpp"
 
 #include <gtest/gtest.h>
@@ -43,8 +50,8 @@ using hpc::MatrixF;
 /// Relative epsilon for double-precision comparisons.
 static constexpr double kEpsD = 1e-9;
 
-/// Relative epsilon for single-precision comparisons.
-static constexpr float kEpsF = 1e-4f;
+/// Relative epsilon for single-precision comparisons (only the SIMD suites test float).
+[[maybe_unused]] static constexpr float kEpsF = 1e-4f;
 
 // ---------------------------------------------------------------------------
 // Utility: fill a matrix with random values using a fixed seed.
@@ -342,6 +349,8 @@ INSTANTIATE_TEST_SUITE_P(Sizes, GemmBlockedCrossValidation,
                                            std::size_t{256}   // four tiles
                                            ));
 
+#if HPC_HAS_AVX2
+
 // ===========================================================================
 // 7. AVX2 Naive  (i-j-k order, SIMD on k-loop)
 //    Demonstrates that SIMD alone cannot fix cache-hostile access patterns.
@@ -588,10 +597,13 @@ INSTANTIATE_TEST_SUITE_P(Sizes, GemmAvx2BlockedCrossValidation,
                                            std::size_t{16}, std::size_t{64}, std::size_t{128},
                                            std::size_t{256}));
 
+#endif  // HPC_HAS_AVX2
+
+#if HPC_HAS_AVX512
+
 // ===========================================================================
 // 10. AVX-512 Naive  (i-j-k order, 512-bit SIMD on k-loop)
 //     Proves that wider SIMD still cannot fix stride-N gather from B column.
-//     On non-AVX-512 hardware these fall back to the AVX2 naive kernel.
 // ===========================================================================
 
 TEST(GemmAvx512Naive, KnownResult2x2) {
@@ -837,10 +849,13 @@ INSTANTIATE_TEST_SUITE_P(Sizes, GemmAvx512BlockedCrossValidation,
                                            std::size_t{16}, std::size_t{31}, std::size_t{64},
                                            std::size_t{128}, std::size_t{256}));
 
+#endif  // HPC_HAS_AVX512
+
+#if HPC_HAS_NEON
+
 // ===========================================================================
 // 13. NEON Naive  (i-j-k order, 128-bit SIMD on k-loop)
-//     On x86 falls back to AVX2 naive. On ARM: proves gather still
-//     saturates memory bandwidth regardless of SIMD width.
+//     Proves gather still saturates memory bandwidth regardless of SIMD width.
 // ===========================================================================
 
 TEST(GemmNeonNaive, KnownResult2x2) {
@@ -1090,10 +1105,13 @@ INSTANTIATE_TEST_SUITE_P(Sizes, GemmNeonBlockedCrossValidation,
                                            std::size_t{8}, std::size_t{11}, std::size_t{16},
                                            std::size_t{64}, std::size_t{128}, std::size_t{256}));
 
+#endif  // HPC_HAS_NEON
+
+#if HPC_HAS_SVE
+
 // ===========================================================================
 // 16. SVE Naive  (i-j-k order, VLA SIMD on k-loop)
 //     Key insight: VL is runtime-determined (svcntw/svcntd).
-//     On non-SVE targets falls back to NEON → AVX2 → scalar chain.
 //     Confirms that wider/scalable SIMD still cannot fix gather bottleneck.
 // ===========================================================================
 
@@ -1294,11 +1312,14 @@ INSTANTIATE_TEST_SUITE_P(Sizes, GemmSveBlockedCrossValidation,
                                            std::size_t{17}, std::size_t{64},
                                            std::size_t{128}, std::size_t{256}));
 
+#endif  // HPC_HAS_SVE
+
+#if HPC_HAS_SME
+
 // ===========================================================================
 // 19. SME Naive  (single ZA tile, A-column re-gathered via scalar loop
 //     on every k — see gemm/sme.hpp for why gather-load intrinsics cannot
 //     be used in SME streaming mode)
-//     On non-SME targets falls back to SVE → NEON → AVX2 → scalar chain.
 // ===========================================================================
 
 TEST(GemmSmeNaive, KnownResult2x2) {
@@ -1360,7 +1381,6 @@ INSTANTIATE_TEST_SUITE_P(Sizes, GemmSmeNaiveCrossValidation,
 // 20. SME Reordered  (A(i0..i0+SVL, :) panel packed once per i0-tile,
 //     reused contiguously across every j0-tile — removes the O(N/SVL)
 //     redundant gathering that gemm_sme_naive pays)
-//     On non-SME targets falls back to gemm_sve_reordered.
 // ===========================================================================
 
 TEST(GemmSmeReordered, KnownResult2x2) {
@@ -1428,7 +1448,6 @@ INSTANTIATE_TEST_SUITE_P(Sizes, GemmSmeReorderedCrossValidation,
 // 21. SME Blocked  (K-tiled panel pack; partial C sums reloaded into ZA
 //     across k-tiles via svld1_hor_za — bounds the packed-A working set
 //     to SVL x kSmeTileK regardless of K)
-//     On non-SME targets falls back to gemm_sve_blocked.
 // ===========================================================================
 
 TEST(GemmSmeBlocked, MultiplyByIdentityGivesOriginal) {
@@ -1527,6 +1546,10 @@ INSTANTIATE_TEST_SUITE_P(Sizes, GemmSmeBlockedCrossValidation,
                                            std::size_t{17}, std::size_t{63},
                                            std::size_t{65}, std::size_t{129},
                                            std::size_t{256}));
+
+#endif  // HPC_HAS_SME
+
+#if HPC_HAS_AMX
 
 // ===========================================================================
 // 22. AMX Naive / Reordered / Blocked (Apple AMX, via Accelerate.framework)
@@ -1675,4 +1698,4 @@ INSTANTIATE_TEST_SUITE_P(Sizes, GemmAmxBlockedCrossValidation,
                                            std::size_t{33}, std::size_t{65},
                                            std::size_t{128}, std::size_t{256}));
 
-
+#endif  // HPC_HAS_AMX

@@ -44,7 +44,7 @@ Best kernel per family, single-threaded unless noted. Full output, speedup table
 | 7 | `gemm_sme_{naive,reordered,blocked}` | ARM SME2 `FMOPA` outer-product accumulate into a ZA tile |
 | 8 | `gemm_amx_*`, `gemm_cuda_wmma_pipelined` | Apple AMX through Accelerate BLAS; 128×128-tile, `cp.async`-pipelined WMMA kernel (~16× the Level 6 WMMA kernel) |
 
-Every family is skipped automatically — and reported as `SKIPPED`, never silently substituted — when the ISA or a CUDA device is absent. Every family has been verified on real hardware except `gemm_sve_*` (no SVE machine was available) and `gemm_cuda_hopper_wgmma` (requires sm_90a); both are covered by CI through their fallback chains.
+A family is compiled only where its ISA exists; elsewhere its kernels are declared `= delete`, so a wrong call is a compile-time error rather than a silently slower substitute. Benchmarks still list absent families as `SKIPPED`. Every family has been verified on real hardware except `gemm_sve_*` (no SVE machine was available) and `gemm_cuda_hopper_wgmma` (requires sm_90a).
 
 ---
 

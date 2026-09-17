@@ -96,20 +96,20 @@
  *   AWS Graviton, Ampere Altra, Raspberry Pi 4/5, etc.
  *   NOT available on: x86 (Intel/AMD) — no NEON instructions exist there.
  *
- * The header detects __ARM_NEON at compile time.
- * If absent (x86), all three kernels fall back to their AVX2 equivalents.
- * This makes the binary always correct and never generates SIGILL.
+ * The header detects __ARM_NEON at compile time (HPC_HAS_NEON in hpc/isa.hpp).
+ * If the ISA is absent this header declares all three kernels `= delete`
+ * (see hpc/isa.hpp): calling them is a compile-time error, never a silent
+ * substitution of a slower kernel under the same name.
  *
  * vfmaq_f32 / vfmaq_f64 require AArch64 (ARM64).
  * On 32-bit ARMv7 with NEON, vmlaq_f32 is used as fallback
  * (no f64 NEON on 32-bit ARM).
  */
 
+#include "hpc/isa.hpp"
 #include "hpc/matrix.hpp"
 
-#include "gemm/avx2.hpp"  // fallback on non-ARM targets
-
-#ifdef __ARM_NEON
+#if HPC_HAS_NEON
     #include <arm_neon.h>
 #endif
 
@@ -140,7 +140,7 @@ inline constexpr std::size_t kNeonF64RegCols = 2;  // 2 Q-vectors → 4 f64
 // NEON micro-kernels (used only by gemm_neon_blocked)
 // ============================================================================
 
-#ifdef __ARM_NEON
+#if HPC_HAS_NEON
 
 /**
  * @brief NEON f32 micro-kernel: C[i..i+3][j..j+15] += A[i..i+3][k_blk..k_end) × B[..][j..)
@@ -269,7 +269,7 @@ inline void neon_micro_f64_4x4(const double* __restrict__ a, const double* __res
     vst1q_f64(c3 + 2, c31);
 }
 
-#endif  // __ARM_NEON
+#endif  // HPC_HAS_NEON
 
 // ============================================================================
 // Kernel 1: gemm_neon_naive  —  i → j → k,  NEON on the k-loop
@@ -291,14 +291,13 @@ inline void neon_micro_f64_4x4(const double* __restrict__ a, const double* __res
  * The column gather from B causes a cache miss for every k-step at large N,
  * saturating memory bandwidth. This benchmark proves that SIMD width is
  * irrelevant when the access pattern is hostile — same lesson as AVX2 naive.
- *
- * Falls back to gemm_avx2_naive → gemm_naive on non-NEON targets.
  */
+#if !HPC_HAS_NEON
+template <typename T>
+void gemm_neon_naive(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) = delete;  // ARM_NEON not available on this target
+#else
 template <typename T>
 void gemm_neon_naive(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
-#ifndef __ARM_NEON
-    gemm_avx2_naive(A, B, C);
-#else
     static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>,
                   "gemm_neon_naive: T must be float or double");
 
@@ -358,8 +357,8 @@ void gemm_neon_naive(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
             }
         }
     }
-#endif
 }
+#endif  // HPC_HAS_NEON
 
 // ============================================================================
 // Kernel 2: gemm_neon_reordered  —  i → k → j,  NEON on the j-loop
@@ -382,14 +381,13 @@ void gemm_neon_naive(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
  *                  ~2× scalar reordered for f64 (2-wide NEON).
  * Degrades at large N when C row i (N×sizeof(T)) exceeds L1, same as
  * AVX2 reordered — no blocking to prevent C eviction.
- *
- * Falls back to gemm_avx2_reordered on non-NEON targets.
  */
+#if !HPC_HAS_NEON
+template <typename T>
+void gemm_neon_reordered(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) = delete;  // ARM_NEON not available on this target
+#else
 template <typename T>
 void gemm_neon_reordered(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
-#ifndef __ARM_NEON
-    gemm_avx2_reordered(A, B, C);
-#else
     static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>,
                   "gemm_neon_reordered: T must be float or double");
 
@@ -438,8 +436,8 @@ void gemm_neon_reordered(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
             }
         }
     }
-#endif
 }
+#endif  // HPC_HAS_NEON
 
 // ============================================================================
 // Kernel 3: gemm_neon_blocked  —  tiled i → k → j,  NEON register tile
@@ -473,15 +471,13 @@ void gemm_neon_reordered(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
  *   M1/M2/M3/M4 have 4 independent NEON/FP execution units per P-core.
  *   The 16-FMA micro-kernel (4 rows × 4 B-vectors) can keep all 4 units
  *   busy simultaneously, approaching peak throughput.
- *
- * Falls back to gemm_avx2_blocked on non-NEON targets (x86 with AVX2),
- * or gemm_blocked on targets with neither.
  */
+#if !HPC_HAS_NEON
+template <typename T>
+void gemm_neon_blocked(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) = delete;  // ARM_NEON not available on this target
+#else
 template <typename T>
 void gemm_neon_blocked(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
-#ifndef __ARM_NEON
-    gemm_avx2_blocked(A, B, C);
-#else
     static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>,
                   "gemm_neon_blocked: T must be float or double");
 
@@ -557,8 +553,8 @@ void gemm_neon_blocked(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
             }
         }
     }
-#endif
 }
+#endif  // HPC_HAS_NEON
 
 // ---------------------------------------------------------------------------
 // Convenience alias: gemm_neon → gemm_neon_blocked

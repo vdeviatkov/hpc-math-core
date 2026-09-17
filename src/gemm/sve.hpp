@@ -26,7 +26,7 @@
  *
  * SVE2 (ARMv9.0-A, 2021) is a superset of SVE that adds:
  *   • Matrix outer-product instructions (FMOPA / FMOPS) via SME extension —
- *     see gemm/sme.hpp, which sits above this file in the fallback chain
+ *     see gemm/sme.hpp, which builds on this file's streaming-SVE basis
  *     and implements a whole-tile outer-product GEMM instead of per-lane FMA.
  *   • More complex integer/polynomial operations
  *   For GEMM purposes, SVE and SVE2 are equivalent; the kernels below
@@ -110,9 +110,10 @@
  *   NOT on: Apple Silicon (M-series uses NEON only, not SVE)
  *   NOT on: x86 (Intel/AMD)
  *
- * The header detects __ARM_FEATURE_SVE at compile time.
- * If absent, all three kernels fall back to their NEON equivalents
- * (which themselves fall back to AVX2, then scalar).
+ * The header detects __ARM_FEATURE_SVE at compile time (HPC_HAS_SVE in hpc/isa.hpp).
+ * If the ISA is absent this header declares all three kernels `= delete`
+ * (see hpc/isa.hpp): calling them is a compile-time error, never a silent
+ * substitution of a slower kernel under the same name.
  *
  * To compile with SVE on GCC/Clang targeting Graviton3:
  *   -march=armv8.2-a+sve   (explicit)
@@ -123,10 +124,10 @@
  *   -march=armv9-a+sve2
  */
 
-#include "gemm/neon.hpp"  // fallback chain: SVE → NEON → AVX2 → scalar
+#include "hpc/isa.hpp"
 #include "hpc/matrix.hpp"
 
-#ifdef __ARM_FEATURE_SVE
+#if HPC_HAS_SVE
     #include <arm_sve.h>
 #endif
 
@@ -165,7 +166,7 @@ inline constexpr std::size_t kSveRegCols = 2;
 // SVE micro-kernels (used only by gemm_sve_blocked)
 // ============================================================================
 
-#ifdef __ARM_FEATURE_SVE
+#if HPC_HAS_SVE
 
 /**
  * @brief SVE f32 micro-kernel: C[i..i+3][j..j+2*VL) += A[i..i+3][k_blk..k_end) × B[..][j..)
@@ -283,7 +284,7 @@ inline void sve_micro_f64_4x2v(const double* __restrict__ a, const double* __res
     svst1_f64(pg1, c3 + vl, c31);
 }
 
-#endif  // __ARM_FEATURE_SVE
+#endif  // HPC_HAS_SVE
 
 // ============================================================================
 // Kernel 1: gemm_sve_naive  —  i → j → k,  SVE on the k-loop
@@ -309,14 +310,13 @@ inline void sve_micro_f64_4x2v(const double* __restrict__ a, const double* __res
  * Expected result: GFLOP/s ≈ scalar naive — gather saturates bandwidth.
  * Pedagogical purpose: confirms that VLA makes no difference for
  * cache-hostile access patterns (same lesson as AVX2/NEON naive).
- *
- * Falls back to gemm_neon_naive on non-SVE targets.
  */
+#if !HPC_HAS_SVE
+template <typename T>
+void gemm_sve_naive(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) = delete;  // ARM_FEATURE_SVE not available on this target
+#else
 template <typename T>
 void gemm_sve_naive(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
-#ifndef __ARM_FEATURE_SVE
-    gemm_neon_naive(A, B, C);
-#else
     static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>,
                   "gemm_sve_naive: T must be float or double");
 
@@ -378,8 +378,8 @@ void gemm_sve_naive(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
         }
 
     }
-#endif
 }
+#endif  // HPC_HAS_SVE
 
 // ============================================================================
 // Kernel 2: gemm_sve_reordered  —  i → k → j,  SVE on the j-loop (VLA)
@@ -403,14 +403,13 @@ void gemm_sve_naive(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
  * Expected result: ~svcntw()/svcntd() × scalar reordered.  On 256-bit SVE:
  *   f32: 8 lanes → ~8× scalar reordered (≈ 2× NEON, same as AVX2)
  *   f64: 4 lanes → ~4× scalar reordered (≈ 2× NEON, same as AVX2)
- *
- * Falls back to gemm_neon_reordered on non-SVE targets.
  */
+#if !HPC_HAS_SVE
+template <typename T>
+void gemm_sve_reordered(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) = delete;  // ARM_FEATURE_SVE not available on this target
+#else
 template <typename T>
 void gemm_sve_reordered(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
-#ifndef __ARM_FEATURE_SVE
-    gemm_neon_reordered(A, B, C);
-#else
     static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>,
                   "gemm_sve_reordered: T must be float or double");
 
@@ -462,8 +461,8 @@ void gemm_sve_reordered(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
             }
         }
     }
-#endif
 }
+#endif  // HPC_HAS_SVE
 
 // ============================================================================
 // Kernel 3: gemm_sve_blocked  —  tiled i → k → j,  VLA register tile
@@ -495,14 +494,13 @@ void gemm_sve_reordered(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
  *   256-bit SVE (kJStep = 2×8  = 16 f32)  — Graviton3, Neoverse V1
  *   512-bit SVE (kJStep = 2×16 = 32 f32)  — A64FX (Fugaku)
  *   2048-bit SVE(kJStep = 2×64 =128 f32)  — future SVE2 / SME hardware
- *
- * Falls back to gemm_neon_blocked on non-SVE targets.
  */
+#if !HPC_HAS_SVE
+template <typename T>
+void gemm_sve_blocked(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) = delete;  // ARM_FEATURE_SVE not available on this target
+#else
 template <typename T>
 void gemm_sve_blocked(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
-#ifndef __ARM_FEATURE_SVE
-    gemm_neon_blocked(A, B, C);
-#else
     static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>,
                   "gemm_sve_blocked: T must be float or double");
 
@@ -596,8 +594,8 @@ void gemm_sve_blocked(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
             }
         }
     }
-#endif
 }
+#endif  // HPC_HAS_SVE
 
 // ---------------------------------------------------------------------------
 // Convenience alias: gemm_sve → gemm_sve_blocked

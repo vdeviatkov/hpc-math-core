@@ -82,10 +82,10 @@
  *   NOT:   Apple Silicon (ARM), pre-Skylake Intel, AMD pre-Zen 4,
  *          Alder Lake (E-cores have no AVX-512; Intel disabled it)
  *
- * The header detects __AVX512F__ at compile time.
- * If absent, all three kernels fall back to their AVX2 equivalents
- * (which themselves fall back to scalar if __AVX2__ is also absent).
- * The binary is always correct, never generates SIGILL.
+ * The header detects __AVX512F__ at compile time (HPC_HAS_AVX512 in hpc/isa.hpp).
+ * If the ISA is absent this header declares all three kernels `= delete`
+ * (see hpc/isa.hpp): calling them is a compile-time error, never a silent
+ * substitution of a slower kernel under the same name.
  *
  * To enable on x86 without -march=native:
  *   cmake -DCMAKE_CXX_FLAGS="-mavx512f -mavx512dq -mfma" ...
@@ -93,11 +93,10 @@
  *   cmake -DHPC_ENABLE_AVX512=ON ...
  */
 
+#include "hpc/isa.hpp"
 #include "hpc/matrix.hpp"
 
-#include "gemm/avx2.hpp"  // fallback implementations + AVX2 tile constants
-
-#ifdef __AVX512F__
+#if HPC_HAS_AVX512
     #include <immintrin.h>
 #endif
 
@@ -128,7 +127,7 @@ inline constexpr std::size_t kAvx512F64RegCols = 2;  // 2 ZMM → 16 f64
 // AVX-512 micro-kernels
 // ============================================================================
 
-#ifdef __AVX512F__
+#if HPC_HAS_AVX512
 
 /**
  * @brief AVX-512 f32 micro-kernel: C[i..i+3][j..j+31] += A[i..i+3][k_blk..k_end) × B[..][j..)
@@ -244,7 +243,7 @@ inline void avx512_micro_f64_4x16(const double* __restrict__ a, const double* __
     _mm512_storeu_pd(c3 + 8, c31);
 }
 
-#endif  // __AVX512F__
+#endif  // HPC_HAS_AVX512
 
 // ============================================================================
 // Kernel 1: gemm_avx512_naive  —  i → j → k,  512-bit SIMD on the k-loop
@@ -265,14 +264,13 @@ inline void avx512_micro_f64_4x16(const double* __restrict__ a, const double* __
  * The gather overhead and cache-miss rate dominate; wider registers help nothing.
  * This is the control measurement: "does the instruction width matter when
  * you're memory-bandwidth bound on random-stride accesses?"  Answer: No.
- *
- * Falls back to gemm_avx2_naive (then gemm_naive) on non-AVX-512 targets.
  */
+#if !HPC_HAS_AVX512
+template <typename T>
+void gemm_avx512_naive(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) = delete;  // AVX512F not available on this target
+#else
 template <typename T>
 void gemm_avx512_naive(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
-#ifndef __AVX512F__
-    gemm_avx2_naive(A, B, C);
-#else
     static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>,
                   "gemm_avx512_naive: T must be float or double");
 
@@ -337,8 +335,8 @@ void gemm_avx512_naive(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
             }
         }
     }
-#endif
 }
+#endif  // HPC_HAS_AVX512
 
 // ============================================================================
 // Kernel 2: gemm_avx512_reordered  —  i → k → j,  512-bit SIMD on the j-loop
@@ -359,14 +357,13 @@ void gemm_avx512_naive(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
  * Expected result: ~2× AVX2 reordered GFLOP/s (compute-bound regime).
  * At large N, C row eviction from L1 is identical to AVX2 — the degradation
  * slope matches but starts from a higher baseline.
- *
- * Falls back to gemm_avx2_reordered on non-AVX-512 targets.
  */
+#if !HPC_HAS_AVX512
+template <typename T>
+void gemm_avx512_reordered(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) = delete;  // AVX512F not available on this target
+#else
 template <typename T>
 void gemm_avx512_reordered(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
-#ifndef __AVX512F__
-    gemm_avx2_reordered(A, B, C);
-#else
     static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>,
                   "gemm_avx512_reordered: T must be float or double");
 
@@ -415,8 +412,8 @@ void gemm_avx512_reordered(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C)
             }
         }
     }
-#endif
 }
+#endif  // HPC_HAS_AVX512
 
 // ============================================================================
 // Kernel 3: gemm_avx512_blocked  —  tiled i → k → j,  512-bit register tile
@@ -448,14 +445,13 @@ void gemm_avx512_reordered(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C)
  *   At large N the reordered kernel evicts C row i from L1 between k-iterations.
  *   The register tile retains C(i+0..3, j..j+31) in ZMM for kAvx512TileK steps,
  *   then stores once — reducing L1 store traffic by a factor of kAvx512TileK.
- *
- * Falls back to gemm_avx2_blocked on non-AVX-512 targets.
  */
+#if !HPC_HAS_AVX512
+template <typename T>
+void gemm_avx512_blocked(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) = delete;  // AVX512F not available on this target
+#else
 template <typename T>
 void gemm_avx512_blocked(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
-#ifndef __AVX512F__
-    gemm_avx2_blocked(A, B, C);
-#else
     static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>,
                   "gemm_avx512_blocked: T must be float or double");
 
@@ -532,8 +528,8 @@ void gemm_avx512_blocked(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
             }
         }
     }
-#endif
 }
+#endif  // HPC_HAS_AVX512
 
 // ---------------------------------------------------------------------------
 // Convenience alias: gemm_avx512 → gemm_avx512_blocked

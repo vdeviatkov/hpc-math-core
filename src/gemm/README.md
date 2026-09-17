@@ -21,45 +21,51 @@ summary of every family's cache technique and key intrinsics side by side.
 | `neon.hpp` | `gemm_neon_naive` · `gemm_neon_reordered` · `gemm_neon_blocked` | `__ARM_NEON` |
 | `sve.hpp` | `gemm_sve_naive` · `gemm_sve_reordered` · `gemm_sve_blocked` | `__ARM_FEATURE_SVE` |
 | `sme.hpp` | `gemm_sme_naive` · `gemm_sme_reordered` · `gemm_sme_blocked` — **verified, Apple M4 Max** | `__ARM_FEATURE_SME` (+ `-DHPC_ENABLE_SME=ON`) |
-| `amx.hpp` | `gemm_amx_naive` · `gemm_amx_reordered` · `gemm_amx_blocked` — **verified, Apple M4 Max, via Accelerate.framework** | `HPC_HAS_AMX` (Apple platforms; on by default) |
+| `amx.hpp` | `gemm_amx_naive` · `gemm_amx_reordered` · `gemm_amx_blocked` — **verified, Apple M4 Max, via Accelerate.framework** | `HPC_HAS_AMX` (Apple + Accelerate.framework; on by default) |
 | `prefetch.hpp` | `gemm_blocked_prefetch` · `gemm_avx2_blocked_prefetch` · `gemm_avx512_blocked_prefetch` · `gemm_neon_blocked_prefetch` · `gemm_sve_blocked_prefetch` | per ISA |
 | `cuda.hpp` | `gemm_cuda_naive` (L0) · `gemm_cuda_reordered` (L0b) · `gemm_cuda_blocked` (L1) · `gemm_cuda_reg_tile` (L2) · `gemm_cuda_double_buf` (L3) · `gemm_cuda_wmma` (L4, fp32) · `gemm_cuda_vectorized` (L5) · `gemm_cuda_mma_ldmatrix` (L6, fp32) · `gemm_cuda_hopper_wgmma` (L7, fp32) · `gemm_cuda_wmma_pipelined` (L8, fp32, **NEW**) · `gemm_cuda_cublas{,_tf32,_fp16}` (reference, not part of the ladder) — **L0-6 and L8 verified, RTX 5080 (Blackwell sm_120)**; L7 unverified, needs real sm_90a | `HPC_HAVE_CUDA` |
 
-Each kernel gracefully degrades at runtime: if the required ISA is not present the benchmark prints
-`SKIPPED` and the test calls `GTEST_SKIP()` — no SIGILL, no silent wrong answer.
+The ISA guards are the `HPC_HAS_*` macros from `include/hpc/isa.hpp`, each always defined to 0 or 1.
 
 ---
 
-## Fallback chain
+## ISA availability — no silent fallback
 
-```
-gemm_sme_*
-  └─ falls back to gemm_sve_*        (if __ARM_FEATURE_SME not defined, or
-       └─ falls back to gemm_neon_*      HPC_ENABLE_SME=OFF, or runtime probe failed)
-            └─ falls back to gemm_avx2_*
-                 └─ falls back to gemm_*  (scalar, always compiles)
+A kernel family is compiled only where its ISA is present. Elsewhere the
+same names are declared `= delete`:
 
-gemm_avx512_*
-  └─ falls back to gemm_avx2_*       (if __AVX512F__ not defined)
-       └─ falls back to gemm_*
-
-gemm_amx_*
-  └─ falls back to gemm_avx512_*     (if HPC_HAS_AMX not defined — i.e. not
-       └─ falls back to gemm_avx2_*      building for an Apple platform)
-            └─ falls back to gemm_*
-
-gemm_cuda_*
-  └─ stub library: cuda_device_count() == 0 → SKIPPED
+```cpp
+#if !HPC_HAS_AVX2
+template <typename T>
+void gemm_avx2_blocked(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) = delete;
+#else
+template <typename T>
+void gemm_avx2_blocked(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) { … }
+#endif
 ```
 
-`gemm_sme_*` sits above `gemm_sve_*` in the ARM chain because it is a
-**matrix-engine** ISA (whole-tile outer-product hardware) rather than
-wider per-lane SIMD — see Algorithm 10 below. `gemm_amx_*` sits above
-`gemm_avx512_*` in the x86/AVX chain for the same reason on Apple
-platforms, but is really a special case: it doesn't fall back due to a
-missing ISA guard so much as an entirely different implementation
-strategy (calling Accelerate.framework instead of hand-written SIMD) that
-is only available on Apple platforms — see Algorithm 11 below.
+So `gemm_avx2_blocked(A, B, C)` on an ARM build is a compile-time error
+(`call to deleted function 'gemm_avx2_blocked'`), never a scalar kernel
+quietly timed under an AVX2 name. Consequences:
+
+- **Benchmarks** (`bench_gemm.cpp`) pass the flag as a template parameter
+  to `run_gemm<N, T, kHaveAvx2>(…)`; when it is false the kernel lambda sits
+  in a discarded `if constexpr` branch and is never instantiated, and the
+  row is reported as `SKIPPED` — the full catalogue stays visible.
+- **Tests** (`test_gemm.cpp`) wrap each family in `#if HPC_HAS_*`; the test
+  count on a machine is exactly the set of kernels that ran on it.
+- **`gemm_cuda_*`** is the one runtime case: GPU presence is a property of
+  the machine the binary runs on, not of the build, so the CPU-only stub
+  reports `cuda_device_count() == 0` and callers `SKIP`. It never computes
+  a CPU result under a CUDA name.
+- **`gemm_cuda_wmma_pipelined`** has a documented *shape* precondition
+  (M, N multiples of 128, K of 32) and falls back to `gemm_cuda_wmma`
+  otherwise — see Level 8 below.
+
+All flags are compile-time because every build uses `-march=native` /
+`-mcpu=`: the build CPU is the run CPU. Runtime dispatch (cpuid → best
+kernel) would be a separate explicit facility, not something hidden inside
+each kernel.
 
 ---
 
@@ -921,8 +927,7 @@ GFLOP/s at N=2048, 172 vs 127 GFLOP/s at N=4096 (Apple M4 Max, f32).
 Apple M4 / M4 Pro / M4 Max (SME2, 512-bit SVL) is, as of this writing,
 essentially the only shipping SME2 hardware widely available to individual
 developers. Not on Apple M1/M2/M3, AWS Graviton3/4, Fujitsu A64FX, or
-x86 — falls back to `gemm_sve_blocked` (SVE hardware), `gemm_neon_blocked`
-(Apple M1–M3), or further down the chain.
+x86 — there `gemm_sme_*` is declared `= delete` (`HPC_HAS_SME == 0`).
 
 ---
 
@@ -992,8 +997,7 @@ Accelerate.framework: macOS and iOS only. On Apple Silicon (M1 and later)
 it is understood to dispatch to the AMX coprocessor; on Intel Macs it
 dispatches to AVX/AVX-512 instead — still a fast, correct BLAS, just not
 exercising the AMX coprocessor this file is about. Not on Linux or
-Windows — falls back to `gemm_avx512_blocked` (itself falling back further
-down the x86/scalar chain).
+Windows — there `gemm_amx_*` is declared `= delete` (`HPC_HAS_AMX == 0`).
 
 ---
 
