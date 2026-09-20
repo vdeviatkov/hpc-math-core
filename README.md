@@ -2,7 +2,7 @@
 
 [![CI — Build & Test](https://github.com/vdeviatkov/hpc-math-core/actions/workflows/build.yml/badge.svg)](https://github.com/vdeviatkov/hpc-math-core/actions/workflows/build.yml)
 
-A progressive benchmark suite demonstrating **hardware-aware optimisation of dense linear algebra**, built to the performance standards of quantitative engineering and high-frequency trading.
+Progressive GEMM optimization and benchmarking across scalar C++, SIMD, CUDA, Tensor Cores, ARM SME and Apple AMX, focused on hardware-aware performance engineering for ML systems and low-latency compute.
 
 Starting from readable scalar code, each step adds one layer of hardware exploitation — cache-friendly loop order, cache blocking, explicit SIMD (AVX2 · AVX-512 · NEON · SVE), software prefetch, CUDA (shared-memory tiling through Tensor Cores), and matrix-engine hardware (ARM SME2, Apple AMX). Every kernel is benchmarked with Google Benchmark, cross-validated against a scalar reference by a Google Test suite, and documented with memory-access diagrams and cache analysis.
 
