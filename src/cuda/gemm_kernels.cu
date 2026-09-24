@@ -95,25 +95,6 @@ using namespace nvcuda;
 // kernels to be measured against.
 #include <cublas_v2.h>
 
-// Driver API -- needed only for the Hopper TMA descriptor
-// (cuTensorMapEncodeTiled has no CUDA-runtime-API equivalent). Always
-// included (it is a plain host header, part of every CUDA toolkit
-// installation); the functions it declares are only ever CALLED when
-// cuda_has_hopper() is true at runtime. Requires linking CUDA::cuda_driver
-// (see CMakeLists.txt) in addition to the usual CUDA::cudart.
-//
-// NOTE: CUtensorMap, cuTensorMapEncodeTiled, and __grid_constant__ (used by
-// kernel_hopper_wgmma further down) are CUDA 12.0+ additions. Verified
-// building and running against CUDA 13.2 on real hardware (RTX 5080,
-// Blackwell sm_120) -- building against CUDA <12.0 would fail to compile
-// this translation unit at all, not just this one kernel. That same
-// verification run is what found and fixed the real bugs described
-// throughout this file (search "found running on real hardware"); the
-// Hopper-specific kernel_hopper_wgmma itself remains genuinely unverified
-// since no Hopper (sm_90a) hardware has been available to test it on --
-// see its much larger "UNVERIFIED" caveat below.
-#include <cuda.h>
-
 // cp.async requires sm_80+ (Ampere)
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
   #include <cuda_pipeline_primitives.h>
@@ -409,9 +390,8 @@ kernel_double_buf(const T* __restrict__ A,
     // On older:   copies synchronously and issues __syncthreads.
     //
     // CORRECTNESS FIX (found running on real Ampere-class hardware for the
-    // first time -- RTX 5080/Blackwell, sm_120 -- see cuda_has_hopper()
-    // above for a different instance of the same "never verified on real
-    // hardware" class of bug): the previous version read the boundary-
+    // first time -- RTX 5080/Blackwell, sm_120): the previous version
+    // read the boundary-
     // checked element into a local `a_val`/`b_val` register and passed
     // `&a_val` as __pipeline_memcpy_async's source. cp.async is a
     // global-memory-to-shared-memory instruction ONLY -- the source
@@ -748,8 +728,8 @@ kernel_wmma(const float* __restrict__ A,
 
     // Shared memory: store fp16 sub-tiles for Tensor Core input.
     // CORRECTNESS FIX (found running on real hardware for the first time --
-    // see the cp.async/cuda_has_hopper()/DoubleBuf-launch-config fixes
-    // elsewhere in this file for the same story): this used to be padded
+    // see the cp.async and DoubleBuf-launch-config fixes elsewhere in
+    // this file for the same story): this used to be padded
     // +1 (As/Bs[kBlockK][kBlockM+1]) for the usual scalar shared-memory
     // bank-conflict trick. wmma::load_matrix_sync does NOT tolerate that --
     // for a __half fragment it requires the leading dimension to be a
@@ -891,12 +871,11 @@ kernel_wmma(const float* __restrict__ A,
 //      buf's own #ifdef HPC_HAVE_CP_ASYNC / #else pattern.
 //
 // Design choices that keep this correctness-tractable (unlike kernel_
-// mma_ldmatrix's hand-mapped PTX registers, or kernel_hopper_wgmma's
-// from-scratch descriptor layout):
+// mma_ldmatrix's hand-mapped PTX registers):
 //
 //   - A and B are pre-converted to fp16 in GLOBAL memory once (via the
 //     existing kernel_f32_to_f16, the same staging step gemm_cuda_cublas_
-//     fp16 and kernel_hopper_wgmma already use) before this kernel
+//     fp16 already uses) before this kernel
 //     launches. cp.async is a same-dtype byte copy, not a converting
 //     load -- it cannot do the fp32->fp16 narrowing kernel_wmma's
 //     synchronous load does on the fly, so the conversion has to happen
@@ -921,9 +900,8 @@ kernel_wmma(const float* __restrict__ A,
 //     aligned by construction (see the alignment argument below) --
 //     no zfill/boundary-tile logic is needed at all because...
 //   - ...this kernel deliberately requires M, N to be exact multiples of
-//     128 and K an exact multiple of 32 (no tail handling, the same
-//     scoping decision kernel_hopper_wgmma already makes for its own
-//     tile shape) -- the host dispatch below falls back to the always-
+//     128 and K an exact multiple of 32 (no tail handling) -- the host
+//     dispatch below falls back to the always-
 //     correct kernel_wmma otherwise. Every alignment argument above
 //     depends on this: cudaMalloc'd buffers are >=256-byte aligned, and
 //     with K/N multiples of 32/128 (hence of 8), every row of A16/B16
@@ -1300,65 +1278,12 @@ kernel_mma_ldmatrix(const float* __restrict__ A,
 #endif
 }
 
-// ============================================================================
-// Kernel 8: Hopper warp specialization + TMA (wgmma) -- Level 7
-//
-// ****************************************************************
-// *** BEST-EFFORT, LIKELY-BROKEN, EXPLICITLY UNVERIFIED KERNEL. ***
-// ****************************************************************
-// The user asked for this specific technique with the explicit
-// understanding, agreed in advance, that it would be written as an honest
-// best-effort sketch rather than working code: sm_90a wgmma + TMA has no
-// public C++ intrinsic surface at all (unlike WMMA, unlike even mma.sync/
-// ldmatrix above) -- every input is raw inline PTX and a driver-API
-// tensor-map descriptor, hand-written against the PTX ISA's prose
-// description with no compiler or hardware available anywhere in this
-// project to check it against. Hand-written kernels using these primitives
-// essentially do not exist outside CUTLASS/cuDNN internals; even NVIDIA's
-// own examples build this through the CUTLASS template library, not by
-// hand. Treat every bit-layout and register-mapping comment below as "my
-// best reading of the documentation", not as a verified fact -- several are
-// flagged with an explicit confidence level.
-//
-// What this kernel demonstrates (the two requested techniques):
-//
-//   TMA (Tensor Memory Accelerator): a single thread issues one
-//   instruction (`cp.async.bulk.tensor.2d...`) that asynchronously copies
-//   an entire 2-D tile from global to shared memory, using a descriptor
-//   (`CUtensorMap`) built ONCE on the host via the driver API
-//   (`cuTensorMapEncodeTiled`) that encodes the tensor's global shape,
-//   strides, and box (tile) size. This replaces the "every thread computes
-//   its own address and issues its own load" pattern every other kernel in
-//   this file uses.
-//
-//   Warp specialization: threads in a thread block take on ROLES rather
-//   than all executing identical code. Here, one warpgroup (128 threads)
-//   is the PRODUCER -- it does nothing but issue TMA loads and signal
-//   completion via an mbarrier -- while a second warpgroup is the CONSUMER
-//   -- it waits on that mbarrier, then issues `wgmma.mma_async`
-//   (warpgroup-wide MMA, operating on all 128 consumer threads at once)
-//   directly against the shared-memory tile the producer just staged, with
-//   no per-thread fragment loading step at all (wgmma reads its operands
-//   from shared memory via a 64-bit "matrix descriptor", not from
-//   registers the way mma.sync does).
-//
-// Scope deliberately kept minimal (a single-buffered, non-deeply-pipelined
-// producer/consumer handshake, exact-multiple-of-tile-size M/N/K only, no
-// tail handling) -- a full multi-stage pipeline is exactly the kind of
-// thing CUTLASS exists to get right, and adding more untestable complexity
-// here would not make this kernel more trustworthy.
-//
-// Requires sm_90a specifically (not just sm_90 -- wgmma/TMA are excluded
-// from the portable "family" compute-capability feature set and need the
-// architecture-specific target). Falls back to kernel_mma_ldmatrix (or
-// kernel_wmma) via the host dispatch on non-Hopper hardware.
-// ============================================================================
-
 // ----------------------------------------------------------------------------
-// fp32 -> fp16 staging kernel: TMA needs its source tensor already resident
-// in global memory in the target element type (fp16 here), unlike the WMMA/
-// mma.sync kernels above, which convert on-the-fly per shared-memory tile.
-// Confidence: HIGH (this is a completely ordinary elementwise kernel).
+// fp32 -> fp16 staging kernel: converts a whole matrix in global memory ahead
+// of time, unlike kernel_wmma / kernel_mma_ldmatrix, which convert on the fly
+// per shared-memory tile. Used by kernel_wmma_pipelined (cp.async is a
+// same-dtype byte copy, not a converting load) and by the cuBLAS fp16
+// reference.
 // ----------------------------------------------------------------------------
 __global__ void kernel_f32_to_f16(const float* __restrict__ src,
                                   __half* __restrict__ dst,
@@ -1366,259 +1291,6 @@ __global__ void kernel_f32_to_f16(const float* __restrict__ src,
     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < count)
         dst[idx] = __float2half(src[idx]);
-}
-
-// Thread-block tile: one warpgroup (128 threads) computes one 64x64 output
-// tile per k-step of 16 (wgmma.m64n64k16 f16 native shape). Declared
-// OUTSIDE the sm_90a guard below (plain compile-time constants, not
-// device-arch-specific) so the host-side launch() dispatcher can also see
-// them for grid-size computation.
-static constexpr int kWgmmaM = 64;
-static constexpr int kWgmmaN = 64;
-static constexpr int kWgmmaK = 16;
-static constexpr int kWgmmaWarpgroupThreads = 128;
-
-// == 900, not >= 900: wgmma/TMA are Hopper-exclusive (sm_90/sm_90a) and are
-// NOT part of Blackwell's (sm_100/sm_110/sm_120/sm_121, __CUDA_ARCH__ 1000+)
-// forward-compatible feature set -- ptxas rejects wgmma.mma_async and
-// friends outright for those targets. Verified on real Blackwell hardware
-// (RTX 5080, sm_120): the old ">= 900" guard let this branch compile for
-// -arch=native there and ptxas aborted the build. See cuda_has_hopper()
-// below for the matching runtime-dispatch fix.
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 900
-
-// ----------------------------------------------------------------------------
-// Shared-memory matrix descriptor for wgmma operands (PTX ISA "Asynchronous
-// Warpgroup Level Matrix Shared Memory Layout" / matrix descriptor format).
-// Confidence: MEDIUM -- the field existence (start address, leading-dim
-// offset, stride-dim offset, swizzle mode, all in units of 16 bytes) is
-// well attested across public Hopper-kernel writeups; the EXACT bit offsets
-// below are this author's best reconstruction and are the single most
-// likely place in this file for a silent mismatch.
-// ----------------------------------------------------------------------------
-__device__ __forceinline__ uint64_t make_smem_desc(const void* smem_ptr,
-                                                    int leading_dim_bytes,
-                                                    int stride_dim_bytes) {
-    uint64_t addr = static_cast<uint64_t>(__cvta_generic_to_shared(smem_ptr));
-    uint64_t desc = 0;
-    desc |= (addr >> 4) & 0x3FFF;                                   // bits 0-13
-    desc |= (static_cast<uint64_t>(leading_dim_bytes >> 4) & 0x3FFF) << 16;  // bits 16-29
-    desc |= (static_cast<uint64_t>(stride_dim_bytes  >> 4) & 0x3FFF) << 32;  // bits 32-45
-    // Swizzle mode left at 0 (none) -- bits 62-63. A real implementation
-    // would match this to the swizzle mode baked into the TMA descriptor
-    // that populated this shared-memory tile; left at "none" here to avoid
-    // compounding an already-uncertain bit layout with an unverified
-    // swizzle-mode interaction.
-    return desc;
-}
-
-__global__ void __launch_bounds__(256)  // 2 warpgroups: producer + consumer
-kernel_hopper_wgmma(const __half* __restrict__ A16,  // pre-converted, row-major MxK
-                    const __half* __restrict__ B16,  // pre-converted, row-major KxN
-                    float* __restrict__ C,
-                    int M, int K, int N,
-                    const __grid_constant__ CUtensorMap tensorMapA,
-                    const __grid_constant__ CUtensorMap tensorMapB) {
-    const int warpgroupId = threadIdx.x / kWgmmaWarpgroupThreads;  // 0 = producer, 1 = consumer
-    const bool isProducer  = (warpgroupId == 0);
-
-    const int blockRow = blockIdx.y;
-    const int blockCol = blockIdx.x;
-
-    __shared__ alignas(128) __half As[kWgmmaM][kWgmmaK];
-    __shared__ alignas(128) __half Bs[kWgmmaK][kWgmmaN];
-    // Two mbarriers: `full` (producer -> consumer: "tile is loaded"),
-    // `empty` (consumer -> producer: "tile has been consumed, reuse it").
-    // Single-buffered by design (see file-level scope note above) -- a
-    // production pipeline would use N buffers and N mbarrier pairs.
-    __shared__ uint64_t full_bar;
-    __shared__ uint64_t empty_bar;
-
-    if (threadIdx.x == 0) {
-        // mbarrier.init expects the *thread count* that will arrive on it.
-        // `full_bar`: 1 arrival expected (the single TMA-issuing thread,
-        // whose "arrive" is implicit in the TMA instruction's
-        // mbarrier::complete_tx qualifier). `empty_bar`: all 128 consumer
-        // threads must finish reading before the producer reuses the tile.
-        asm volatile("mbarrier.init.shared.b64 [%0], 1;\n"
-                    :: "l"(__cvta_generic_to_shared(&full_bar)));
-        asm volatile("mbarrier.init.shared.b64 [%0], %1;\n"
-                    :: "l"(__cvta_generic_to_shared(&empty_bar)),
-                       "r"(kWgmmaWarpgroupThreads));
-    }
-    __syncthreads();
-
-    // Accumulator: wgmma.m64n64k16.f32 output distributed across the 128
-    // consumer threads. Confidence: LOW on the exact per-thread (row,col)
-    // mapping used at STORE time below -- see the comment there. The
-    // register COUNT (32 f32 per thread for a 64x64 tile / 128 threads =
-    // 32 elements/thread) is a simple area/thread-count computation and is
-    // high confidence; which 32 (row,col) pairs a given thread owns is not.
-    float acc[32] = {};
-
-    const int nTilesK = (K + kWgmmaK - 1) / kWgmmaK;
-
-    for (int tileK = 0; tileK < nTilesK; ++tileK) {
-        if (isProducer) {
-            if (threadIdx.x == 0) {
-                if (tileK > 0) {
-                    // Wait for the consumer to finish with the PREVIOUS
-                    // tile's data before overwriting it (single-buffered).
-                    asm volatile(
-                        "{\n"
-                        ".reg .pred p;\n"
-                        "L_WAIT_EMPTY:\n"
-                        "mbarrier.try_wait.parity.shared.b64 p, [%0], 0;\n"
-                        "@!p bra L_WAIT_EMPTY;\n"
-                        "}\n"
-                        :: "l"(__cvta_generic_to_shared(&empty_bar)));
-                }
-                // Issue the two TMA bulk-tensor loads (A tile, B tile).
-                // Coordinates are in ELEMENTS, per the CUtensorMap's own
-                // element type -- (col, row) order per TMA's convention of
-                // fastest-varying dimension first.
-                asm volatile(
-                    "cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::"
-                    "complete_tx::bytes [%0], [%1, {%2, %3}], [%4];\n"
-                    :: "l"(__cvta_generic_to_shared(&As[0][0])),
-                       "l"(reinterpret_cast<uint64_t>(&tensorMapA)),
-                       "r"(tileK * kWgmmaK), "r"(blockRow * kWgmmaM),
-                       "l"(__cvta_generic_to_shared(&full_bar)));
-                asm volatile(
-                    "cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::"
-                    "complete_tx::bytes [%0], [%1, {%2, %3}], [%4];\n"
-                    :: "l"(__cvta_generic_to_shared(&Bs[0][0])),
-                       "l"(reinterpret_cast<uint64_t>(&tensorMapB)),
-                       "r"(blockCol * kWgmmaN), "r"(tileK * kWgmmaK),
-                       "l"(__cvta_generic_to_shared(&full_bar)));
-            }
-            // Non-issuing producer threads simply idle this iteration --
-            // real warp-specialized kernels usually give the producer
-            // warpgroup additional prefetch/bookkeeping work; omitted here
-            // to keep an already-speculative kernel as small as possible.
-        } else {
-            // Consumer: wait for the producer's TMA loads to complete.
-            if (threadIdx.x == kWgmmaWarpgroupThreads) {
-                asm volatile(
-                    "{\n"
-                    ".reg .pred p;\n"
-                    "L_WAIT_FULL:\n"
-                    "mbarrier.try_wait.parity.shared.b64 p, [%0], %1;\n"
-                    "@!p bra L_WAIT_FULL;\n"
-                    "}\n"
-                    :: "l"(__cvta_generic_to_shared(&full_bar)), "r"(tileK & 1));
-            }
-            __syncwarp();  // only meaningful within the issuing warp; see note below
-
-            const uint64_t descA = make_smem_desc(&As[0][0], kWgmmaK * 2, kWgmmaM * kWgmmaK * 2);
-            const uint64_t descB = make_smem_desc(&Bs[0][0], kWgmmaN * 2, kWgmmaK * kWgmmaN * 2);
-
-            // wgmma.mma_async: warpgroup-wide, all 128 consumer threads
-            // issue the IDENTICAL instruction (SIMT-cooperative, like
-            // wmma:: / mma.sync, but at warpgroup granularity). Accumulator
-            // registers persist across calls (scale-d=1 after the first).
-            // Confidence: MEDIUM on the instruction syntax/operand count
-            // (32 accumulator registers matches the documented m64n64k16.f32
-            // shape); LOW on whether `p` (scale-d) and the two trailing
-            // 0-immediates (trans-a, trans-b) are in the right operand
-            // positions for this PTX ISA version.
-            asm volatile(
-                "wgmma.mma_async.sync.aligned.m64n64k16.f32.f16.f16 "
-                "{%0,%1,%2,%3,%4,%5,%6,%7,%8,%9,%10,%11,%12,%13,%14,%15,"
-                "%16,%17,%18,%19,%20,%21,%22,%23,%24,%25,%26,%27,%28,%29,%30,%31}, "
-                "%32, %33, %34, 0, 0;\n"
-                : "+f"(acc[0]),  "+f"(acc[1]),  "+f"(acc[2]),  "+f"(acc[3]),
-                  "+f"(acc[4]),  "+f"(acc[5]),  "+f"(acc[6]),  "+f"(acc[7]),
-                  "+f"(acc[8]),  "+f"(acc[9]),  "+f"(acc[10]), "+f"(acc[11]),
-                  "+f"(acc[12]), "+f"(acc[13]), "+f"(acc[14]), "+f"(acc[15]),
-                  "+f"(acc[16]), "+f"(acc[17]), "+f"(acc[18]), "+f"(acc[19]),
-                  "+f"(acc[20]), "+f"(acc[21]), "+f"(acc[22]), "+f"(acc[23]),
-                  "+f"(acc[24]), "+f"(acc[25]), "+f"(acc[26]), "+f"(acc[27]),
-                  "+f"(acc[28]), "+f"(acc[29]), "+f"(acc[30]), "+f"(acc[31])
-                : "l"(descA), "l"(descB), "r"(tileK > 0 ? 1 : 0));
-            asm volatile("wgmma.commit_group.sync.aligned;\n");
-            asm volatile("wgmma.wait_group.sync.aligned 0;\n");
-
-            // Signal the producer that this tile's shared-memory buffer is
-            // free to be overwritten with the next one.
-            __syncthreads();  // all 128 consumer threads done reading
-            if (threadIdx.x == kWgmmaWarpgroupThreads) {
-                asm volatile("mbarrier.arrive.shared.b64 _, [%0];\n"
-                            :: "l"(__cvta_generic_to_shared(&empty_bar)));
-            }
-        }
-    }
-
-    // Store the accumulator to global C.
-    // Confidence: LOW -- see the accumulator declaration comment above.
-    // This uses a placeholder linear decomposition (NOT a verified wgmma
-    // output layout) purely so the kernel has SOME defined store behaviour;
-    // treat any numerical result from this kernel as unverified even in
-    // the cases where it happens to compile and run.
-    if (!isProducer) {
-        const int consumerTid = threadIdx.x - kWgmmaWarpgroupThreads;  // 0..127
-        #pragma unroll
-        for (int e = 0; e < 32; ++e) {
-            const int flat = consumerTid * 32 + e;   // 0..4095 -- placeholder mapping
-            const int r = flat / kWgmmaN;
-            const int c = flat % kWgmmaN;
-            const int gi = blockRow * kWgmmaM + r;
-            const int gj = blockCol * kWgmmaN + c;
-            if (gi < M && gj < N)
-                C[gi * N + gj] = acc[e];
-        }
-    }
-}
-
-#else  // __CUDA_ARCH__ != 900 (Blackwell, pre-Hopper, or host compilation pass)
-
-// sm_90a-only: this branch exists purely so the translation unit compiles
-// when no -arch target is Hopper. Never launched on such hardware (host
-// dispatch checks cuda_has_hopper() first).
-__global__ void kernel_hopper_wgmma(const __half* __restrict__, const __half* __restrict__,
-                                    float* __restrict__, int, int, int,
-                                    const __grid_constant__ CUtensorMap,
-                                    const __grid_constant__ CUtensorMap) {}
-
-#endif  // __CUDA_ARCH__ == 900
-
-// ----------------------------------------------------------------------------
-// Host-side TMA descriptor construction (driver API).
-// Confidence: MEDIUM -- cuTensorMapEncodeTiled's signature and parameter
-// meanings are drawn from the CUDA driver API reference; the specific
-// element/data-type and swizzle/interleave/L2-promotion/OOB-fill enum
-// values chosen below (all "none"/"default") are the least risky choice
-// for each field, not a performance-tuned configuration.
-// ----------------------------------------------------------------------------
-static CUtensorMap make_tensor_map_2d(const __half* globalAddr, std::uint64_t rows,
-                                      std::uint64_t cols, std::uint32_t boxRows,
-                                      std::uint32_t boxCols) {
-    CUtensorMap tensorMap{};
-    // TMA addresses tensors as {fastest-varying dim, ..., slowest-varying
-    // dim}; for a row-major [rows x cols] fp16 matrix, cols is fastest.
-    const cuuint64_t globalDim[2]     = {cols, rows};
-    const cuuint64_t globalStrides[1] = {cols * sizeof(__half)};  // rank-1: only the non-fastest dim needs an explicit stride
-    const cuuint32_t boxDim[2]        = {boxCols, boxRows};
-    const cuuint32_t elementStrides[2] = {1, 1};
-
-    const CUresult res = cuTensorMapEncodeTiled(
-        &tensorMap,
-        CU_TENSOR_MAP_DATA_TYPE_FLOAT16,
-        /*tensorRank=*/2,
-        const_cast<void*>(static_cast<const void*>(globalAddr)),
-        globalDim,
-        globalStrides,
-        boxDim,
-        elementStrides,
-        CU_TENSOR_MAP_INTERLEAVE_NONE,
-        CU_TENSOR_MAP_SWIZZLE_NONE,
-        CU_TENSOR_MAP_L2_PROMOTION_NONE,
-        CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
-    if (res != CUDA_SUCCESS) {
-        throw std::runtime_error("cuTensorMapEncodeTiled failed (code " +
-                                 std::to_string(static_cast<int>(res)) + ")");
-    }
-    return tensorMap;
 }
 
 // ============================================================================
@@ -1650,25 +1322,6 @@ static bool device_has_capability(int major, int minor) noexcept {
 bool cuda_has_tensor_cores() noexcept { return device_has_capability(7, 0); }
 bool cuda_has_ampere()       noexcept { return device_has_capability(8, 0); }
 
-// NOT device_has_capability(9, 0): wgmma/TMA (sm_90a) are Hopper-exclusive
-// instructions, not part of the forward-compatible "family" feature set --
-// ptxas rejects wgmma.mma_async/commit_group/wait_group outright when
-// targeting Blackwell (sm_100/sm_110/sm_120/sm_121, compute major 10/12),
-// even though those report compute capability >= 9.0. Verified against
-// real Blackwell hardware (RTX 5080, sm_120): device_has_capability(9, 0)'s
-// ">=" semantics -- correct for tensor-core/Ampere gating below, since
-// those ARE forward-compatible -- silently mis-selected kernel_hopper_wgmma
-// on non-Hopper hardware and ptxas aborted the whole build.
-bool cuda_has_hopper() noexcept {
-    int devCount = 0;
-    if (cudaGetDeviceCount(&devCount) != cudaSuccess) return false;
-    for (int d = 0; d < devCount; ++d) {
-        cudaDeviceProp prop{};
-        if (cudaGetDeviceProperties(&prop, d) == cudaSuccess)
-            if (prop.major == 9) return true;
-    }
-    return false;
-}
 
 // ============================================================================
 // RAII device buffer
@@ -1691,7 +1344,7 @@ struct DeviceBuffer {
 // ============================================================================
 
 enum class GemmKind { Naive, Reordered, Blocked, RegTile, DoubleBuf, Wmma,
-                      Vectorized, MmaLdmatrix, HopperWgmma, WmmaPipelined };
+                      Vectorized, MmaLdmatrix, WmmaPipelined };
 
 template <typename T>
 static void launch(GemmKind kind, const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
@@ -1729,8 +1382,8 @@ static void launch(GemmKind kind, const Matrix<T>& A, const Matrix<T>& B, Matrix
         constexpr int LBM = kDBufBM<T>;
         constexpr int LBN = kDBufBN<T>;
         // CORRECTNESS FIX (found running on real hardware for the first
-        // time -- see cp.async / cuda_has_hopper() fixes above for the
-        // same story): this was hardcoded to 256 threads, correct only by
+        // time -- see the cp.async fixes above for the same story):
+        // this was hardcoded to 256 threads, correct only by
         // coincidence for float (kDBufBM/BN=kBM/kBN=128 -> (128/8)*(128/8)
         // = 256). For double, kDBufBM/BN halve to 64 (see the comment on
         // kDBufBM above) so only (64/8)*(64/8) = 64 threads' worth of
@@ -1816,64 +1469,6 @@ static void launch(GemmKind kind, const Matrix<T>& A, const Matrix<T>& B, Matrix
             }
         }
 
-    } else if (kind == GemmKind::HopperWgmma) {
-        // UNVERIFIED -- see kernel_hopper_wgmma's file comment. fp32-only,
-        // sm_90a-only; requires M/N/K to be exact multiples of the wgmma
-        // tile shape (no tail handling in this deliberately-minimal sketch).
-        // Falls back to MmaLdmatrix/Wmma/double_buf otherwise, in that order.
-        if constexpr (!std::is_same_v<T, float>) {
-            throw std::runtime_error("gemm_cuda_hopper_wgmma is only supported for float");
-        } else {
-            const bool exactTiles = (M % kWgmmaM == 0) && (N % kWgmmaN == 0) && (K % kWgmmaK == 0);
-            if (cuda_has_hopper() && exactTiles) {
-                // Stage A, B into fp16 global buffers -- TMA needs its
-                // source tensor already resident in the target element type.
-                DeviceBuffer<__half> dA16(static_cast<std::size_t>(M) * K);
-                DeviceBuffer<__half> dB16(static_cast<std::size_t>(K) * N);
-                {
-                    const int threads = 256;
-                    const int blocksA = (M * K + threads - 1) / threads;
-                    const int blocksB = (K * N + threads - 1) / threads;
-                    kernel_f32_to_f16<<<blocksA, threads>>>(
-                        reinterpret_cast<const float*>(dA.ptr), dA16.ptr, M * K);
-                    kernel_f32_to_f16<<<blocksB, threads>>>(
-                        reinterpret_cast<const float*>(dB.ptr), dB16.ptr, K * N);
-                    CUDA_CHECK(cudaGetLastError());
-                }
-                const CUtensorMap tensorMapA = make_tensor_map_2d(
-                    dA16.ptr, static_cast<std::uint64_t>(M), static_cast<std::uint64_t>(K),
-                    kWgmmaM, kWgmmaK);
-                const CUtensorMap tensorMapB = make_tensor_map_2d(
-                    dB16.ptr, static_cast<std::uint64_t>(K), static_cast<std::uint64_t>(N),
-                    kWgmmaK, kWgmmaN);
-                const dim3 block(2 * kWgmmaWarpgroupThreads);  // producer + consumer warpgroups
-                const dim3 grid(N / kWgmmaN, M / kWgmmaM);
-                kernel_hopper_wgmma<<<grid, block>>>(
-                    dA16.ptr, dB16.ptr, reinterpret_cast<float*>(dC.ptr), M, K, N,
-                    tensorMapA, tensorMapB);
-            } else if (cuda_has_ampere()) {
-                const dim3 block(kMmaWarpM * kMmaWarpN * 32);
-                const dim3 grid((N + kMmaBlockN-1)/kMmaBlockN, (M + kMmaBlockM-1)/kMmaBlockM);
-                kernel_mma_ldmatrix<<<grid, block>>>(
-                    reinterpret_cast<const float*>(dA.ptr),
-                    reinterpret_cast<const float*>(dB.ptr),
-                    reinterpret_cast<float*>(dC.ptr), M, K, N);
-            } else if (cuda_has_tensor_cores()) {
-                const dim3 block(kWarpM * kWarpN * 32);
-                const dim3 grid((N + kBlockN-1)/kBlockN, (M + kBlockM-1)/kBlockM);
-                kernel_wmma<<<grid, block>>>(
-                    reinterpret_cast<const float*>(dA.ptr),
-                    reinterpret_cast<const float*>(dB.ptr),
-                    reinterpret_cast<float*>(dC.ptr), M, K, N);
-            } else {
-                constexpr int FLBM = kDBufBM<float>;
-                constexpr int FLBN = kDBufBN<float>;
-                const dim3 block2(256);
-                const dim3 grid2((N + FLBN-1)/FLBN, (M + FLBM-1)/FLBM);
-                kernel_double_buf<T><<<grid2, block2>>>(dA.ptr, dB.ptr, dC.ptr, M, K, N);
-            }
-        }
-
     } else if (kind == GemmKind::WmmaPipelined) {
         // NEW kernel (Level 8) -- see kernel_wmma_pipelined's file comment
         // for the full rationale. fp32-only, sm_70+ (Tensor Cores; the
@@ -1881,8 +1476,8 @@ static void launch(GemmKind kind, const Matrix<T>& A, const Matrix<T>& B, Matrix
         // but the kernel is still correct without it -- see HPC_HAVE_
         // CP_ASYNC's #else fallback in kernel_wmma_pipelined). Requires
         // M/N exact multiples of 128 and K an exact multiple of 32 (no
-        // tail handling, same scoping decision as kernel_hopper_wgmma);
-        // falls back to the always-correct kernel_wmma otherwise.
+        // tail handling); falls back to the always-correct kernel_wmma
+        // otherwise.
         if constexpr (!std::is_same_v<T, float>) {
             throw std::runtime_error("gemm_cuda_wmma_pipelined is only supported for float");
         } else {
@@ -1961,10 +1556,6 @@ void gemm_cuda_vectorized(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) 
 // Raw mma.sync + ldmatrix is float-only, like WMMA.
 void gemm_cuda_mma_ldmatrix(const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C) {
     launch<float>(GemmKind::MmaLdmatrix, A, B, C);
-}
-// Hopper wgmma+TMA is float-only. UNVERIFIED -- see kernel_hopper_wgmma.
-void gemm_cuda_hopper_wgmma(const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C) {
-    launch<float>(GemmKind::HopperWgmma, A, B, C);
 }
 // Pipelined WMMA (Level 8, NEW) is float-only, like WMMA/mma_ldmatrix
 // above -- see kernel_wmma_pipelined's file comment.
@@ -2150,8 +1741,7 @@ void gemm_cuda_cublas_tf32_device(const float* dA, const float* dB, float* dC,
 // roughly 2x TF32 on Ampere-and-later (TF32 occupies twice the bits per
 // element, so half as many elements move through the tensor pipe per
 // cycle), so this is the natural next data point. Reuses
-// kernel_f32_to_f16 (defined above, used identically by the Level 7
-// wgmma dispatch) for the one-time fp32->fp16 staging.
+// kernel_f32_to_f16 (defined above) for the one-time fp32->fp16 staging.
 //
 // Uses void* rather than __half* in every signature below (and in the
 // cuda.hpp declarations) even though this file is happy to use __half

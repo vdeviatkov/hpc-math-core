@@ -380,16 +380,6 @@ if(CMAKE_CUDA_COMPILER)
     # call can never fire. The build then silently targets Maxwell, where
     # wmma does not exist, and every Tensor Core kernel fails to compile with
     # "name must be a namespace name" on `using namespace nvcuda`.
-    #
-    # gemm_cuda_hopper_wgmma (Level 7, see src/gemm/README.md) needs the
-    # Hopper-specific "90a" architecture target (wgmma/TMA are excluded
-    # from the portable "90" family-compatible feature set) to actually
-    # emit those instructions -- "native" only picks that up automatically
-    # if built ON a Hopper GPU. Cross-compiling for Hopper from elsewhere:
-    #   cmake -B build -DCMAKE_CUDA_ARCHITECTURES=90a ..
-    # On any other target, the wgmma/TMA code path is compiled out (see the
-    # __CUDA_ARCH__ == 900 guard in gemm_kernels.cu) and gemm_cuda_hopper_wgmma
-    # transparently falls back to gemm_cuda_mma_ldmatrix / gemm_cuda_wmma.
     if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
         set(CMAKE_CUDA_ARCHITECTURES native)
     endif()
@@ -417,11 +407,9 @@ if(CMAKE_CUDA_COMPILER)
             OUTPUT_QUIET ERROR_QUIET)
 
         if(NOT _hpc_cuda_probe_rc EQUAL 0)
-            # Newest compute_XX this nvcc knows about, excluding the 90
-            # family: compiling for 90 activates the Hopper-only wgmma/TMA
-            # path above, whose PTX cannot be JIT-compiled onto a non-Hopper
-            # GPU — and this branch is only reached when the GPU is newer
-            # than the toolkit, so it is never a Hopper card.
+            # Newest compute_XX this nvcc knows about. This branch is only
+            # reached when the GPU is newer than the toolkit, so the PTX is
+            # always JIT-compiled forward onto a strictly newer architecture.
             execute_process(
                 COMMAND "${CMAKE_CUDA_COMPILER}" --list-gpu-arch
                 OUTPUT_VARIABLE _hpc_cuda_arch_list
@@ -430,7 +418,7 @@ if(CMAKE_CUDA_COMPILER)
             set(_hpc_cuda_fallback 0)
             foreach(_hpc_arch IN LISTS _hpc_cuda_archs)
                 string(REGEX REPLACE "compute_" "" _hpc_arch_num "${_hpc_arch}")
-                if(_hpc_arch_num LESS 90 AND _hpc_arch_num GREATER _hpc_cuda_fallback)
+                if(_hpc_arch_num GREATER _hpc_cuda_fallback)
                     set(_hpc_cuda_fallback ${_hpc_arch_num})
                 endif()
             endforeach()
@@ -469,14 +457,11 @@ if(CMAKE_CUDA_COMPILER)
         CUDA_STANDARD_REQUIRED  ON
         CUDA_SEPARABLE_COMPILATION OFF
     )
-    # CUDA::cuda_driver (libcuda) is needed in addition to the usual
-    # CUDA::cudart -- gemm_cuda_hopper_wgmma's TMA descriptor setup calls
-    # cuTensorMapEncodeTiled, which is a driver-API-only function with no
-    # CUDA-runtime-API equivalent. CUDA::cublas backs the vendor-tuned
-    # reference kernels (gemm_cuda_cublas / gemm_cuda_cublas_tf32) used to
-    # measure this GPU's realistic achievable peak against the hand-written
-    # kernels above.
-    target_link_libraries(hpc_math_cuda PUBLIC hpc_math_core CUDA::cudart CUDA::cuda_driver CUDA::cublas)
+    # CUDA::cublas backs the vendor-tuned reference kernels
+    # (gemm_cuda_cublas / gemm_cuda_cublas_tf32 / gemm_cuda_cublas_fp16) used
+    # to measure this GPU's realistic achievable peak against the
+    # hand-written kernels above.
+    target_link_libraries(hpc_math_cuda PUBLIC hpc_math_core CUDA::cudart CUDA::cublas)
 
     message(STATUS "Building CUDA benchmark  : benchmarks/bench_gemm_cuda")
     message(STATUS "Building CUDA test suite : tests/hpc_tests_cuda")

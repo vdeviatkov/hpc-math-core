@@ -601,7 +601,7 @@ Avx512BlockedPf2/f32/N=1024       15656 µs   137.44 G/s   D=2
 > The binary compiles and links on CPU-only machines (Apple M, CI) via a stub library.
 > On a machine with a CUDA GPU the stub is replaced by the real `.cu` kernel library.
 
-Ten kernels (Levels 0-8, `CudaReordered` shares Level 0 with `CudaNaive`):
+Nine kernels (Levels 0-7, `CudaReordered` shares Level 0 with `CudaNaive`):
 
 | Kernel | Strategy | Key technique |
 |---|---|---|
@@ -613,14 +613,11 @@ Ten kernels (Levels 0-8, `CudaReordered` shares Level 0 with `CudaNaive`):
 | `CudaVectorized` | `CudaRegTile` shape + 128-bit loads | `float4`/`double2` global↔shared loads, XOR shared-memory swizzle instead of padding |
 | `CudaWmma` | 64×64 block, 4×4 warps, 16×16×16 Tensor Core tile | `wmma::load_matrix_sync`/`wmma::mma_sync`, fp32→fp16 on the fly (sm_70+) |
 | `CudaMmaLdmatrix` | 64×64 block, 4×4 warps, two 16×8×16 tiles/warp | Raw `ldmatrix.sync`+`mma.sync.m16n8k16` PTX, one level below WMMA (sm_80+) |
-| `CudaHopperWgmma` | Warp-specialized producer/consumer, TMA tile loads | `wgmma.mma_async` + `cp.async.bulk.tensor` (sm_90a/Hopper only — **unverified**, see below) |
-| `CudaWmmaPipelined` | 128×128 block, 8 warps × 8 fragments (32×64/warp) | Same `wmma::` API as `CudaWmma`, but bigger tiles + cp.async double-buffered shared memory (sm_70+; async benefit needs sm_80+) — see [§ Level 8](#level-8---pipelined-wmma-bigger-tiles--cpasync-double-buffering) |
+| `CudaWmmaPipelined` | 128×128 block, 8 warps × 8 fragments (32×64/warp) | Same `wmma::` API as `CudaWmma`, but bigger tiles + cp.async double-buffered shared memory (sm_70+; async benefit needs sm_80+) — see [§ Level 7](#level-7---pipelined-wmma-bigger-tiles--cpasync-double-buffering) |
 
-> **Verification status.** Levels 0-6 and 8 were verified on real hardware for the first time on 2026-08-29 (NVIDIA RTX 5080, Blackwell, sm_120, CUDA 13.2, Windows/MSVC); every kernel passes its full GTest correctness suite. That first run found and fixed five previously-unexercised bugs (a CMake flag leaking into nvcc, a Hopper capability check that also matched Blackwell, a `cp.async` address-space bug plus a hard-coded launch config in `double_buf`, WMMA alignment/layout bugs, and a swapped `ldmatrix` quadrant mapping). The full per-bug writeup lives in [`src/gemm/README.md` § Algorithm 9](../src/gemm/README.md#algorithm-9--cuda-kernels-cudahpp--srccudagemm_kernelscu) and in each kernel's file comment in [`src/cuda/gemm_kernels.cu`](../src/cuda/gemm_kernels.cu).
->
-> `CudaHopperWgmma` remains genuinely unverified — it requires real `sm_90a` (Hopper) hardware, and this machine (Blackwell) correctly `SKIP`s it via `cuda_has_hopper()`.
+> **Verification status.** Every level was verified on real hardware for the first time on 2026-08-29 (NVIDIA RTX 5080, Blackwell, sm_120, CUDA 13.2, Windows/MSVC); every kernel passes its full GTest correctness suite. That first run found and fixed five previously-unexercised bugs (a CMake flag leaking into nvcc, a `cp.async` address-space bug plus a hard-coded launch config in `double_buf`, WMMA alignment/layout bugs, and a swapped `ldmatrix` quadrant mapping). The full per-bug writeup lives in [`src/gemm/README.md` § Algorithm 9](../src/gemm/README.md#algorithm-9--cuda-kernels-cudahpp--srccudagemm_kernelscu) and in each kernel's file comment in [`src/cuda/gemm_kernels.cu`](../src/cuda/gemm_kernels.cu).
 
-### Level 8 - Pipelined WMMA (bigger tiles + cp.async double buffering)
+### Level 7 - Pipelined WMMA (bigger tiles + cp.async double buffering)
 
 `gemm_cuda_wmma` (Level 4) and `gemm_cuda_mma_ldmatrix` (Level 6) both measured only **~5 TFLOP/s** on RTX 5080 — cuBLAS's own dense-FP16 Tensor Core path measured **~118 TFLOP/s compute-only** on the same GPU (see [§ Reference cuBLAS](#reference-cublas---is-100-200-tflops-reachable-on-this-gpu) below). That ~24× gap is almost entirely pipelining and tile size, not precision or instruction choice — both kernels already use fp16 Tensor Cores. `gemm_cuda_wmma_pipelined` is a **new kernel** (added, not a replacement — `gemm_cuda_wmma` is untouched) that closes most of that gap while staying on the documented `wmma::` C++ API rather than hand-mapped `mma.sync`/`ldmatrix` PTX registers (the class of code this project's own `kernel_mma_ldmatrix` bug — a swapped quadrant mapping — already showed is easy to get subtly wrong):
 
@@ -628,17 +625,17 @@ Ten kernels (Levels 0-8, `CudaReordered` shares Level 0 with `CudaNaive`):
 2. **Bigger per-warp tile**: each of 8 warps (256 threads/block) owns a 32×64 output region — 8 WMMA 16×16×16 fragments per warp instead of 1, with A/B fragments loaded once per k-sub-step and reused across the other dimension (the same register-blocking structure `gemm_cuda_reg_tile`/`gemm_cuda_double_buf` already use for their scalar FMA micro-kernel).
 3. **cp.async double-buffered shared memory** (Ampere+): the next k-tile's global→shared copy overlaps the current tile's Tensor Core compute — the same structural fix already proven correct in `gemm_cuda_double_buf`'s cp.async bug fix above, applied here to fp16 Tensor Core input. Falls back to a synchronous (still double-buffered) copy on pre-Ampere Tensor-Core hardware.
 
-To keep cp.async usable at all, `A`/`B` are pre-converted to fp16 in global memory once (same staging step `gemm_cuda_cublas_fp16` and `gemm_cuda_hopper_wgmma` already use — cp.async is a same-dtype byte copy, not a converting load), and `As` is stored **naturally** (`As[m][k]`, matching `A`'s own row-major layout) rather than transposed the way `gemm_cuda_wmma` stores it — a deliberate, documented difference (cp.async can only copy a contiguous run of bytes to a contiguous destination, and only the natural/untransposed layout lines up for that), requiring `a_frag` to be `row_major` here vs `gemm_cuda_wmma`'s `col_major` for the *same* mathematical operand. This kernel also requires M/N to be exact multiples of 128 and K a multiple of 32 (no tail handling, the same scoping choice `gemm_cuda_hopper_wgmma` makes for its own tile shape) — every alignment argument for its 16-byte cp.async transfers depends on this — falling back to the always-correct `gemm_cuda_wmma` otherwise. All 5 GTest cases pass on the first run, including a non-square 384×256×160 case and a N=192 case that exercises the fallback path.
+To keep cp.async usable at all, `A`/`B` are pre-converted to fp16 in global memory once (same staging step `gemm_cuda_cublas_fp16` already uses — cp.async is a same-dtype byte copy, not a converting load), and `As` is stored **naturally** (`As[m][k]`, matching `A`'s own row-major layout) rather than transposed the way `gemm_cuda_wmma` stores it — a deliberate, documented difference (cp.async can only copy a contiguous run of bytes to a contiguous destination, and only the natural/untransposed layout lines up for that), requiring `a_frag` to be `row_major` here vs `gemm_cuda_wmma`'s `col_major` for the *same* mathematical operand. This kernel also requires M/N to be exact multiples of 128 and K a multiple of 32 (no tail handling) — every alignment argument for its 16-byte cp.async transfers depends on this — falling back to the always-correct `gemm_cuda_wmma` otherwise. All 5 GTest cases pass on the first run, including a non-square 384×256×160 case and a N=192 case that exercises the fallback path.
 
 **Result — measured on RTX 5080, compute-only (pre-staged device buffers, no per-call transfer/malloc/conversion):**
 
 | Kernel | N=4096 | N=8192 | N=16384 | vs `CudaWmma` |
 |---|---|---|---|---|
 | `CudaWmma` (Level 4, 64×64 tiles, single-buffered) | ~5 TFLOP/s | — | — | 1.0× |
-| `CudaWmmaPipelined` (Level 8, 128×128 tiles, cp.async) | **74.6 TFLOP/s** | **80.4 TFLOP/s** | **82.4 TFLOP/s** | **~16×** |
+| `CudaWmmaPipelined` (Level 7, 128×128 tiles, cp.async) | **74.6 TFLOP/s** | **80.4 TFLOP/s** | **82.4 TFLOP/s** | **~16×** |
 | `gemm_cuda_cublas_fp16` (vendor reference) | 109.5 TFLOP/s | 117.3 TFLOP/s | 117.8 TFLOP/s | ~24× |
 
-A ~16× improvement over the original WMMA kernel using only bigger tiles and the documented C++ API, reaching **~68-70% of cuBLAS's dense-FP16 throughput** at scale. Closing the remaining gap would require the structural changes CUTLASS-style kernels use beyond what's implemented here: even deeper multi-stage pipelining (3-4 stages, not 2), warp-level swizzling to avoid shared-memory bank conflicts on the WMMA loads, and split-K for very large K. See [`src/gemm/README.md`](../src/gemm/README.md#level-8--gemm_cuda_wmma_pipelined--pipelined-tensor-cores-via-wmma-fp32-only-sm_70) for the full per-line design writeup.
+A ~16× improvement over the original WMMA kernel using only bigger tiles and the documented C++ API, reaching **~68-70% of cuBLAS's dense-FP16 throughput** at scale. Closing the remaining gap would require the structural changes CUTLASS-style kernels use beyond what's implemented here: even deeper multi-stage pipelining (3-4 stages, not 2), warp-level swizzling to avoid shared-memory bank conflicts on the WMMA loads, and split-K for very large K. See [`src/gemm/README.md`](../src/gemm/README.md#level-7--gemm_cuda_wmma_pipelined--pipelined-tensor-cores-via-wmma-fp32-only-sm_70) for the full per-line design writeup.
 
 ---
 
@@ -744,7 +741,6 @@ CudaMmaLdmatrix/f32/N=512         767 µs     488 µs    549.76  tensor_cores=1
 CudaMmaLdmatrix/f32/N=1024        1624 µs    1500 µs   1431.9     (1.43 TFLOP/s)  tensor_cores=1
 CudaMmaLdmatrix/f32/N=4096       27985 µs   27043 µs   5082.2     (5.08 TFLOP/s)  tensor_cores=1
 
-CudaHopperWgmma/f32/*    SKIPPED: 'wgmma/TMA requires sm_90a (Hopper) -- UNVERIFIED code path'
 
 CudaWmmaPipelined/f32/N=64        389 µs     305 µs      1.72  exact_tiles=0 tensor_cores=1
 CudaWmmaPipelined/f32/N=256       447 µs     381 µs     88.10  exact_tiles=1 tensor_cores=1
@@ -755,7 +751,7 @@ CudaWmmaPipelined/f32/N=8192    91.1 ms    88.5 ms   12418.0     (12.42 TFLOP/s)
 CudaWmmaPipelined/f32/N=16384    385 ms     391 ms   22518.0     (22.52 TFLOP/s)  exact_tiles=1 tensor_cores=1
 ```
 
-> **Note:** all CUDA benchmarks include host↔device transfer time (`cudaMemcpy` + kernel + `cudaMemcpy`). `CudaWmma`/`CudaMmaLdmatrix`/`CudaWmmaPipelined` convert fp32→fp16 on the fly (`precision=16`), so their GFLOP/s is not directly comparable to the fp32 FMA kernels above them at face value — on this specific unoptimized/educational implementation (small 64×64 output tiles, no multi-stage pipelining) `CudaWmma`/`CudaMmaLdmatrix` land *below* `CudaRegTile`/`CudaDoubleBuf`'s plain-FMA throughput at N=4096, which is a legitimate result of this kernel's tuning level, not a correctness issue (all pass their GTest correctness suites). `CudaWmmaPipelined` (Level 8) is the exception: it overtakes every other kernel above at N≥4096 and keeps climbing with N (22.5 TFLOP/s at N=16384, end-to-end, transfer-dominated at this size) — see [§ Reference cuBLAS](#reference-cublas---is-100-200-tflops-reachable-on-this-gpu) below for its transfer-excluded compute-only numbers (~80 TFLOP/s), which is the fairer comparison against cuBLAS.
+> **Note:** all CUDA benchmarks include host↔device transfer time (`cudaMemcpy` + kernel + `cudaMemcpy`). `CudaWmma`/`CudaMmaLdmatrix`/`CudaWmmaPipelined` convert fp32→fp16 on the fly (`precision=16`), so their GFLOP/s is not directly comparable to the fp32 FMA kernels above them at face value — on this specific unoptimized/educational implementation (small 64×64 output tiles, no multi-stage pipelining) `CudaWmma`/`CudaMmaLdmatrix` land *below* `CudaRegTile`/`CudaDoubleBuf`'s plain-FMA throughput at N=4096, which is a legitimate result of this kernel's tuning level, not a correctness issue (all pass their GTest correctness suites). `CudaWmmaPipelined` (Level 7) is the exception: it overtakes every other kernel above at N≥4096 and keeps climbing with N (22.5 TFLOP/s at N=16384, end-to-end, transfer-dominated at this size) — see [§ Reference cuBLAS](#reference-cublas---is-100-200-tflops-reachable-on-this-gpu) below for its transfer-excluded compute-only numbers (~80 TFLOP/s), which is the fairer comparison against cuBLAS.
 
 #### CUDA speedup summary (f32, N=4096)
 
@@ -769,14 +765,13 @@ CudaWmmaPipelined/f32/N=16384    385 ms     391 ms   22518.0     (22.52 TFLOP/s)
 | `CudaVectorized` (float4 + swizzle) | 4,887 G/s (4.89 TFLOP/s) | **1.97×** |
 | `CudaWmma` (Tensor Cores, fp16) | 4,798 G/s (4.80 TFLOP/s) | **1.93×** |
 | `CudaMmaLdmatrix` (raw mma.sync, fp16) | 5,082 G/s (5.08 TFLOP/s) | **2.05×** |
-| `CudaHopperWgmma` | SKIPPED — requires real sm_90a hardware | — |
-| `CudaWmmaPipelined` (Level 8 — 128×128 tiles + cp.async) | 7,121 G/s (7.12 TFLOP/s) | **2.87×** |
+| `CudaWmmaPipelined` (Level 7 — 128×128 tiles + cp.async) | 7,121 G/s (7.12 TFLOP/s) | **2.87×** |
 
 ---
 
 ### Reference cuBLAS - is 100-200 TFLOP/s reachable on this GPU
 
-The hand-written Tensor Core kernels above (`CudaWmma`, `CudaMmaLdmatrix`) measured only ~5 TFLOP/s — well under Blackwell's realistic Tensor Core potential — because they're small (64×64 tiles), single-buffered, and unpipelined. `gemm_cuda_cublas`/`gemm_cuda_cublas_tf32`/`gemm_cuda_cublas_fp16` measure what NVIDIA's own production GEMM (cuBLAS) actually achieves on this GPU, as the realistic ceiling to answer that question and to rewrite toward. That answer motivated writing `gemm_cuda_wmma_pipelined` ([§ Level 8](#level-8---pipelined-wmma-bigger-tiles--cpasync-double-buffering) above) — a new, larger hand-written kernel that closes most of the gap.
+The hand-written Tensor Core kernels above (`CudaWmma`, `CudaMmaLdmatrix`) measured only ~5 TFLOP/s — well under Blackwell's realistic Tensor Core potential — because they're small (64×64 tiles), single-buffered, and unpipelined. `gemm_cuda_cublas`/`gemm_cuda_cublas_tf32`/`gemm_cuda_cublas_fp16` measure what NVIDIA's own production GEMM (cuBLAS) actually achieves on this GPU, as the realistic ceiling to answer that question and to rewrite toward. That answer motivated writing `gemm_cuda_wmma_pipelined` ([§ Level 7](#level-7---pipelined-wmma-bigger-tiles--cpasync-double-buffering) above) — a new, larger hand-written kernel that closes most of the gap.
 
 Two measurement modes are provided:
 - **End-to-end** (`BM_CudaCublas*`/`BM_CudaWmmaPipelined`, no suffix) — same methodology as every other kernel above (`cudaMalloc` + H2D + compute + D2H timed every iteration). At large N (8192+) this is dominated by ~GB-scale data movement and allocation, not the matmul, and badly understates achievable compute throughput.
@@ -793,7 +788,7 @@ BM_CudaCublasTf32ComputeOnly/f32/N=4096  2.66 ms   51,604 G/s  (51.6 TFLOP/s)   
 BM_CudaCublasTf32ComputeOnly/f32/N=8192  18.7 ms   57,859 G/s  (57.9 TFLOP/s)
 BM_CudaCublasTf32ComputeOnly/f32/N=16384  148 ms   58,641 G/s  (58.6 TFLOP/s)
 
-BM_CudaWmmaPipelinedComputeOnly/f32/N=4096   1.83 ms   74,567 G/s  (74.6 TFLOP/s)  -- hand-written kernel (Level 8), dense FP16
+BM_CudaWmmaPipelinedComputeOnly/f32/N=4096   1.83 ms   74,567 G/s  (74.6 TFLOP/s)  -- hand-written kernel (Level 7), dense FP16
 BM_CudaWmmaPipelinedComputeOnly/f32/N=8192   13.6 ms   80,421 G/s  (80.4 TFLOP/s)
 BM_CudaWmmaPipelinedComputeOnly/f32/N=16384   108 ms   82,383 G/s  (82.4 TFLOP/s)
 
@@ -804,6 +799,6 @@ BM_CudaCublasFp16ComputeOnly/f32/N=16384 74.6 ms  117,827 G/s (117.8 TFLOP/s)
 
 **Answer: yes, and here's how.** Plain FP32 (SIMT CUDA cores, the ceiling for every non-Tensor-Core kernel above) tops out around **38 TFLOP/s** — no amount of tuning a plain-FMA kernel gets past that on this GPU. TF32 Tensor Cores roughly 1.5× that (**~59 TFLOP/s**) — still short of 100. **Dense FP16 Tensor Cores (fp16-in, fp32-accumulate) reach ~118 TFLOP/s** via cuBLAS, squarely in the target range, because FP16 elements are half the width of TF32's through the same tensor pipe.
 
-**And a hand-written kernel gets most of the way there.** The original gap between cuBLAS's ~118 TFLOP/s and the hand-written `CudaWmma`/`CudaMmaLdmatrix` kernels (~5 TFLOP/s each) was almost entirely pipelining and tile size, not precision or instruction choice — both already used fp16 Tensor Cores, just far less efficiently. `gemm_cuda_wmma_pipelined` (Level 8, new kernel, `gemm_cuda_wmma` untouched) applies exactly the fixes that gap analysis called for — 128×128 tiles (not 64×64), cp.async double-buffering, and per-warp register-blocked fragment reuse, all still on the documented `wmma::` C++ API — and reaches **~82 TFLOP/s at N=16384, a ~16× improvement over the original `CudaWmma`, ~70% of cuBLAS's dense-FP16 throughput**. Closing the remaining ~18 TFLOP/s would require going further than this kernel does: deeper multi-stage pipelining (3-4 stages, not 2), warp-level shared-memory swizzling for the WMMA loads specifically, and split-K for very large K — the territory CUTLASS's template library exists to handle generically.
+**And a hand-written kernel gets most of the way there.** The original gap between cuBLAS's ~118 TFLOP/s and the hand-written `CudaWmma`/`CudaMmaLdmatrix` kernels (~5 TFLOP/s each) was almost entirely pipelining and tile size, not precision or instruction choice — both already used fp16 Tensor Cores, just far less efficiently. `gemm_cuda_wmma_pipelined` (Level 7) applies exactly the fixes that gap analysis called for — 128×128 tiles (not 64×64), cp.async double-buffering, and per-warp register-blocked fragment reuse, all still on the documented `wmma::` C++ API — and reaches **~82 TFLOP/s at N=16384, a ~16× improvement over the original `CudaWmma`, ~70% of cuBLAS's dense-FP16 throughput**. Closing the remaining ~18 TFLOP/s would require going further than this kernel does: deeper multi-stage pipelining (3-4 stages, not 2), warp-level shared-memory swizzling for the WMMA loads specifically, and split-K for very large K — the territory CUTLASS's template library exists to handle generically.
 
 ---

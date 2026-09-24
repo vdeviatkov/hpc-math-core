@@ -23,7 +23,7 @@ summary of every family's cache technique and key intrinsics side by side.
 | `sme.hpp` | `gemm_sme_naive` · `gemm_sme_reordered` · `gemm_sme_blocked` — **verified, Apple M4 Max** | `__ARM_FEATURE_SME` (+ `-DHPC_ENABLE_SME=ON`) |
 | `amx.hpp` | `gemm_amx_naive` · `gemm_amx_reordered` · `gemm_amx_blocked` — **verified, Apple M4 Max, via Accelerate.framework** | `HPC_HAS_AMX` (Apple + Accelerate.framework; on by default) |
 | `prefetch.hpp` | `gemm_blocked_prefetch` · `gemm_avx2_blocked_prefetch` · `gemm_avx512_blocked_prefetch` · `gemm_neon_blocked_prefetch` · `gemm_sve_blocked_prefetch` | per ISA |
-| `cuda.hpp` | `gemm_cuda_naive` (L0) · `gemm_cuda_reordered` (L0b) · `gemm_cuda_blocked` (L1) · `gemm_cuda_reg_tile` (L2) · `gemm_cuda_double_buf` (L3) · `gemm_cuda_wmma` (L4, fp32) · `gemm_cuda_vectorized` (L5) · `gemm_cuda_mma_ldmatrix` (L6, fp32) · `gemm_cuda_hopper_wgmma` (L7, fp32) · `gemm_cuda_wmma_pipelined` (L8, fp32, **NEW**) · `gemm_cuda_cublas{,_tf32,_fp16}` (reference, not part of the ladder) — **L0-6 and L8 verified, RTX 5080 (Blackwell sm_120)**; L7 unverified, needs real sm_90a | `HPC_HAVE_CUDA` |
+| `cuda.hpp` | `gemm_cuda_naive` (L0) · `gemm_cuda_reordered` (L0b) · `gemm_cuda_blocked` (L1) · `gemm_cuda_reg_tile` (L2) · `gemm_cuda_double_buf` (L3) · `gemm_cuda_wmma` (L4, fp32) · `gemm_cuda_vectorized` (L5) · `gemm_cuda_mma_ldmatrix` (L6, fp32) · `gemm_cuda_wmma_pipelined` (L7, fp32) · `gemm_cuda_cublas{,_tf32,_fp16}` (reference, not part of the ladder) — **all verified, RTX 5080 (Blackwell sm_120)** | `HPC_HAVE_CUDA` |
 
 The ISA guards are the `HPC_HAS_*` macros from `include/hpc/isa.hpp`, each always defined to 0 or 1.
 
@@ -60,7 +60,7 @@ quietly timed under an AVX2 name. Consequences:
   a CPU result under a CUDA name.
 - **`gemm_cuda_wmma_pipelined`** has a documented *shape* precondition
   (M, N multiples of 128, K of 32) and falls back to `gemm_cuda_wmma`
-  otherwise — see Level 8 below.
+  otherwise — see Level 7 below.
 
 All flags are compile-time because every build uses `-march=native` /
 `-mcpu=`: the build CPU is the run CPU. Runtime dispatch (cpuid → best
@@ -321,34 +321,30 @@ Five variants: `gemm_blocked_prefetch` · `gemm_avx2_blocked_prefetch` ·
 
 ## Algorithm 9 — CUDA Kernels (`cuda.hpp` + `src/cuda/gemm_kernels.cu`)
 
-Ten GPU kernels across nine optimization levels (0 through 8), compiled
+Nine GPU kernels across eight optimization levels (0 through 7), compiled
 by nvcc. On CPU-only machines a stub is compiled; all CUDA benchmarks/tests
 print `SKIPPED: 'No CUDA device available'` at runtime.
 
-**Verification status (updated 2026-08-29).** Levels 0-6 and 8 are now
-verified on real hardware — an NVIDIA RTX 5080 (Blackwell, sm_120, CUDA
-13.2) — the first CUDA-capable machine this project has ever had access
-to. All 68 runnable cases in `hpc_tests_cuda` pass. That first real run
-found and fixed five genuine, previously-unexercised bugs:
+**Verification status (updated 2026-08-29).** Every level is verified on
+real hardware — an NVIDIA RTX 5080 (Blackwell, sm_120, CUDA 13.2) — the
+first CUDA-capable machine this project has ever had access to. All 68
+cases in `hpc_tests_cuda` pass. That first real run found and fixed four
+genuine, previously-unexercised bugs:
   1. `CMakeLists.txt`'s MSVC `/O2 /fp:fast /Oy-` flags leaked into nvcc's
      own command line (missing a `COMPILE_LANGUAGE:CXX` guard) and broke
      its argument parser.
-  2. `cuda_has_hopper()` and `kernel_hopper_wgmma`'s compile guard used
-     "capability ≥ 9.0", which is also true for Blackwell — but wgmma/TMA
-     are Hopper-exclusive, and ptxas rejected them for `sm_120`. Both now
-     require major == 9 exactly.
-  3. `kernel_double_buf`'s `cp.async` calls copied from a local register
+  2. `kernel_double_buf`'s `cp.async` calls copied from a local register
      instead of the real global address (`cudaErrorNotSupported`,
      poisoning the CUDA context for the rest of the process), and its
      launch hardcoded 256 threads/block regardless of element type —
      correct only by coincidence for `float`; for `double` it silently
      computed with 4× too many threads and corrupted neighboring blocks'
      output at N > 64.
-  4. `kernel_wmma`'s shared-memory padding broke `load_matrix_sync`'s
+  3. `kernel_wmma`'s shared-memory padding broke `load_matrix_sync`'s
      8-element alignment requirement, and its A/B fragment major-order
      tags were swapped relative to the physical layout (silently
      transposed operands).
-  5. `kernel_mma_ldmatrix`'s A-fragment `ldmatrix.x4` quadrant-to-register
+  4. `kernel_mma_ldmatrix`'s A-fragment `ldmatrix.x4` quadrant-to-register
      mapping had its row/col bits swapped (silently wrong output, no
      crash).
 
@@ -356,20 +352,16 @@ See each kernel's section below and its file comment in `gemm_kernels.cu`
 (search "found running on real hardware") for the full per-bug writeup,
 and
 [§ CUDA kernels](../../docs/benchmarks.md#nvidia-rtx-5080--cuda) for
-measured throughput. **Level 7 (Hopper wgmma + TMA) remains genuinely
-unverified** — it requires real `sm_90a` hardware, which even this
-Blackwell GPU is not (`cuda_has_hopper()` correctly returns false and the
-kernel `SKIP`s at runtime) — see its section below.
+measured throughput.
 
 That verification pass also added a cuBLAS reference (see "Reference —
 cuBLAS" further down) to measure this GPU's realistic achievable peak,
-which led to a follow-up: **Level 8 (`gemm_cuda_wmma_pipelined`), a NEW
-kernel** (added, not a replacement — Level 4 is untouched) that closes
-most of the ~24x gap between Level 4/6's ~5 TFLOP/s and cuBLAS's ~118
-TFLOP/s using bigger tiles and cp.async pipelining, while staying on the
-documented `wmma::` API. Verified: ~82 TFLOP/s (compute-only, N=16384),
-~16x Level 4's throughput, ~70% of cuBLAS's. See Level 8's section below
-for the full design writeup.
+which led to a follow-up: **Level 7 (`gemm_cuda_wmma_pipelined`)** (added,
+not a replacement — Level 4 is untouched) that closes most of the ~24x gap
+between Level 4/6's ~5 TFLOP/s and cuBLAS's ~118 TFLOP/s using bigger tiles
+and cp.async pipelining, while staying on the documented `wmma::` API.
+Verified: ~82 TFLOP/s (compute-only, N=16384), ~16x Level 4's throughput,
+~70% of cuBLAS's. See Level 7's section below for the full design writeup.
 
 **Correctness fix (Levels 2-3, found before real hardware was available).**
 `kernel_reg_tile`'s and `kernel_double_buf`'s shared-memory load previously
@@ -594,43 +586,7 @@ on sm_70-75 (Volta/Turing, which lack the m16n8k16 shape).
 
 ---
 
-### Level 7 — `gemm_cuda_hopper_wgmma` — warp specialization + TMA (fp32 only, sm_90a)
-
-**BEST-EFFORT, EXPLICITLY UNVERIFIED, LIKELY NON-FUNCTIONAL** — written per
-direct user request with that understanding in advance. sm_90a wgmma + TMA
-have no public C++ intrinsic surface at all; every input here is raw
-inline PTX and a driver-API tensor-map descriptor, hand-written against
-the PTX ISA's prose description with no compiler or hardware anywhere in
-this project to check it against. Hand-written kernels using these
-primitives essentially don't exist outside CUTLASS/cuDNN internals.
-
-```
-Producer warpgroup (128 threads, only 1 issues instructions):
-    cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::complete_tx::bytes
-        [smem_tile], [tensor_map, {k, m}], [full_mbarrier];   // async global->shared, whole tile in ONE instruction
-
-Consumer warpgroup (128 threads, all participate):
-    mbarrier.try_wait.parity.shared.b64 ...                  // wait for producer
-    wgmma.mma_async.sync.aligned.m64n64k16.f32.f16.f16 {d0..d31}, descA, descB, scale_d;
-    wgmma.commit_group.sync.aligned;
-    wgmma.wait_group.sync.aligned 0;
-```
-
-TMA descriptors (`CUtensorMap`) are built once on the host via the driver
-API's `cuTensorMapEncodeTiled` (no CUDA-runtime-API equivalent exists).
-`wgmma` reads its A/B operands directly from shared memory via 64-bit
-"matrix descriptors" — no per-thread fragment loading step at all, unlike
-`mma.sync` above. This kernel's file comment in `gemm_kernels.cu` flags
-per-section confidence levels; the shared-memory descriptor bit layout and
-the accumulator-output register mapping are the least certain parts.
-Deliberately minimal scope: single-buffered (not deeply pipelined), and
-requires M, N, K to be exact multiples of 64/64/16 (no tail handling).
-Falls back to `gemm_cuda_mma_ldmatrix`, then `gemm_cuda_wmma`, then
-`gemm_cuda_double_buf`, in that order.
-
----
-
-### Level 8 — `gemm_cuda_wmma_pipelined` — pipelined Tensor Cores via WMMA (fp32 only, sm_70+)
+### Level 7 — `gemm_cuda_wmma_pipelined` — pipelined Tensor Cores via WMMA (fp32 only, sm_70+)
 
 **NEW kernel** (added, `gemm_cuda_wmma` untouched), **verified on real
 hardware (RTX 5080, Blackwell sm_120)**. Motivated by a direct comparison
@@ -650,7 +606,7 @@ crash — is exactly the failure mode that approach risks).
 Three changes relative to Level 4:
 
 ```
-Level 4 (gemm_cuda_wmma)              Level 8 (gemm_cuda_wmma_pipelined)
+Level 4 (gemm_cuda_wmma)              Level 7 (gemm_cuda_wmma_pipelined)
 -------------------------------       -------------------------------------
 64x64 block tile, BK=16               128x128 block tile, BK=32
 4x4 warps, 1 fragment/warp (16x16)    4x2 warps, 8 fragments/warp (32x64)
@@ -719,7 +675,7 @@ with no transpose either way.
 **No boundary/zfill logic needed, by design.** Unlike `gemm_cuda_double_
 buf`, this kernel requires M, N to be **exact multiples of 128** and K an
 **exact multiple of 32** (no tail handling — the same scoping choice
-`gemm_cuda_hopper_wgmma` makes for its own tile shape); the host dispatch
+no tail handling); the host dispatch
 falls back to the always-correct `gemm_cuda_wmma` otherwise. Every
 cp.async transfer moves a full 16-byte (8 x `__half`) chunk — the largest
 `__pipeline_memcpy_async` supports — and this exact-multiple requirement
@@ -737,7 +693,7 @@ non-square 384x256x160 case (M/N/K all different) and an N=192 case
 **Measured (RTX 5080, compute-only — pre-staged device buffers, no
 per-call transfer/malloc/conversion):**
 
-| N | Level 4 (`gemm_cuda_wmma`) | Level 8 (`gemm_cuda_wmma_pipelined`) | cuBLAS dense FP16 | Level 8 vs Level 4 |
+| N | Level 4 (`gemm_cuda_wmma`) | Level 7 (`gemm_cuda_wmma_pipelined`) | cuBLAS dense FP16 | Level 7 vs Level 4 |
 |---|---|---|---|---|
 | 4096 | ~5 TFLOP/s (end-to-end; not measured compute-only) | 74.6 TFLOP/s | 109.5 TFLOP/s | ~15x |
 | 8192 | — | 80.4 TFLOP/s | 117.3 TFLOP/s | ~16x |
@@ -773,14 +729,9 @@ include host↔device transfer time.
 | `gemm_cuda_wmma` (fp16 TC) | 4 | Tensor Core bound | 4,798 | 4.80 |
 | `gemm_cuda_vectorized` | 5 | Compute-bound, fewer load instrs | 4,887 | 4.89 |
 | `gemm_cuda_mma_ldmatrix` (fp16 TC) | 6 | Tensor Core bound | 5,082 | 5.08 |
-| `gemm_cuda_hopper_wgmma` | 7 | Tensor Core + TMA bound | SKIPPED\* | — |
-| `gemm_cuda_wmma_pipelined` (fp16 TC, NEW) | 8 | Tensor Core bound | **7,121** | **7.12** |
+| `gemm_cuda_wmma_pipelined` (fp16 TC) | 7 | Tensor Core bound | **7,121** | **7.12** |
 
-\* Level 7 requires real `sm_90a` (Hopper) hardware; this Blackwell GPU
-correctly fails `cuda_has_hopper()` and the kernel `SKIP`s at runtime —
-see its section above. It remains genuinely unverified.
-
-> **Summary (Levels 0-6 and 8, all now measured on real hardware):**
+> **Summary (all levels, measured on real hardware):**
 > Level 1 (shared-memory tiling alone, no register tiling) is barely
 > worth it over naive at this problem size. Level 2 (register tiling) is
 > the biggest single jump — 2.5× over Level 1. Level 3 (double buffering
@@ -788,15 +739,14 @@ see its section above. It remains genuinely unverified.
 > kernels (4 and 6) and the vectorized-load kernel (5) all land *below*
 > Levels 2-3's plain-FMA throughput here at N=4096 — a real, measured
 > result of Levels 4/6 being small (64×64-tile), untuned kernels rather
-> than a tuned production Tensor Core pipeline. **Level 8 already
+> than a tuned production Tensor Core pipeline. **Level 7 already
 > overtakes every kernel above it at this size** (7.12 TFLOP/s vs Level
 > 3's 5.74) and the gap widens sharply at larger N: at N=16384,
-> compute-only (excluding transfer), Level 8 reaches ~82 TFLOP/s — ~16x
+> compute-only (excluding transfer), Level 7 reaches ~82 TFLOP/s — ~16x
 > Level 4's throughput and ~70% of cuBLAS's own dense-FP16 ceiling (~118
 > TFLOP/s) — by applying exactly the multi-stage-pipelining and
-> bigger-tile fixes the previous version of this note said Level 7 (and
-> production libraries like cuBLAS/CUTLASS) were "reaching for." See
-> Level 8's section above and
+> bigger-tile fixes that production libraries like cuBLAS/CUTLASS use.
+> See Level 7's section above and
 > [§ Reference cuBLAS](../../docs/benchmarks.md#reference-cublas---is-100-200-tflops-reachable-on-this-gpu)
 > for the full compute-only comparison and what closing the remaining gap
 > to cuBLAS would still require (deeper pipelining, WMMA-specific
@@ -816,12 +766,6 @@ if (!hpc::gemm::cuda_has_ampere())       { state.SkipWithMessage("sm_80+ require
 // wmma_pipelined ALSO requires M/N exact multiples of 128, K a multiple
 // of 32 -- checked in the host dispatch, not a runtime capability guard;
 // falls back to gemm_cuda_wmma (correct for any shape) otherwise.
-
-// Hopper wgmma (additionally) -- genuinely UNVERIFIED, no sm_90a hardware
-// has been available to test on (confirmed: this correctly SKIPs even on
-// Blackwell sm_120, which satisfies every OTHER "8.0+"/"9.0-ish" check in
-// this file but is not Hopper -- see cuda_has_hopper()'s file comment):
-if (!hpc::gemm::cuda_has_hopper()) { state.SkipWithMessage("sm_90a required"); }
 
 // Double-buf reports whether cp.async is active:
 state.counters["ampere_async"] = hpc::gemm::cuda_has_ampere() ? 1.0 : 0.0;

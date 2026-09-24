@@ -27,7 +27,7 @@ README's benchmark sections, machine noted per row.
 | CUDA (`gemm_cuda_reg_tile`) | NVIDIA RTX 5080 (Blackwell) | 5,728 G/s | 694 G/s | register-tiled shared-memory kernel, single GPU |
 | CUDA (`gemm_cuda_mma_ldmatrix`) | NVIDIA RTX 5080 (Blackwell) | 5,082 G/s | — | raw `mma.sync`+`ldmatrix` Tensor Cores, fp16-in/fp32-accumulate; on this small/untuned 64×64-tile kernel, below the plain-FMA kernels above at N=4096 |
 | CUDA (`gemm_cuda_wmma`) | NVIDIA RTX 5080 (Blackwell) | 4,798 G/s | — | `wmma::` Tensor Cores, fp16-in/fp32-accumulate; published Tensor Core peaks for this GPU class are ~250–300 TFLOP/s at large batched/tuned problem sizes — not what this small educational kernel is tuned for |
-| **CUDA (`gemm_cuda_wmma_pipelined`)** | NVIDIA RTX 5080 (Blackwell) | **82,383 G/s** (**82.4 TFLOP/s**) | — | **NEW kernel** (Level 8); 128×128 tiles + cp.async double buffering, same `wmma::` API as above; compute-only (device-resident buffers), N=16384; ~16× `gemm_cuda_wmma` |
+| **CUDA (`gemm_cuda_wmma_pipelined`)** | NVIDIA RTX 5080 (Blackwell) | **82,383 G/s** (**82.4 TFLOP/s**) | — | Level 7; 128×128 tiles + cp.async double buffering, same `wmma::` API as above; compute-only (device-resident buffers), N=16384; ~16× `gemm_cuda_wmma` |
 | CUDA reference (`cublasSgemm`, plain FP32) | NVIDIA RTX 5080 (Blackwell) | 38,383 G/s (38.4 TFLOP/s) | — | vendor cuBLAS, compute-only, N=16384 — the real ceiling for the FMA-based kernels above, not part of this repo's own kernel families |
 | CUDA reference (`cublasGemmEx`, dense FP16) | NVIDIA RTX 5080 (Blackwell) | 117,827 G/s (117.8 TFLOP/s) | — | vendor cuBLAS, compute-only, N=16384 — the real ceiling for the Tensor Core kernels above |
 
@@ -64,7 +64,7 @@ for when it does (and doesn't) help.
 | **SVE / SVE2** | `sve.hpp` | Scalable (VLA), 128–2048-bit, width read at runtime | `svld1_f32/f64`, `svmla_f32/f64_x`, `svdup_n_f32/f64`, `svwhilelt_b32/b64` (predicated tail — no scalar remainder loop), `svcntw()/svcntd()` | reorder, block, register-tile, predication |
 | **SME2** (ARM) | `sme.hpp` | ZA tile: SVL×SVL 2-D accumulator (16×16 f32 / 8×8 f64 on Apple M4) | `svmopa_za32/za64_f32/f64_m` (outer-product-accumulate, **not** FMA), `svzero_za`, `svld1_hor_za32/64`, `svst1_hor_za32/64`, `svcntsw()/svcntsd()` | panel-packing (repacked "reorder"), K-tile "block" — see note below |
 | **Apple AMX** (via Accelerate) | `amx.hpp` | Opaque — vendor-controlled | `cblas_sgemm`, `cblas_dgemm` (standard BLAS call, `<Accelerate/Accelerate.h>`) | none exposed — Apple's implementation, not ours (see note below) |
-| **CUDA (GPU)** | `cuda.hpp` + `src/cuda/gemm_kernels.cu` | Thread → 1 elem (naive) up to 8×8 register tile/thread (`reg_tile`); 8 warps × 8 WMMA fragments/block (`wmma_pipelined`) | `__shared__` tile buffers, `__syncthreads()`, `__pipeline_memcpy_async`/`cp.async` (double-buffer), `wmma::fragment`/`wmma::mma_sync` (Tensor Cores), `float4`/`double2` vectorized loads + XOR smem swizzle, `ldmatrix.sync`+`mma.sync` PTX (raw Tensor Cores), `wgmma.mma_async`+TMA (Hopper, best-effort), 128×128-tile `wmma::` + `cp.async` double buffering (`wmma_pipelined`, NEW) | shared-memory tiling, register tiling, double buffering, vectorized loads, Tensor Core tile-multiply (3 abstraction levels + a 4th, bigger-tile/pipelined level), warp specialization |
+| **CUDA (GPU)** | `cuda.hpp` + `src/cuda/gemm_kernels.cu` | Thread → 1 elem (naive) up to 8×8 register tile/thread (`reg_tile`); 8 warps × 8 WMMA fragments/block (`wmma_pipelined`) | `__shared__` tile buffers, `__syncthreads()`, `__pipeline_memcpy_async`/`cp.async` (double-buffer), `wmma::fragment`/`wmma::mma_sync` (Tensor Cores), `float4`/`double2` vectorized loads + XOR smem swizzle, `ldmatrix.sync`+`mma.sync` PTX (raw Tensor Cores), 128×128-tile `wmma::` + `cp.async` double buffering (`wmma_pipelined`) | shared-memory tiling, register tiling, double buffering, vectorized loads, Tensor Core tile-multiply (3 abstraction levels + a 4th, bigger-tile/pipelined level) |
 
 ---
 
@@ -118,29 +118,23 @@ the GPU's own outer-product-style hardware, analogous to SME/AMX on CPU)
 self-consistent XOR shared-memory swizzle instead of padding) →
 `gemm_cuda_mma_ldmatrix` (the *same* Tensor Core computation as WMMA, one
 level lower: hand-issued `ldmatrix.sync` + `mma.sync` PTX instead of the
-C++ `wmma::` API) → `gemm_cuda_hopper_wgmma` (producer/consumer warp
-specialization: one warpgroup issues TMA bulk-tensor loads while another
-runs `wgmma.mma_async` directly against shared memory) → `gemm_cuda_
-wmma_pipelined` (**NEW**, Level 8: `gemm_cuda_wmma`'s same `wmma::` API,
+C++ `wmma::` API) → `gemm_cuda_wmma_pipelined` (Level 7:
+`gemm_cuda_wmma`'s same `wmma::` API,
 but 128×128 tiles instead of 64×64, 8 warps each owning an 8-fragment
 32×64 region instead of 1 fragment, and `cp.async` double-buffered shared
 memory — the three fixes a cuBLAS-reference comparison showed were
-missing). **Levels 0-6 and 8 are now verified on real hardware** (NVIDIA
+missing). **Every level is verified on real hardware** (NVIDIA
 RTX 5080, Blackwell sm_120, 2026-08-29) — that first real run found and
 fixed five genuine bugs across `double_buf`, `wmma`, and `mma_ldmatrix`
 (wrong cp.async address space, a hardcoded thread count, misaligned/
 transposed WMMA fragments, a swapped `ldmatrix` quadrant mapping), then
-motivated writing Level 8 after a cuBLAS reference comparison showed
+motivated writing Level 7 after a cuBLAS reference comparison showed
 Levels 4/6's ~5 TFLOP/s was far below this GPU's ~118 TFLOP/s realistic
-Tensor Core ceiling; Level 8 reaches ~82 TFLOP/s (~16× Level 4, ~70% of
+Tensor Core ceiling; Level 7 reaches ~82 TFLOP/s (~16× Level 4, ~70% of
 cuBLAS) using only the documented `wmma::` API. See
 [benchmarks.md § NVIDIA RTX 5080 — CUDA](benchmarks.md#nvidia-rtx-5080--cuda) and
 [§ Reference cuBLAS](benchmarks.md#reference-cublas---is-100-200-tflops-reachable-on-this-gpu)
-for the full writeups. **Level 7 (Hopper `wgmma`+TMA) remains unverified**:
-it requires real `sm_90a` hardware, which even this Blackwell GPU is not,
-and correctly `SKIP`s at runtime — it is explicitly a best-effort sketch
-the user asked for with that understanding — see `src/gemm/README.md`'s
-CUDA section for the full, per-level caveat.
+for the full writeups.
 
 ---
 

@@ -91,7 +91,7 @@ cd build; ctest --build-config Release --output-on-failure
 | `HPC_ENABLE_SME` | `OFF` | ARM SME2 kernels. Runs a compile-*and-execute* probe at configure time; supersedes `HPC_MARCH` with `-mcpu=apple-m4`. See below. |
 | `HPC_ENABLE_AMX` | `ON` on Apple, `OFF` elsewhere | Apple AMX via Accelerate.framework (`cblas_sgemm`/`cblas_dgemm`). See below. |
 | `HPC_ENABLE_LTO` | `OFF` | Link-time optimisation for Release builds. |
-| `CMAKE_CUDA_ARCHITECTURES` | `native` | The GPU in the build machine. CUDA is detected automatically; without nvcc a CPU stub is built. If the GPU is newer than the toolkit can target, the build falls back to the newest PTX that toolkit can emit and warns — see below. Pass `90a` to cross-compile the Hopper `wgmma` path. |
+| `CMAKE_CUDA_ARCHITECTURES` | `native` | The GPU in the build machine. CUDA is detected automatically; without nvcc a CPU stub is built. If the GPU is newer than the toolkit can target, the build falls back to the newest PTX that toolkit can emit and warns — see below. |
 
 ### CUDA architecture selection
 

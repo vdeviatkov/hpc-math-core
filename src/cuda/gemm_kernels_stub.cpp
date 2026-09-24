@@ -17,7 +17,6 @@ namespace hpc::gemm {
 int  cuda_device_count()     noexcept { return 0; }
 bool cuda_has_tensor_cores() noexcept { return false; }
 bool cuda_has_ampere()       noexcept { return false; }
-bool cuda_has_hopper()       noexcept { return false; }
 
 template <typename T>
 void gemm_cuda_naive(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) {
@@ -47,9 +46,6 @@ void gemm_cuda_vectorized(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) {
     throw std::runtime_error("CUDA not available: built without CUDA support");
 }
 void gemm_cuda_mma_ldmatrix(const Matrix<float>&, const Matrix<float>&, Matrix<float>&) {
-    throw std::runtime_error("CUDA not available: built without CUDA support");
-}
-void gemm_cuda_hopper_wgmma(const Matrix<float>&, const Matrix<float>&, Matrix<float>&) {
     throw std::runtime_error("CUDA not available: built without CUDA support");
 }
 void gemm_cuda_wmma_pipelined(const Matrix<float>&, const Matrix<float>&, Matrix<float>&) {

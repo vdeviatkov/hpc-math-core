@@ -40,11 +40,11 @@ Best kernel per family, single-threaded unless noted. Full output, speedup table
 | 3 | `gemm_avx512_{naive,reordered,blocked}` | 512-bit ZMM register tile, embedded broadcast |
 | 4 | `gemm_neon_*`, `gemm_sve_*` | ARM NEON Q-register tile; vector-length-agnostic SVE with predicated tails |
 | 5 | `gemm_*_blocked_prefetch` | `__builtin_prefetch` on A rows, B k-tiles and C rows; distance sweep D ∈ {2, 4, 8, 16} |
-| 6 | `gemm_cuda_{naive,reordered,blocked,reg_tile,double_buf,vectorized,wmma,mma_ldmatrix,hopper_wgmma}` | Shared-memory tiling → register tiling → `cp.async` double buffering → `float4` loads + swizzle → Tensor Cores via WMMA → raw `mma.sync`/`ldmatrix` → Hopper `wgmma` + TMA |
+| 6 | `gemm_cuda_{naive,reordered,blocked,reg_tile,double_buf,vectorized,wmma,mma_ldmatrix}` | Shared-memory tiling → register tiling → `cp.async` double buffering → `float4` loads + swizzle → Tensor Cores via WMMA → raw `mma.sync`/`ldmatrix` |
 | 7 | `gemm_sme_{naive,reordered,blocked}` | ARM SME2 `FMOPA` outer-product accumulate into a ZA tile |
 | 8 | `gemm_amx_*`, `gemm_cuda_wmma_pipelined` | Apple AMX through Accelerate BLAS; 128×128-tile, `cp.async`-pipelined WMMA kernel (~16× the Level 6 WMMA kernel) |
 
-A family is compiled only where its ISA exists; elsewhere its kernels are declared `= delete`, so a wrong call is a compile-time error rather than a silently slower substitute. Benchmarks still list absent families as `SKIPPED`. Every family has been verified on real hardware except `gemm_sve_*` (no SVE machine was available) and `gemm_cuda_hopper_wgmma` (requires sm_90a).
+A family is compiled only where its ISA exists; elsewhere its kernels are declared `= delete`, so a wrong call is a compile-time error rather than a silently slower substitute. Benchmarks still list absent families as `SKIPPED`. Every family has been verified on real hardware except `gemm_sve_*`, for which no SVE machine was available.
 
 ---
 

@@ -8,40 +8,29 @@
  *   gemm_cuda_wmma                                            (Level 4, fp32 only)
  *   gemm_cuda_vectorized                                      (Level 5)
  *   gemm_cuda_mma_ldmatrix                                    (Level 6, fp32 only)
- *   gemm_cuda_hopper_wgmma                                    (Level 7, fp32 only)
- *   gemm_cuda_wmma_pipelined                                  (Level 8, fp32 only, NEW)
+ *   gemm_cuda_wmma_pipelined                                  (Level 7, fp32 only)
  *   gemm_cuda_cublas, gemm_cuda_cublas_tf32, gemm_cuda_cublas_fp16 (Reference, tf32/fp16 fp32 only)
  *
  * All tests skip at runtime when no CUDA device is present.
  * gemm_cuda_wmma / gemm_cuda_mma_ldmatrix additionally skip when Tensor
- * Cores / sm_80+ are unavailable. gemm_cuda_hopper_wgmma additionally
- * skips without sm_90a.
+ * Cores / sm_80+ are unavailable.
  *
- * STATUS: all kernels above except gemm_cuda_hopper_wgmma have now been
- * verified on real hardware (RTX 5080, Blackwell sm_120, CUDA 13.2) --
- * every test in this file that runs on that hardware (all but the two
- * CudaHopperWgmmaFloat cases, which SKIP: this GPU is not Hopper) passes.
- * That verification run found and fixed real bugs in gemm_cuda_double_buf
- * (cp.async source in the wrong address space), the DoubleBuf launch
- * config (hardcoded thread count, wrong for double), gemm_cuda_wmma
- * (shared-memory padding broke load_matrix_sync's alignment requirement,
- * and the A/B fragment major-order tags were swapped relative to the
- * physical layout), and gemm_cuda_mma_ldmatrix (the A-fragment
- * ldmatrix.x4 quadrant mapping had its row/col bits swapped) -- see each
- * kernel's file comment in gemm_kernels.cu for the full writeup.
- * gemm_cuda_hopper_wgmma remains genuinely UNVERIFIED: it requires sm_90a
- * (Hopper) specifically, and no Hopper hardware has been available to
- * test it on (it is an explicitly best-effort, likely-non-functional
- * sketch of Hopper warp specialization + TMA, written per direct user
- * request with that understanding).
+ * STATUS: every kernel above has been verified on real hardware (RTX 5080,
+ * Blackwell sm_120, CUDA 13.2). That verification run found and fixed real
+ * bugs in gemm_cuda_double_buf (cp.async source in the wrong address
+ * space), the DoubleBuf launch config (hardcoded thread count, wrong for
+ * double), gemm_cuda_wmma (shared-memory padding broke load_matrix_sync's
+ * alignment requirement, and the A/B fragment major-order tags were
+ * swapped relative to the physical layout), and gemm_cuda_mma_ldmatrix
+ * (the A-fragment ldmatrix.x4 quadrant mapping had its row/col bits
+ * swapped) -- see each kernel's file comment in gemm_kernels.cu for the
+ * full writeup.
  *
  * Tolerances:
  *   float  (SIMT): rel 1e-4, abs 1e-3
  *   double (SIMT): rel 1e-10, abs 1e-9
- *   float  (WMMA / mma.sync / wgmma): rel 1e-2, abs 1e-2  -- fp16
- *     conversion introduces ~1e-3 error on top of whatever error, if any,
- *     an incorrect fragment/descriptor mapping might additionally add for
- *     the still-UNVERIFIED wgmma kernel.
+ *   float  (WMMA / mma.sync): rel 1e-2, abs 1e-2  -- fp16 conversion
+ *     introduces ~1e-3 error of its own.
  */
 
 #include "gemm/cuda.hpp"
@@ -85,21 +74,6 @@ protected:
             GTEST_SKIP() << "No CUDA device available on this machine";
         if (!hpc::gemm::cuda_has_ampere())
             GTEST_SKIP() << "mma.sync m16n8k16 requires sm_80+ (Ampere)";
-    }
-};
-
-// gemm_cuda_hopper_wgmma requires sm_90a. BEST-EFFORT, EXPLICITLY
-// UNVERIFIED, LIKELY NON-FUNCTIONAL -- see gemm_kernels.cu's file comment.
-// This fixture will SKIP on every machine this repo has actually been
-// tested on; it exists so the test compiles and is ready to run the
-// moment someone with real Hopper hardware builds this project.
-class CudaHopperTest : public ::testing::Test {
-protected:
-    void SetUp() override {
-        if (hpc::gemm::cuda_device_count() == 0)
-            GTEST_SKIP() << "No CUDA device available on this machine";
-        if (!hpc::gemm::cuda_has_hopper())
-            GTEST_SKIP() << "wgmma/TMA requires sm_90a (Hopper) -- UNVERIFIED code path";
     }
 };
 
@@ -334,34 +308,7 @@ TEST_F(CudaMmaLdmatrixFloat, N256) {
 }
 
 // ===========================================================================
-// Level 7 -- Hopper warp specialization + TMA (wgmma) -- fp32 only, sm_90a.
-// BEST-EFFORT, EXPLICITLY UNVERIFIED, LIKELY NON-FUNCTIONAL: see
-// gemm_kernels.cu's kernel_hopper_wgmma file comment. This test will SKIP
-// on every machine this repo has actually been run on (no Hopper hardware
-// was available anywhere in this project); it exists so there is
-// something to run the moment someone with real sm_90a hardware builds
-// this project -- if it fails there, that is genuinely new information,
-// not a regression. Sizes are exact multiples of 64/64/16 as required.
-// ===========================================================================
-struct CudaHopperWgmmaFloat : CudaHopperTest {};
-
-TEST_F(CudaHopperWgmmaFloat, N64) {
-    hpc::Matrix<float> A(64,64), B(64,64), C_ref(64,64), C_got(64,64);
-    fill_random(A,1); fill_random(B,2);
-    hpc::gemm::gemm_naive(A, B, C_ref);
-    hpc::gemm::gemm_cuda_hopper_wgmma(A, B, C_got);
-    expect_near(C_got, C_ref, "hopper_wgmma/N=64", 1e-2, 1e-2);
-}
-TEST_F(CudaHopperWgmmaFloat, N128) {
-    hpc::Matrix<float> A(128,128), B(128,128), C_ref(128,128), C_got(128,128);
-    fill_random(A,3); fill_random(B,4);
-    hpc::gemm::gemm_naive(A, B, C_ref);
-    hpc::gemm::gemm_cuda_hopper_wgmma(A, B, C_got);
-    expect_near(C_got, C_ref, "hopper_wgmma/N=128", 1e-2, 1e-2);
-}
-
-// ===========================================================================
-// Level 8 -- Pipelined WMMA (bigger tiles + cp.async double buffering) --
+// Level 7 -- Pipelined WMMA (bigger tiles + cp.async double buffering) --
 // fp32 only, sm_70+. NEW kernel, added after the cuBLAS reference below
 // measured this GPU's real Tensor Core ceiling (~118 TFLOP/s dense FP16,
 // compute-only) vs Level 4/6's ~5 TFLOP/s. See gemm_kernels.cu's

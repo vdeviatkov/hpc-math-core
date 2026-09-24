@@ -44,20 +44,7 @@
  *     or toolkit was available to compile or run this kernel. Falls back
  *     to gemm_cuda_wmma on sm_70-75.
  *
- *   Level 7  -- gemm_cuda_hopper_wgmma  (warp specialization + TMA, fp32 only, sm_90a)
- *     Producer/consumer warpgroups: one warpgroup issues TMA bulk-tensor
- *     loads (built via the driver API's cuTensorMapEncodeTiled), the other
- *     runs wgmma.mma_async directly against shared memory. BEST-EFFORT,
- *     EXPLICITLY UNVERIFIED AND LIKELY NON-FUNCTIONAL -- written as an
- *     honest sketch of the technique per explicit user request, not as
- *     validated working code (no Hopper hardware, no CUDA toolkit
- *     anywhere in this project -- see gemm_kernels.cu's file header for
- *     the full caveat and per-section confidence levels). Requires M, N,
- *     K to be exact multiples of the wgmma tile (64x64x16) -- no tail
- *     handling. Falls back to gemm_cuda_mma_ldmatrix, then gemm_cuda_wmma,
- *     then gemm_cuda_double_buf, in that order.
- *
- *   Level 8  -- gemm_cuda_wmma_pipelined  (bigger tiles + cp.async double
+ *   Level 7  -- gemm_cuda_wmma_pipelined  (bigger tiles + cp.async double
  *               buffering, fp32 only, sm_70+; NEW, added after the
  *               Reference -- cuBLAS entry below measured this GPU's real
  *               Tensor Core ceiling)
@@ -69,13 +56,13 @@
  *     gemm_kernels.cu's kernel_wmma_pipelined file comment for the full
  *     design rationale and the cuBLAS numbers that motivated it. Requires
  *     M, N exact multiples of 128 and K an exact multiple of 32 (no tail
- *     handling, same scoping decision as Level 7); falls back to the
+ *     handling); falls back to the
  *     always-correct gemm_cuda_wmma otherwise.
  *
  *   Reference -- gemm_cuda_cublas / gemm_cuda_cublas_tf32 / gemm_cuda_cublas_fp16
  *     Not part of the ladder above -- vendor-tuned cuBLAS, used as a
  *     realistic achievable-peak ceiling for the hand-written kernels
- *     (this is what motivated writing Level 8 above). gemm_cuda_cublas is
+ *     (this is what motivated writing Level 7 above). gemm_cuda_cublas is
  *     plain SGEMM/DGEMM; gemm_cuda_cublas_tf32/_fp16 (float only) use
  *     TF32/dense-FP16 Tensor Core compute via cublasGemmEx. Raw-device-
  *     pointer, compute-only variants of all three exist for peak-
@@ -85,7 +72,6 @@
  *   cuda_device_count()     -- returns 0 on CPU-only builds.
  *   cuda_has_tensor_cores() -- true if any device is sm_70+ (Volta+).
  *   cuda_has_ampere()       -- true if any device is sm_80+ (Ampere+).
- *   cuda_has_hopper()       -- true if any device is sm_90+ (Hopper+).
  */
 #include "hpc/matrix.hpp"
 #include <cstddef>
@@ -99,8 +85,6 @@ int  cuda_device_count()     noexcept;
 bool cuda_has_tensor_cores() noexcept;
 /** True if any device has compute capability >= 8.0 (Ampere+, cp.async). */
 bool cuda_has_ampere()       noexcept;
-/** True if any device has compute capability >= 9.0 (Hopper+, wgmma/TMA). */
-bool cuda_has_hopper()       noexcept;
 // ---------------------------------------------------------------------------
 // Level 0 -- Naive: one thread per C(i,j), global memory only.
 // ---------------------------------------------------------------------------
@@ -150,16 +134,7 @@ void gemm_cuda_vectorized(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C);
 // ---------------------------------------------------------------------------
 void gemm_cuda_mma_ldmatrix(const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C);
 // ---------------------------------------------------------------------------
-// Level 7 -- Hopper warp specialization + TMA (wgmma).
-//   BEST-EFFORT, EXPLICITLY UNVERIFIED, LIKELY NON-FUNCTIONAL -- see
-//   gemm_kernels.cu's file header for the full caveat. Requires sm_90a and
-//   M/N/K exact multiples of 64/64/16 (no tail handling); falls back to
-//   gemm_cuda_mma_ldmatrix, then gemm_cuda_wmma, then gemm_cuda_double_buf.
-//   float only.
-// ---------------------------------------------------------------------------
-void gemm_cuda_hopper_wgmma(const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C);
-// ---------------------------------------------------------------------------
-// Level 8 -- Pipelined WMMA (bigger tiles + cp.async double buffering).
+// Level 7 -- Pipelined WMMA (bigger tiles + cp.async double buffering).
 //   NEW kernel -- see gemm_kernels.cu's kernel_wmma_pipelined file
 //   comment for the full design rationale (motivated by the cuBLAS
 //   reference below measuring ~118 TFLOP/s dense-FP16 achievable on this

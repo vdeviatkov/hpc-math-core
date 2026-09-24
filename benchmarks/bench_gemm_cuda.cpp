@@ -12,8 +12,7 @@
  *   CudaWmma          -- Level 4: Tensor Cores via WMMA (fp32 only, sm_70+)
  *   CudaVectorized    -- Level 5: float4/double2 loads + shared-memory XOR swizzle
  *   CudaMmaLdmatrix   -- Level 6: raw Tensor Cores via mma.sync+ldmatrix (fp32 only, sm_80+)
- *   CudaHopperWgmma   -- Level 7: warp specialization + TMA (fp32 only, sm_90a; unverified)
- *   CudaWmmaPipelined -- Level 8: WMMA, 128x128 tiles + cp.async double buffering
+ *   CudaWmmaPipelined -- Level 7: WMMA, 128x128 tiles + cp.async double buffering
  *                        (fp32 only, sm_70+; NEW, added after the cuBLAS reference
  *                        below measured this GPU's real Tensor Core ceiling)
  *   CudaCublas        -- Reference: cuBLAS SGEMM/DGEMM, ceiling for the FMA kernels above
@@ -31,7 +30,6 @@
  *   All kernels check cuda_device_count() > 0 -> SKIPPED on CPU-only machines.
  *   CudaWmma additionally checks cuda_has_tensor_cores() -> SKIPPED on pre-Volta.
  *   CudaMmaLdmatrix/CudaCublasTf32(*) additionally check cuda_has_ampere() -> SKIPPED pre-Ampere.
- *   CudaHopperWgmma additionally checks cuda_has_hopper() -> SKIPPED on non-Hopper.
  *   CudaDoubleBuf reports whether cp.async (Ampere+) is active.
  */
 
@@ -191,28 +189,7 @@ static void BM_CudaMmaLdmatrix(benchmark::State& state) {
 }
 
 // ---------------------------------------------------------------------------
-// Level 7 -- Hopper warp specialization + TMA (wgmma) -- fp32 only, sm_90a.
-// BEST-EFFORT, EXPLICITLY UNVERIFIED, LIKELY NON-FUNCTIONAL: see
-// gemm_kernels.cu's kernel_hopper_wgmma file comment. Requires M=N=64k,
-// K=16k exactly (all sizes below satisfy this) and real Hopper hardware,
-// which was not available anywhere in this project -- this benchmark will
-// SKIP on every machine this repo has actually been run on.
-// ---------------------------------------------------------------------------
-template <std::size_t N>
-static void BM_CudaHopperWgmma(benchmark::State& state) {
-    if (hpc::gemm::cuda_device_count() == 0) { state.SkipWithMessage("No CUDA device available"); return; }
-    if (!hpc::gemm::cuda_has_hopper()) { state.SkipWithMessage("wgmma/TMA requires sm_90a (Hopper) -- UNVERIFIED code path, see src/gemm/README.md"); return; }
-    hpc::Matrix<float> A(N, N), B(N, N), C(N, N);
-    fill_random(A, 1); fill_random(B, 2);
-    for (auto _ : state) { hpc::gemm::gemm_cuda_hopper_wgmma(A, B, C); benchmark::DoNotOptimize(C.data()); benchmark::ClobberMemory(); }
-    state.counters["GFLOP/s"] = benchmark::Counter(flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
-    state.counters["N"] = double(N);
-    state.counters["precision"] = 16;
-    state.counters["unverified"] = 1;
-}
-
-// ---------------------------------------------------------------------------
-// Level 8 -- Pipelined WMMA (bigger tiles + cp.async double buffering) --
+// Level 7 -- Pipelined WMMA (bigger tiles + cp.async double buffering) --
 // fp32 only, sm_70+. NEW kernel, added after the cuBLAS reference below
 // measured this GPU's real Tensor Core ceiling. See gemm_kernels.cu's
 // kernel_wmma_pipelined file comment for the full design rationale.
@@ -363,7 +340,7 @@ static void BM_CudaCublasFp16ComputeOnly(benchmark::State& state) {
     state.counters["tensor_cores"] = 1;
 }
 
-// Level 8's compute-only counterpart -- same pre-staging as
+// Level 7's compute-only counterpart -- same pre-staging as
 // BM_CudaCublasFp16ComputeOnly above, so the two numbers are directly
 // comparable: this is "how close does the NEW hand-written kernel get to
 // cuBLAS's ~118 TFLOP/s dense-FP16 ceiling once transfer/conversion
@@ -433,7 +410,6 @@ HPC_REG_CUDA_T(BM_CudaDoubleBuf);
 HPC_REG_CUDA_T(BM_CudaVectorized);
 HPC_REG_CUDA_WMMA(BM_CudaWmma);
 HPC_REG_CUDA_WMMA(BM_CudaMmaLdmatrix);
-HPC_REG_CUDA_WMMA(BM_CudaHopperWgmma);
 HPC_REG_CUDA_WMMA(BM_CudaWmmaPipelined);
 HPC_REG_CUDA_T(BM_CudaCublas);
 HPC_REG_CUDA_WMMA(BM_CudaCublasTf32);
