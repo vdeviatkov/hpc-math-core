@@ -371,10 +371,15 @@ check_language(CUDA)
 
 if(CMAKE_CUDA_COMPILER)
     message(STATUS "CUDA toolkit found — enabling GPU kernels (${CMAKE_CUDA_COMPILER})")
-    enable_language(CUDA)
 
-    # Detect compute capability for the installed GPUs so we can pass
-    # the right -arch flag.  Falls back to sm_70 (Volta) if nothing is found.
+    # Choose the architecture BEFORE enable_language(CUDA).
+    #
+    # enable_language(CUDA) initialises CMAKE_CUDA_ARCHITECTURES from nvcc's
+    # own default (sm_52 on CUDA 12.x) whenever it is not already set, so an
+    # `if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)` guard placed *after* that
+    # call can never fire. The build then silently targets Maxwell, where
+    # wmma does not exist, and every Tensor Core kernel fails to compile with
+    # "name must be a namespace name" on `using namespace nvcuda`.
     #
     # gemm_cuda_hopper_wgmma (Level 7, see src/gemm/README.md) needs the
     # Hopper-specific "90a" architecture target (wgmma/TMA are excluded
@@ -383,13 +388,70 @@ if(CMAKE_CUDA_COMPILER)
     # if built ON a Hopper GPU. Cross-compiling for Hopper from elsewhere:
     #   cmake -B build -DCMAKE_CUDA_ARCHITECTURES=90a ..
     # On any other target, the wgmma/TMA code path is compiled out (see the
-    # __CUDA_ARCH__ >= 900 guard in gemm_kernels.cu) and gemm_cuda_hopper_wgmma
+    # __CUDA_ARCH__ == 900 guard in gemm_kernels.cu) and gemm_cuda_hopper_wgmma
     # transparently falls back to gemm_cuda_mma_ldmatrix / gemm_cuda_wmma.
-    find_package(CUDAToolkit REQUIRED)
     if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
         set(CMAKE_CUDA_ARCHITECTURES native)
-        message(STATUS "CUDA architectures not specified — compiling for: ${CMAKE_CUDA_ARCHITECTURES}")
     endif()
+
+    enable_language(CUDA)
+    find_package(CUDAToolkit REQUIRED)
+
+    # Verify this toolkit can actually target the requested architecture.
+    #
+    # nvcc refuses any architecture newer than itself, and "native" resolves
+    # to whatever GPU is installed: on a machine whose card is newer than its
+    # toolkit (e.g. CUDA 12.0, which predates Blackwell, driving an RTX 5080 /
+    # sm_120) every .cu then dies with "Unsupported gpu architecture". Probe
+    # it once here instead of failing at the first compile, and fall back to
+    # the newest *virtual* architecture the toolkit can emit — the driver JITs
+    # that PTX forward onto the newer GPU, at the cost of a pause on first
+    # kernel launch.
+    if(CMAKE_CUDA_ARCHITECTURES STREQUAL "native")
+        set(_hpc_cuda_probe "${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/hpc_cuda_arch_probe.cu")
+        file(WRITE "${_hpc_cuda_probe}" "__global__ void hpc_cuda_arch_probe() {}\n")
+        execute_process(
+            COMMAND "${CMAKE_CUDA_COMPILER}" -arch=native -ptx "${_hpc_cuda_probe}"
+                    -o "${_hpc_cuda_probe}.ptx"
+            RESULT_VARIABLE _hpc_cuda_probe_rc
+            OUTPUT_QUIET ERROR_QUIET)
+
+        if(NOT _hpc_cuda_probe_rc EQUAL 0)
+            # Newest compute_XX this nvcc knows about, excluding the 90
+            # family: compiling for 90 activates the Hopper-only wgmma/TMA
+            # path above, whose PTX cannot be JIT-compiled onto a non-Hopper
+            # GPU — and this branch is only reached when the GPU is newer
+            # than the toolkit, so it is never a Hopper card.
+            execute_process(
+                COMMAND "${CMAKE_CUDA_COMPILER}" --list-gpu-arch
+                OUTPUT_VARIABLE _hpc_cuda_arch_list
+                OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+            string(REGEX MATCHALL "compute_[0-9]+" _hpc_cuda_archs "${_hpc_cuda_arch_list}")
+            set(_hpc_cuda_fallback 0)
+            foreach(_hpc_arch IN LISTS _hpc_cuda_archs)
+                string(REGEX REPLACE "compute_" "" _hpc_arch_num "${_hpc_arch}")
+                if(_hpc_arch_num LESS 90 AND _hpc_arch_num GREATER _hpc_cuda_fallback)
+                    set(_hpc_cuda_fallback ${_hpc_arch_num})
+                endif()
+            endforeach()
+
+            if(_hpc_cuda_fallback GREATER 0)
+                set(CMAKE_CUDA_ARCHITECTURES "${_hpc_cuda_fallback}-virtual")
+                message(WARNING
+                    "This GPU is newer than CUDA ${CMAKE_CUDA_COMPILER_VERSION} can target "
+                    "directly. Falling back to compute_${_hpc_cuda_fallback} PTX, JIT-compiled "
+                    "by the driver at run time. Kernels work, but are not tuned for the actual "
+                    "architecture — install a newer CUDA toolkit for native code generation.")
+            else()
+                message(FATAL_ERROR
+                    "CUDA ${CMAKE_CUDA_COMPILER_VERSION} cannot target this GPU and no usable "
+                    "fallback architecture was found. Install a newer CUDA toolkit, or pass "
+                    "-DCMAKE_CUDA_ARCHITECTURES=<arch> explicitly.")
+            endif()
+        endif()
+    endif()
+
+    message(STATUS "CUDA architectures: ${CMAKE_CUDA_ARCHITECTURES}")
 
     # The CUDA kernel library — compiled from .cu source.
     add_library(hpc_math_cuda STATIC

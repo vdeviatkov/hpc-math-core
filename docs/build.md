@@ -91,7 +91,19 @@ cd build; ctest --build-config Release --output-on-failure
 | `HPC_ENABLE_SME` | `OFF` | ARM SME2 kernels. Runs a compile-*and-execute* probe at configure time; supersedes `HPC_MARCH` with `-mcpu=apple-m4`. See below. |
 | `HPC_ENABLE_AMX` | `ON` on Apple, `OFF` elsewhere | Apple AMX via Accelerate.framework (`cblas_sgemm`/`cblas_dgemm`). See below. |
 | `HPC_ENABLE_LTO` | `OFF` | Link-time optimisation for Release builds. |
-| `CMAKE_CUDA_ARCHITECTURES` | CMake default | Pass `native` to target the GPU in the build machine. CUDA is detected automatically; without nvcc a CPU stub is built. |
+| `CMAKE_CUDA_ARCHITECTURES` | `native` | The GPU in the build machine. CUDA is detected automatically; without nvcc a CPU stub is built. If the GPU is newer than the toolkit can target, the build falls back to the newest PTX that toolkit can emit and warns — see below. Pass `90a` to cross-compile the Hopper `wgmma` path. |
+
+### CUDA architecture selection
+
+The default is `native` — the GPU in the build machine. Two cases need care:
+
+**The GPU is newer than the CUDA toolkit.** nvcc refuses any architecture newer than itself, so `native` fails outright (e.g. CUDA 12.0, which predates Blackwell, on an RTX 50-series card: `Unsupported gpu architecture 'compute_120'`). The configure step probes for this and falls back to the newest *virtual* architecture the toolkit can emit, which the driver JIT-compiles forward onto the actual GPU. The kernels then run correctly, at the cost of a JIT pause on first launch and code that is not tuned for the real architecture — so **do not benchmark in this configuration**; install a toolkit new enough to target the card. The configure step prints a warning when this happens, and always reports the final choice:
+
+```
+-- CUDA architectures: 89-virtual
+```
+
+**Re-configuring an existing build directory.** `CMAKE_CUDA_ARCHITECTURES` is a cache variable, so a value from an earlier configure persists and overrides the default. Use a fresh build directory (or `-DCMAKE_CUDA_ARCHITECTURES=native`) when changing toolkits or GPUs.
 
 ### Optimisation flags (applied automatically in Release mode)
 
