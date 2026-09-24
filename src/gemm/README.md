@@ -594,7 +594,7 @@ against cuBLAS: Levels 4/6 (`gemm_cuda_wmma`/`gemm_cuda_mma_ldmatrix`)
 measured only ~5 TFLOP/s each on this GPU, while cuBLAS's own dense-FP16
 Tensor Core path measured ~118 TFLOP/s compute-only on the same hardware
 (see
-[§ Reference cuBLAS](../../docs/benchmarks.md#reference-cublas---is-100-200-tflops-reachable-on-this-gpu)).
+[§ Reference cuBLAS](../../docs/benchmarks.md#reference-cublas--the-achievable-ceiling)).
 That ~24x gap is almost entirely pipelining and tile size, not precision
 or instruction choice — every kernel above already uses fp16 Tensor
 Cores. This kernel closes most of that gap the way CUTLASS-style kernels
@@ -715,7 +715,7 @@ generically.
 
 Real measured numbers from `bench_gemm_cuda` (2026-08-29) — see the
 measured throughput in
-[§ CUDA speedup summary](../../docs/benchmarks.md#cuda-speedup-summary-f32-n4096-end-to-end)
+[§ CUDA speedup summary](../../docs/benchmarks.md#speedup-vs-cudanaive-n4096)
 for the full benchmark table this is drawn from. All CUDA benchmarks
 include host↔device transfer time.
 
@@ -747,7 +747,7 @@ include host↔device transfer time.
 > TFLOP/s) — by applying exactly the multi-stage-pipelining and
 > bigger-tile fixes that production libraries like cuBLAS/CUTLASS use.
 > See Level 7's section above and
-> [§ Reference cuBLAS](../../docs/benchmarks.md#reference-cublas---is-100-200-tflops-reachable-on-this-gpu)
+> [§ Reference cuBLAS](../../docs/benchmarks.md#reference-cublas--the-achievable-ceiling)
 > for the full compute-only comparison and what closing the remaining gap
 > to cuBLAS would still require (deeper pipelining, WMMA-specific
 > shared-memory swizzling, split-K).

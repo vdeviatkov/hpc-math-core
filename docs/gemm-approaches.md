@@ -133,7 +133,7 @@ Levels 4/6's ~5 TFLOP/s was far below this GPU's ~118 TFLOP/s realistic
 Tensor Core ceiling; Level 7 reaches ~81 TFLOP/s (~15× Level 4, 68% of
 cuBLAS) using only the documented `wmma::` API. See
 [benchmarks.md § NVIDIA RTX 5080 — CUDA](benchmarks.md#nvidia-rtx-5080--cuda) and
-[§ Reference cuBLAS](benchmarks.md#reference-cublas---is-100-200-tflops-reachable-on-this-gpu)
+[§ Reference cuBLAS](benchmarks.md#reference-cublas--the-achievable-ceiling)
 for the full writeups.
 
 ---
