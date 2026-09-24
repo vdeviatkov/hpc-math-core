@@ -17,19 +17,19 @@ README's benchmark sections, machine noted per row.
 | Family | Machine | f32 peak | f64 peak | Notes |
 |---|---|---|---|---|
 | Scalar (`gemm_blocked`) | Apple M4 Max | 85.9 G/s | 27.2 G/s | N=64; degrades at large N (no register tiling) |
-| AVX2 (`gemm_avx2_blocked`) | Intel x86 (MSVC) | 145.8 G/s | 67.1 G/s | |
-| AVX-512 (`gemm_avx512_blocked`) | Intel x86 (MSVC) | 290.8 G/s | 139.2 G/s | |
+| AVX2 (`gemm_avx2_blocked`) | AMD Zen 5 (GCC) | 151.5 G/s | 75.4 G/s | |
+| AVX-512 (`gemm_avx512_blocked`) | AMD Zen 5 (GCC) | 218.9 G/s | 106.0 G/s | full-width 512-bit datapath (unlike Zen 4's double-pumped 256-bit) |
 | NEON (`gemm_neon_blocked`) | Apple M4 Max | 97.0 G/s | 36.3 G/s | flat across N — best-behaved CPU SIMD kernel here |
 | SVE | Not available | — | — | Apple Silicon has no non-streaming SVE unit |
 | **SME2** (`gemm_sme_reordered`/`_blocked`) | Apple M4 Max | **386 G/s** | **116 G/s** | outer-product engine, not FMA — see below |
 | **Apple AMX** (via Accelerate) | Apple M4 Max | **3,296 G/s** | **860 G/s** | multi-threaded vendor BLAS — not a single-core comparison |
-| CUDA (`gemm_cuda_double_buf`) | NVIDIA RTX 5080 (Blackwell) | **5,744 G/s** | 704 G/s | best plain-FMA CUDA kernel; N=4096, includes host↔device transfer |
-| CUDA (`gemm_cuda_reg_tile`) | NVIDIA RTX 5080 (Blackwell) | 5,728 G/s | 694 G/s | register-tiled shared-memory kernel, single GPU |
-| CUDA (`gemm_cuda_mma_ldmatrix`) | NVIDIA RTX 5080 (Blackwell) | 5,082 G/s | — | raw `mma.sync`+`ldmatrix` Tensor Cores, fp16-in/fp32-accumulate; on this small/untuned 64×64-tile kernel, below the plain-FMA kernels above at N=4096 |
-| CUDA (`gemm_cuda_wmma`) | NVIDIA RTX 5080 (Blackwell) | 4,798 G/s | — | `wmma::` Tensor Cores, fp16-in/fp32-accumulate; published Tensor Core peaks for this GPU class are ~250–300 TFLOP/s at large batched/tuned problem sizes — not what this small educational kernel is tuned for |
-| **CUDA (`gemm_cuda_wmma_pipelined`)** | NVIDIA RTX 5080 (Blackwell) | **82,383 G/s** (**82.4 TFLOP/s**) | — | Level 7; 128×128 tiles + cp.async double buffering, same `wmma::` API as above; compute-only (device-resident buffers), N=16384; ~16× `gemm_cuda_wmma` |
-| CUDA reference (`cublasSgemm`, plain FP32) | NVIDIA RTX 5080 (Blackwell) | 38,383 G/s (38.4 TFLOP/s) | — | vendor cuBLAS, compute-only, N=16384 — the real ceiling for the FMA-based kernels above, not part of this repo's own kernel families |
-| CUDA reference (`cublasGemmEx`, dense FP16) | NVIDIA RTX 5080 (Blackwell) | 117,827 G/s (117.8 TFLOP/s) | — | vendor cuBLAS, compute-only, N=16384 — the real ceiling for the Tensor Core kernels above |
+| CUDA (`gemm_cuda_double_buf`) | NVIDIA RTX 5080 (Blackwell) | **6,671 G/s** | 712 G/s | best plain-FMA CUDA kernel; N=4096, includes host↔device transfer |
+| CUDA (`gemm_cuda_reg_tile`) | NVIDIA RTX 5080 (Blackwell) | 6,583 G/s | 705 G/s | register-tiled shared-memory kernel, single GPU |
+| CUDA (`gemm_cuda_mma_ldmatrix`) | NVIDIA RTX 5080 (Blackwell) | 5,685 G/s | — | raw `mma.sync`+`ldmatrix` Tensor Cores, fp16-in/fp32-accumulate; on this small/untuned 64×64-tile kernel, below the plain-FMA kernels above at N=4096 |
+| CUDA (`gemm_cuda_wmma`) | NVIDIA RTX 5080 (Blackwell) | 5,266 G/s | — | `wmma::` Tensor Cores, fp16-in/fp32-accumulate; published Tensor Core peaks for this GPU class are ~250–300 TFLOP/s at large batched/tuned problem sizes — not what this small educational kernel is tuned for |
+| **CUDA (`gemm_cuda_wmma_pipelined`)** | NVIDIA RTX 5080 (Blackwell) | **80,773 G/s** (**80.8 TFLOP/s**) | — | Level 7; 128×128 tiles + cp.async double buffering, same `wmma::` API as above; compute-only (device-resident buffers), N=16384; ~15× `gemm_cuda_wmma` |
+| CUDA reference (`cublasSgemm`, plain FP32) | NVIDIA RTX 5080 (Blackwell) | 39,073 G/s (39.1 TFLOP/s) | — | vendor cuBLAS, compute-only, N=16384 — the real ceiling for the FMA-based kernels above, not part of this repo's own kernel families |
+| CUDA reference (`cublasGemmEx`, dense FP16) | NVIDIA RTX 5080 (Blackwell) | 118,228 G/s (118.2 TFLOP/s) | — | vendor cuBLAS, compute-only, N=16384 — the real ceiling for the Tensor Core kernels above |
 
 ---
 
@@ -130,7 +130,7 @@ fixed five genuine bugs across `double_buf`, `wmma`, and `mma_ldmatrix`
 transposed WMMA fragments, a swapped `ldmatrix` quadrant mapping), then
 motivated writing Level 7 after a cuBLAS reference comparison showed
 Levels 4/6's ~5 TFLOP/s was far below this GPU's ~118 TFLOP/s realistic
-Tensor Core ceiling; Level 7 reaches ~82 TFLOP/s (~16× Level 4, ~70% of
+Tensor Core ceiling; Level 7 reaches ~81 TFLOP/s (~15× Level 4, 68% of
 cuBLAS) using only the documented `wmma::` API. See
 [benchmarks.md § NVIDIA RTX 5080 — CUDA](benchmarks.md#nvidia-rtx-5080--cuda) and
 [§ Reference cuBLAS](benchmarks.md#reference-cublas---is-100-200-tflops-reachable-on-this-gpu)

@@ -16,17 +16,17 @@ Best kernel per family, single-threaded unless noted. Full output, speedup table
 |---|---|---|---|
 | Scalar, cache-blocked (`gemm_blocked`) | Apple M4 Max | 86 GFLOP/s | 27 GFLOP/s |
 | ARM NEON (`gemm_neon_blocked`) | Apple M4 Max | 97 GFLOP/s | 36 GFLOP/s |
-| AVX2 (`gemm_avx2_blocked`) | Intel x86, MSVC | 146 GFLOP/s | 67 GFLOP/s |
-| AVX-512 (`gemm_avx512_blocked`) | Intel x86, MSVC | 291 GFLOP/s | 139 GFLOP/s |
+| AVX2 (`gemm_avx2_blocked`) | AMD Zen 5, GCC | 152 GFLOP/s | 75 GFLOP/s |
+| AVX-512 (`gemm_avx512_blocked`) | AMD Zen 5, GCC | **219 GFLOP/s** | **106 GFLOP/s** |
 | ARM SME2 (`gemm_sme_*`) | Apple M4 Max | **386 GFLOP/s** | **116 GFLOP/s** |
 | Apple AMX via Accelerate (`gemm_amx_*`) ¹ | Apple M4 Max | 3.3 TFLOP/s | 860 GFLOP/s |
-| CUDA, FMA (`gemm_cuda_double_buf`) ² | NVIDIA RTX 5080 | 5.7 TFLOP/s | 0.7 TFLOP/s |
-| CUDA, Tensor Cores (`gemm_cuda_wmma_pipelined`) ³ | NVIDIA RTX 5080 | **82 TFLOP/s** | — |
+| CUDA, FMA (`gemm_cuda_double_buf`) ² | NVIDIA RTX 5080 | 6.7 TFLOP/s | 0.7 TFLOP/s |
+| CUDA, Tensor Cores (`gemm_cuda_wmma_pipelined`) ³ | NVIDIA RTX 5080 | **81 TFLOP/s** | — |
 | cuBLAS dense-FP16 reference ³ | NVIDIA RTX 5080 | 118 TFLOP/s | — |
 
 ¹ Vendor BLAS, may use multiple cores — not a single-core comparison.
 ² End-to-end, including host↔device transfer, N=4096.
-³ Compute-only (device-resident buffers), N=16384; fp16 inputs, fp32 accumulate. The hand-written kernel reaches ~70 % of cuBLAS on the same GPU.
+³ Compute-only (device-resident buffers), N=16384; fp16 inputs, fp32 accumulate. The hand-written kernel reaches 68 % of cuBLAS on the same GPU.
 
 ---
 
@@ -97,7 +97,7 @@ docs/                         Build guide, benchmark results, cache and approach
 |---|---|
 | [docs/gemm-approaches.md](docs/gemm-approaches.md) | One-page cheat sheet: every family's cache technique, register width and key intrinsics |
 | [src/gemm/README.md](src/gemm/README.md) | Per-kernel loop analysis with memory-access diagrams; CUDA level-by-level design notes |
-| [docs/benchmarks.md](docs/benchmarks.md) | Full benchmark output, speedup tables and key observations for Apple M4 Max, Intel x86 and RTX 5080 |
+| [docs/benchmarks.md](docs/benchmarks.md) | Full benchmark output, speedup tables and key observations for Apple M4 Max, AMD Zen 5 and RTX 5080 |
 | [docs/build.md](docs/build.md) | Platform build instructions, CMake options, SME/AMX flag rationale, ISA-skip matrix, CI |
 | [docs/cache-behavior.md](docs/cache-behavior.md) | Cache lines, reuse distance, working-set analysis, roofline model, GPU memory hierarchy |
 

@@ -715,7 +715,7 @@ generically.
 
 Real measured numbers from `bench_gemm_cuda` (2026-08-29) — see the
 measured throughput in
-[§ CUDA speedup summary](../../docs/benchmarks.md#cuda-speedup-summary-f32-n4096)
+[§ CUDA speedup summary](../../docs/benchmarks.md#cuda-speedup-summary-f32-n4096-end-to-end)
 for the full benchmark table this is drawn from. All CUDA benchmarks
 include host↔device transfer time.
 
