@@ -923,6 +923,36 @@ static constexpr int kPipeFragM = kPipeWarpM / kWMMA_M;             // 2
 static constexpr int kPipeFragN = kPipeWarpN / kWMMA_N;             // 4
 static constexpr int kPipeKSteps = kPipeBK / kWMMA_K;               // 2
 
+// Shared-memory leading dimensions, padded by 8 halves (16 bytes).
+//
+// Unpadded, both tiles are pathological for shared-memory banking. A
+// wmma::load_matrix_sync fragment reads 16 rows of 16 halves; the bank a row
+// starts in is (row * ld * 2 / 4) % 32. With ld = kPipeBK = 32 (64 B/row)
+// only 2 distinct bank-starts exist across those 16 rows -> 8-way conflict.
+// With ld = kPipeBN = 128 (256 B/row, exactly 2 bank cycles) every row starts
+// in the SAME bank -> 16-way conflict. Measured on RTX 5080 before this pad:
+// 285.9M of 336.2M shared-load wavefronts were conflicts (85%), i.e. 6.7x the
+// necessary shared traffic, with warps stalled on MIO throttle 26% of the time.
+//
+// Padding by 8 gives ld = 40 / 136 halves -> 8 distinct bank-starts each,
+// cutting both to a 2-way conflict.
+//
+// Why 8 and not the usual 1: wmma::load_matrix_sync requires the leading
+// dimension to be a multiple of 8 __half elements, and cp.async requires its
+// destination 16-byte aligned. A +1 pad violates both (that is the bug this
+// file's kernel_wmma comment records). 8 halves = 16 bytes satisfies both.
+// Why not XOR swizzling, the usual alternative that costs no memory:
+// load_matrix_sync takes a plain (pointer, ld) pair and cannot express a
+// permuted layout -- swizzling requires hand-mapped mma.sync/ldmatrix
+// addressing, which is kernel_mma_ldmatrix's job, not this kernel's.
+//
+// Cost: 32 KB -> 37 KB of shared memory per block, which drops the
+// shared-memory occupancy limit from 3 blocks/SM to 2. That is free here:
+// this kernel already uses 126 registers/thread, capping it at 2 blocks/SM
+// regardless (verified with Nsight Compute).
+static constexpr int kPipeAsLd = kPipeBK + 8;   // 40 halves =  80 B
+static constexpr int kPipeBsLd = kPipeBN + 8;   // 136 halves = 272 B
+
 __global__ void __launch_bounds__(kPipeNumWarps * 32)
 kernel_wmma_pipelined(const __half* __restrict__ A16,   // MxK, row-major, fp16
                       const __half* __restrict__ B16,   // KxN, row-major, fp16
@@ -936,8 +966,8 @@ kernel_wmma_pipelined(const __half* __restrict__ A16,   // MxK, row-major, fp16
     const int cWarpRow = blockRow * kPipeBM + warpRow * kPipeWarpM;
     const int cWarpCol = blockCol * kPipeBN + warpCol * kPipeWarpN;
 
-    __shared__ alignas(16) __half As[2][kPipeBM][kPipeBK];  // natural: As[m][k]
-    __shared__ alignas(16) __half Bs[2][kPipeBK][kPipeBN];  // natural: Bs[k][n]
+    __shared__ alignas(16) __half As[2][kPipeBM][kPipeAsLd];  // natural: As[m][k], padded ld
+    __shared__ alignas(16) __half Bs[2][kPipeBK][kPipeBsLd];  // natural: Bs[k][n], padded ld
 
     wmma::fragment<wmma::accumulator, kWMMA_M, kWMMA_N, kWMMA_K, float> c_frag[kPipeFragM][kPipeFragN];
     #pragma unroll
@@ -1012,13 +1042,13 @@ kernel_wmma_pipelined(const __half* __restrict__ A16,   // MxK, row-major, fp16
             #pragma unroll
             for (int fn = 0; fn < kPipeFragN; ++fn)
                 wmma::load_matrix_sync(b_frag[fn],
-                    &Bs[cur][kSub * kWMMA_K][warpCol * kPipeWarpN + fn * kWMMA_N], kPipeBN);
+                    &Bs[cur][kSub * kWMMA_K][warpCol * kPipeWarpN + fn * kWMMA_N], kPipeBsLd);
 
             #pragma unroll
             for (int fm = 0; fm < kPipeFragM; ++fm) {
                 wmma::fragment<wmma::matrix_a, kWMMA_M, kWMMA_N, kWMMA_K, __half, wmma::row_major> a_frag;
                 wmma::load_matrix_sync(a_frag,
-                    &As[cur][warpRow * kPipeWarpM + fm * kWMMA_M][kSub * kWMMA_K], kPipeBK);
+                    &As[cur][warpRow * kPipeWarpM + fm * kWMMA_M][kSub * kWMMA_K], kPipeAsLd);
                 #pragma unroll
                 for (int fn = 0; fn < kPipeFragN; ++fn)
                     wmma::mma_sync(c_frag[fm][fn], a_frag, b_frag[fn], c_frag[fm][fn]);

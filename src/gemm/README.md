@@ -360,8 +360,8 @@ which led to a follow-up: **Level 7 (`gemm_cuda_wmma_pipelined`)** (added,
 not a replacement — Level 4 is untouched) that closes most of the ~24x gap
 between Level 4/6's ~5 TFLOP/s and cuBLAS's ~118 TFLOP/s using bigger tiles
 and cp.async pipelining, while staying on the documented `wmma::` API.
-Verified: ~82 TFLOP/s (compute-only, N=16384), ~16x Level 4's throughput,
-~70% of cuBLAS's. See Level 7's section below for the full design writeup.
+Verified: ~100 TFLOP/s (compute-only, N=16384), ~19x Level 4's throughput,
+83% of cuBLAS's. See Level 7's section below for the full design writeup.
 
 **Correctness fix (Levels 2-3, found before real hardware was available).**
 `kernel_reg_tile`'s and `kernel_double_buf`'s shared-memory load previously
@@ -695,19 +695,38 @@ per-call transfer/malloc/conversion):**
 
 | N | Level 4 (`gemm_cuda_wmma`) | Level 7 (`gemm_cuda_wmma_pipelined`) | cuBLAS dense FP16 | Level 7 vs Level 4 |
 |---|---|---|---|---|
-| 4096 | ~5 TFLOP/s (end-to-end; not measured compute-only) | 74.6 TFLOP/s | 109.5 TFLOP/s | ~15x |
-| 8192 | — | 80.4 TFLOP/s | 117.3 TFLOP/s | ~16x |
-| 16384 | — | 82.4 TFLOP/s | 117.8 TFLOP/s | ~16x |
+| 4096 | ~5 TFLOP/s (end-to-end; not measured compute-only) | 97.2 TFLOP/s | 108.7 TFLOP/s | ~19x |
+| 8192 | — | 101.5 TFLOP/s | 117.0 TFLOP/s | ~20x |
+| 16384 | — | 100.5 TFLOP/s | 120.5 TFLOP/s | ~20x |
 
-A ~16x improvement using only bigger tiles, register-blocked fragment
-reuse, and cp.async double buffering — all still on the documented
-`wmma::` API — reaching ~68-70% of cuBLAS's dense-FP16 throughput.
-Closing the remaining gap would require going further than this kernel
-does: deeper multi-stage pipelining (3-4 stages, not 2), warp-level
-shared-memory swizzling for the WMMA loads specifically (this kernel
-still uses `alignas(16)` natural layout, not a swizzle), and split-K for
-very large K — the territory CUTLASS's template library exists to handle
-generically.
+A ~19x improvement using bigger tiles, register-blocked fragment reuse,
+cp.async double buffering, and padded shared-memory leading dimensions —
+all still on the documented `wmma::` API — reaching ~83% of cuBLAS's
+dense-FP16 throughput.
+
+**The padding is what took this kernel from 80.8 to 100.5 TFLOP/s**, and
+it was found by profiling rather than by inspection. Unpadded, `As`
+(ld = 32 halves = 64 B/row) gave only 2 distinct bank-starts across a
+fragment's 16 rows, and `Bs` (ld = 128 halves = 256 B/row, exactly two
+32-bank cycles) gave just 1 -- an 8-way and a 16-way conflict
+respectively. Nsight Compute measured 285.9M of 336.2M shared-load
+wavefronts as conflicts (85%), with warps stalled on MIO throttle 26% of
+the time and the tensor pipe consequently idle a third of the time.
+Padding both leading dimensions by 8 halves (`kPipeAsLd`, `kPipeBsLd`)
+gives 8 distinct bank-starts each -- a 2-way conflict -- and drops the
+conflict count to 519K (1.0%), within 1% of the theoretical minimum
+wavefront count. See those constants' comment in `gemm_kernels.cu` for
+the full derivation, including why the pad must be 8 rather than the
+usual 1 (`load_matrix_sync` needs ld to be a multiple of 8 halves;
+cp.async needs a 16-byte-aligned destination) and why an XOR swizzle --
+the zero-memory-cost alternative `kernel_vectorized` uses -- cannot be
+applied to a `wmma::` kernel at all.
+
+What limits it now is register pressure: 126 registers/thread caps
+occupancy at 33% (`Block Limit Registers: 2`). Beyond that, closing the
+last ~17% to cuBLAS would require deeper multi-stage pipelining (3-4
+stages, not 2) and split-K for very large K -- the territory CUTLASS's
+template library exists to handle generically.
 
 ---
 
@@ -742,8 +761,8 @@ include host↔device transfer time.
 > than a tuned production Tensor Core pipeline. **Level 7 already
 > overtakes every kernel above it at this size** (7.12 TFLOP/s vs Level
 > 3's 5.74) and the gap widens sharply at larger N: at N=16384,
-> compute-only (excluding transfer), Level 7 reaches ~82 TFLOP/s — ~16x
-> Level 4's throughput and ~70% of cuBLAS's own dense-FP16 ceiling (~118
+> compute-only (excluding transfer), Level 7 reaches ~100 TFLOP/s — ~19x
+> Level 4's throughput and 83% of cuBLAS's own dense-FP16 ceiling (~120
 > TFLOP/s) — by applying exactly the multi-stage-pipelining and
 > bigger-tile fixes that production libraries like cuBLAS/CUTLASS use.
 > See Level 7's section above and

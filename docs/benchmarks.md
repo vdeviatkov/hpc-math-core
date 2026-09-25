@@ -344,15 +344,52 @@ Nine kernels (Levels 0-7, `CudaReordered` shares Level 0 with `CudaNaive`):
 
 To keep cp.async usable at all, `A`/`B` are pre-converted to fp16 in global memory once (same staging step `gemm_cuda_cublas_fp16` already uses — cp.async is a same-dtype byte copy, not a converting load), and `As` is stored **naturally** (`As[m][k]`, matching `A`'s own row-major layout) rather than transposed the way `gemm_cuda_wmma` stores it — a deliberate, documented difference (cp.async can only copy a contiguous run of bytes to a contiguous destination, and only the natural/untransposed layout lines up for that), requiring `a_frag` to be `row_major` here vs `gemm_cuda_wmma`'s `col_major` for the *same* mathematical operand. This kernel also requires M/N to be exact multiples of 128 and K a multiple of 32 (no tail handling) — every alignment argument for its 16-byte cp.async transfers depends on this — falling back to the always-correct `gemm_cuda_wmma` otherwise. All 5 GTest cases pass on the first run, including a non-square 384×256×160 case and a N=192 case that exercises the fallback path.
 
+A fourth change — padding the shared-memory leading dimensions — came later, from profiling; see [§ Removing the bank conflicts](#removing-the-bank-conflicts) below.
+
 **Result — measured on RTX 5080, compute-only (pre-staged device buffers, no per-call transfer/malloc/conversion):**
 
 | Kernel | N=4096 | N=8192 | N=16384 | vs `CudaWmma` |
 |---|---|---|---|---|
 | `CudaWmma` (Level 4, 64×64 tiles, single-buffered) | ~5 TFLOP/s | — | — | 1.0× |
-| `CudaWmmaPipelined` (Level 7, 128×128 tiles, cp.async) | **75.0 TFLOP/s** | **80.4 TFLOP/s** | **80.8 TFLOP/s** | **~15×** |
-| `gemm_cuda_cublas_fp16` (vendor reference) | 111.3 TFLOP/s | 116.2 TFLOP/s | 118.2 TFLOP/s | ~22× |
+| `CudaWmmaPipelined` (Level 7, 128×128 tiles, cp.async) | **97.2 TFLOP/s** | **101.5 TFLOP/s** | **100.5 TFLOP/s** | **~19×** |
+| `gemm_cuda_cublas_fp16` (vendor reference) | 108.7 TFLOP/s | 117.0 TFLOP/s | 120.5 TFLOP/s | ~23× |
 
-A ~15× improvement over the original WMMA kernel using only bigger tiles and the documented C++ API, reaching **68% of cuBLAS's dense-FP16 throughput** at scale. Closing the remaining gap would require the structural changes CUTLASS-style kernels use beyond what's implemented here: even deeper multi-stage pipelining (3-4 stages, not 2), warp-level swizzling to avoid shared-memory bank conflicts on the WMMA loads, and split-K for very large K. See [`src/gemm/README.md`](../src/gemm/README.md#level-7--gemm_cuda_wmma_pipelined--pipelined-tensor-cores-via-wmma-fp32-only-sm_70) for the full per-line design writeup.
+A ~19× improvement over the original WMMA kernel using only bigger tiles, register-blocked fragment reuse, cp.async double buffering and a padded shared-memory layout — all on the documented C++ API — reaching **83% of cuBLAS's dense-FP16 throughput** at scale. See [`src/gemm/README.md`](../src/gemm/README.md#level-7--gemm_cuda_wmma_pipelined--pipelined-tensor-cores-via-wmma-fp32-only-sm_70) for the full per-line design writeup.
+
+### Removing the bank conflicts
+
+The first version of this kernel measured 80.8 TFLOP/s, 68% of cuBLAS. Nsight Compute identified why, and the fix was three constants.
+
+Unpadded, both shared tiles are pathological for banking. A `wmma::load_matrix_sync` fragment reads 16 rows of 16 halves, and the bank a row starts in is `(row × ld × 2 / 4) % 32`:
+
+| Tile | `ld` | Row stride | Distinct bank-starts over 16 rows | Conflict |
+|---|---|---|---|---|
+| `As` unpadded | 32 halves | 64 B | 2 | 8-way |
+| `Bs` unpadded | 128 halves | 256 B — exactly 2 bank cycles, so *every* row starts in the same bank | 1 | 16-way |
+| `As` **+8 pad** | 40 halves | 80 B | 8 | **2-way** |
+| `Bs` **+8 pad** | 136 halves | 272 B | 8 | **2-way** |
+
+Padding by **8** halves, not the usual 1: `wmma::load_matrix_sync` requires the leading dimension to be a multiple of 8 `__half` elements, and `cp.async` requires a 16-byte-aligned destination. A `+1` pad violates both — that is the `cudaErrorMisalignedAddress` bug recorded against `gemm_cuda_wmma`. 8 halves = 16 bytes satisfies both. `+16` would be *worse* (4-way); `+24` is equal but costs more memory.
+
+An XOR swizzle — the usual zero-memory-cost alternative, and what `gemm_cuda_vectorized` uses — is **not applicable here**: `load_matrix_sync` takes a plain `(pointer, ld)` pair and cannot express a permuted layout. Swizzling requires hand-mapped `mma.sync`/`ldmatrix` addressing, which is `gemm_cuda_mma_ldmatrix`'s job.
+
+**Measured, N=4096 compute-only:**
+
+| Metric | Before | After |
+|---|---|---|
+| Shared-load bank conflicts | 285,879,068 | **519,545** |
+| …as a share of load wavefronts | 85% | **1.0%** |
+| Shared-load wavefronts | 336,210,716 | **50,851,193** |
+| L1/TEX throughput | 87.9% | **31.8%** |
+| Tensor pipe utilisation | 68.0% | **86.1%** |
+| Warp stalls — MIO throttle | 26.3% | **3.9%** |
+| Warp stalls — short scoreboard | 13.6% | **3.2%** |
+| Registers per thread | 126 | 126 |
+| **Throughput** | **80.8 TFLOP/s** | **100.5 TFLOP/s** |
+
+The kernel had been moving 6.7× more shared-memory load traffic than the algorithm requires; afterwards it is within 1% of the theoretical minimum wavefront count. Shared memory per block rises 32 → 37 KB, dropping the shared-memory occupancy limit from 3 blocks/SM to 2 — free here, because 126 registers/thread already capped it at 2.
+
+**What now limits this kernel:** register pressure. Occupancy is 33.3% (`Block Limit Registers: 2`), and Nsight estimates ~67% headroom from occupancy alone. Beyond that, closing the last 17% to cuBLAS would need deeper multi-stage pipelining (3-4 stages, not 2) and split-K for very large K — the territory CUTLASS exists to handle generically.
 
 ---
 
@@ -379,13 +416,13 @@ All figures GFLOP/s. Rows through `CudaCublasTf32` are **end-to-end**
 | `CudaVectorized` | 8 | 198 | 659 | 2,172 | 5,690 | — | — |
 | `CudaWmma` | 8 | 242 | 749 | 2,092 | 5,266 | — | — |
 | `CudaMmaLdmatrix` | 8 | 249 | 766 | 2,221 | 5,685 | — | — |
-| `CudaWmmaPipelined` | 8 | 258 | 780 | 2,330 | **9,003** | **16,208** | **26,941** |
+| `CudaWmmaPipelined` | 8 | 262 | 786 | 2,346 | **9,000** | **16,709** | **29,115** |
 | `CudaCublas` (ref) | 18 | 468 | 907 | 2,404 | 8,285 | 13,948 | 20,449 |
 | `CudaCublasTf32` (ref) | 18 | 469 | 926 | 2,494 | 8,735 | 15,315 | 24,368 |
 | `CudaCublasComputeOnly` | — | — | — | — | 37,702 | 38,603 | 39,073 |
 | `CudaCublasTf32ComputeOnly` | — | — | — | — | 51,763 | 58,410 | 59,663 |
-| `CudaCublasFp16ComputeOnly` | — | — | — | — | 111,292 | 116,249 | **118,228** |
-| `CudaWmmaPipelinedComputeOnly` | — | — | — | — | 75,048 | 80,448 | **80,773** |
+| `CudaCublasFp16ComputeOnly` | — | — | — | — | 108,658 | 116,991 | **120,499** |
+| `CudaWmmaPipelinedComputeOnly` | — | — | — | — | 97,161 | 101,474 | **100,481** |
 
 **double (f64)** — consumer Blackwell has a heavily reduced FP64 datapath,
 so everything here is an order of magnitude below the f32 column and the
@@ -410,7 +447,8 @@ so the extra register pressure and staging of the higher levels buys nothing.
 ### Linux vs Windows on identical hardware
 
 The earlier run of this suite used the same GPU and the same CUDA 13.2 under
-Windows/MSVC. Comparing f32:
+Windows/MSVC. Comparing f32, **against the pre-padding version of
+`gemm_cuda_wmma_pipelined`** so both columns run identical source:
 
 | Kernel | Windows | Linux | Δ |
 |---|---|---|---|
@@ -427,14 +465,21 @@ the driver and transfer path, where Linux avoids Windows' WDDM overhead on
 allocation and host↔device copies. Any benchmark in this suite that includes
 transfers is measuring the OS as much as the GPU.
 
-One consequence: at N=4096 end-to-end, `CudaWmmaPipelined` (9,003) now beats
-both cuBLAS references (8,285 / 8,735). That is not a claim that the
-hand-written kernel is better than cuBLAS — at that size every kernel is
-transfer-bound and cuBLAS has no room to show its advantage. The compute-only
-rows are the honest comparison, and there cuBLAS FP16 leads 118,228 to
-80,773 (the hand-written kernel reaching **68.3%** of it).
+The current kernel is faster than both columns — the shared-memory padding
+described above lifted the Linux compute-only figure from 80,773 to 100,481.
+Those numbers are not in this table because no Windows run exists for the
+padded kernel, and comparing different source across two operating systems
+would measure nothing.
 
-> **Note:** all CUDA benchmarks include host↔device transfer time (`cudaMemcpy` + kernel + `cudaMemcpy`). `CudaWmma`/`CudaMmaLdmatrix`/`CudaWmmaPipelined` convert fp32→fp16 on the fly (`precision=16`), so their GFLOP/s is not directly comparable to the fp32 FMA kernels above them at face value — on this specific unoptimized/educational implementation (small 64×64 output tiles, no multi-stage pipelining) `CudaWmma`/`CudaMmaLdmatrix` land *below* `CudaRegTile`/`CudaDoubleBuf`'s plain-FMA throughput at N=4096, which is a legitimate result of this kernel's tuning level, not a correctness issue (all pass their GTest correctness suites). `CudaWmmaPipelined` (Level 7) is the exception: it overtakes every other kernel above at N≥4096 and keeps climbing with N (22.5 TFLOP/s at N=16384, end-to-end, transfer-dominated at this size) — see [§ Reference cuBLAS](#reference-cublas--the-achievable-ceiling) below for its transfer-excluded compute-only numbers (~80 TFLOP/s), which is the fairer comparison against cuBLAS.
+One consequence of the transfer-bound regime: at N=4096 end-to-end,
+`CudaWmmaPipelined` (9,000) beats both cuBLAS references (8,285 / 8,735).
+That is not a claim that the hand-written kernel is better than cuBLAS — at
+that size every kernel is transfer-bound and cuBLAS has no room to show its
+advantage. The compute-only rows are the honest comparison, and there cuBLAS
+FP16 leads 120,499 to 100,481 (the hand-written kernel reaching **83.4%**
+of it).
+
+> **Note:** all CUDA benchmarks include host↔device transfer time (`cudaMemcpy` + kernel + `cudaMemcpy`). `CudaWmma`/`CudaMmaLdmatrix`/`CudaWmmaPipelined` convert fp32→fp16 on the fly (`precision=16`), so their GFLOP/s is not directly comparable to the fp32 FMA kernels above them at face value — on this specific unoptimized/educational implementation (small 64×64 output tiles, no multi-stage pipelining) `CudaWmma`/`CudaMmaLdmatrix` land *below* `CudaRegTile`/`CudaDoubleBuf`'s plain-FMA throughput at N=4096, which is a legitimate result of this kernel's tuning level, not a correctness issue (all pass their GTest correctness suites). `CudaWmmaPipelined` (Level 7) is the exception: it overtakes every other kernel above at N≥4096 and keeps climbing with N (29.1 TFLOP/s at N=16384, end-to-end, transfer-dominated at this size) — see [§ Reference cuBLAS](#reference-cublas--the-achievable-ceiling) below for its transfer-excluded compute-only numbers (~100 TFLOP/s), which is the fairer comparison against cuBLAS.
 
 ### Speedup vs `CudaNaive`, N=4096
 
@@ -448,7 +493,7 @@ rows are the honest comparison, and there cuBLAS FP16 leads 118,228 to
 | `CudaMmaLdmatrix` (raw mma.sync, fp16) | 5,685 (5.69 TFLOP/s) | **2.18×** |
 | `CudaRegTile` (block=128) | 6,583 (6.58 TFLOP/s) | **2.52×** |
 | `CudaDoubleBuf` (cp.async) | 6,671 (6.67 TFLOP/s) | **2.56×** |
-| `CudaWmmaPipelined` (Level 7 — 128×128 tiles + cp.async) | **9,003 (9.00 TFLOP/s)** | **3.45×** |
+| `CudaWmmaPipelined` (Level 7 — 128×128 tiles + cp.async) | **9,000 (9.00 TFLOP/s)** | **3.45×** |
 
 `CudaBlocked` remains the one kernel slower than the naive baseline: shared-memory
 tiling with one output element per thread pays `__syncthreads()` overhead without
@@ -471,11 +516,11 @@ Compute-only, TFLOP/s (ascending):
 |---|---|---|---|---|
 | `cublasSgemm` | FP32, SIMT cores — no Tensor Cores | 37.7 | 38.6 | 39.1 |
 | `cublasGemmEx` TF32 | TF32 Tensor Cores, 10-bit mantissa | 51.8 | 58.4 | 59.7 |
-| **`gemm_cuda_wmma_pipelined`** | **dense FP16 Tensor Cores, hand-written** | **75.0** | **80.4** | **80.8** |
-| `cublasGemmEx` FP16 | dense FP16 Tensor Cores, fp32 accumulate | 111.3 | 116.2 | **118.2** |
+| **`gemm_cuda_wmma_pipelined`** | **dense FP16 Tensor Cores, hand-written** | **97.2** | **101.5** | **100.5** |
+| `cublasGemmEx` FP16 | dense FP16 Tensor Cores, fp32 accumulate | 108.7 | 117.0 | **120.5** |
 
 **Yes — via dense FP16 Tensor Cores.** Plain FP32 (SIMT CUDA cores, the ceiling for every non-Tensor-Core kernel above) tops out around **39 TFLOP/s** — no amount of tuning a plain-FMA kernel gets past that on this GPU. TF32 Tensor Cores roughly 1.5× that (**~60 TFLOP/s**) — still short of 100. **Dense FP16 Tensor Cores (fp16-in, fp32-accumulate) reach ~118 TFLOP/s** via cuBLAS, squarely in the target range, because FP16 elements are half the width of TF32's through the same tensor pipe.
 
-**And a hand-written kernel gets most of the way there.** The original gap between cuBLAS's ~118 TFLOP/s and the hand-written `CudaWmma`/`CudaMmaLdmatrix` kernels (~5 TFLOP/s each) was almost entirely pipelining and tile size, not precision or instruction choice — both already used fp16 Tensor Cores, just far less efficiently. `gemm_cuda_wmma_pipelined` (Level 7) applies exactly the fixes that gap analysis called for — 128×128 tiles (not 64×64), cp.async double-buffering, and per-warp register-blocked fragment reuse, all still on the documented `wmma::` C++ API — and reaches **~81 TFLOP/s at N=16384, a ~15× improvement over the original `CudaWmma`, 68% of cuBLAS's dense-FP16 throughput**. Closing the remaining ~37 TFLOP/s would require going further than this kernel does: deeper multi-stage pipelining (3-4 stages, not 2), warp-level shared-memory swizzling for the WMMA loads specifically, and split-K for very large K — the territory CUTLASS's template library exists to handle generically.
+**And a hand-written kernel gets most of the way there.** The original gap between cuBLAS's ~118 TFLOP/s and the hand-written `CudaWmma`/`CudaMmaLdmatrix` kernels (~5 TFLOP/s each) was almost entirely pipelining and tile size, not precision or instruction choice — both already used fp16 Tensor Cores, just far less efficiently. `gemm_cuda_wmma_pipelined` (Level 7) applies exactly the fixes that gap analysis called for — 128×128 tiles (not 64×64), cp.async double-buffering, and per-warp register-blocked fragment reuse, all still on the documented `wmma::` C++ API — and — after a further fix, padding the shared-memory leading dimensions to eliminate bank conflicts ([§ Removing the bank conflicts](#removing-the-bank-conflicts)) — reaches **~100 TFLOP/s at N=16384, a ~19× improvement over the original `CudaWmma`, 83% of cuBLAS's dense-FP16 throughput**. The remaining ~20 TFLOP/s is now bounded by register pressure (126 registers/thread caps occupancy at 33%), then by the structural changes CUTLASS exists to handle generically: deeper multi-stage pipelining and split-K for very large K.
 
 ---

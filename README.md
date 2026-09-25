@@ -21,12 +21,12 @@ Best kernel per family, single-threaded unless noted. Full output, speedup table
 | ARM SME2 (`gemm_sme_*`) | Apple M4 Max | **386 GFLOP/s** | **116 GFLOP/s** |
 | Apple AMX via Accelerate (`gemm_amx_*`) ¹ | Apple M4 Max | 3.3 TFLOP/s | 860 GFLOP/s |
 | CUDA, FMA (`gemm_cuda_double_buf`) ² | NVIDIA RTX 5080 | 6.7 TFLOP/s | 0.7 TFLOP/s |
-| CUDA, Tensor Cores (`gemm_cuda_wmma_pipelined`) ³ | NVIDIA RTX 5080 | **81 TFLOP/s** | — |
-| cuBLAS dense-FP16 reference ³ | NVIDIA RTX 5080 | 118 TFLOP/s | — |
+| CUDA, Tensor Cores (`gemm_cuda_wmma_pipelined`) ³ | NVIDIA RTX 5080 | **100 TFLOP/s** | — |
+| cuBLAS dense-FP16 reference ³ | NVIDIA RTX 5080 | 120 TFLOP/s | — |
 
 ¹ Vendor BLAS, may use multiple cores — not a single-core comparison.
 ² End-to-end, including host↔device transfer, N=4096.
-³ Compute-only (device-resident buffers), N=16384; fp16 inputs, fp32 accumulate. The hand-written kernel reaches 68 % of cuBLAS on the same GPU.
+³ Compute-only (device-resident buffers), N=16384; fp16 inputs, fp32 accumulate. The hand-written kernel reaches 83 % of cuBLAS on the same GPU.
 
 ---
 
@@ -42,7 +42,7 @@ Best kernel per family, single-threaded unless noted. Full output, speedup table
 | 5 | `gemm_*_blocked_prefetch` | `__builtin_prefetch` on A rows, B k-tiles and C rows; distance sweep D ∈ {2, 4, 8, 16} |
 | 6 | `gemm_cuda_{naive,reordered,blocked,reg_tile,double_buf,vectorized,wmma,mma_ldmatrix}` | Shared-memory tiling → register tiling → `cp.async` double buffering → `float4` loads + swizzle → Tensor Cores via WMMA → raw `mma.sync`/`ldmatrix` |
 | 7 | `gemm_sme_{naive,reordered,blocked}` | ARM SME2 `FMOPA` outer-product accumulate into a ZA tile |
-| 8 | `gemm_amx_*`, `gemm_cuda_wmma_pipelined` | Apple AMX through Accelerate BLAS; 128×128-tile, `cp.async`-pipelined WMMA kernel (~16× the Level 6 WMMA kernel) |
+| 8 | `gemm_amx_*`, `gemm_cuda_wmma_pipelined` | Apple AMX through Accelerate BLAS; 128×128-tile, `cp.async`-pipelined WMMA kernel (~19× the Level 4 WMMA kernel) |
 
 A family is compiled only where its ISA exists; elsewhere its kernels are declared `= delete`, so a wrong call is a compile-time error rather than a silently slower substitute. Benchmarks still list absent families as `SKIPPED`. Every family has been verified on real hardware except `gemm_sve_*`, for which no SVE machine was available.
 
