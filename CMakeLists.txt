@@ -110,7 +110,7 @@ if(HPC_ENABLE_SME)
 
     # Minimal probe: zero ZA, one FMOPA outer-product accumulate, one
     # horizontal-slice store out of ZA. Exercises exactly the instruction
-    # sequence gemm_sme_* relies on (see src/gemm/sme.hpp).
+    # sequence gemm_sme relies on (see src/gemm/sme.hpp).
     set(HPC_SME_PROBE_SRC [[
 #include <arm_sme.h>
 __arm_locally_streaming __arm_new("za")
@@ -151,7 +151,7 @@ int main() { probe(); return 0; }
 
     if(NOT _HPC_SME_FOUND)
         message(WARNING "HPC_ENABLE_SME=ON but no candidate flag produced SME code that "
-                         "actually runs on this (compiler, hardware) pair — gemm_sme_* will "
+                         "actually runs on this (compiler, hardware) pair — gemm_sme will "
                          "not be compiled (declared = delete; benchmarks report SKIPPED).")
     endif()
 endif()
@@ -339,6 +339,42 @@ target_compile_features(hpc_math_core INTERFACE cxx_std_20)
 
 if(HPC_AMX_ENABLED)
     target_link_libraries(hpc_math_core INTERFACE ${HPC_ACCELERATE_FRAMEWORK})
+endif()
+
+# ---------------------------------------------------------------------------
+# Optional: Arm KleidiAI reference GEMM (gemm_kleidiai, src/gemm/kleidiai.hpp)
+#
+# Enable with:  cmake -DHPC_ENABLE_KLEIDIAI=ON ..   (default: ON when the SME
+# probe above passed). KleidiAI's f32 matmul micro-kernels are SME2 assembly,
+# so there is nothing to build without SME. Fetched and pinned like the other
+# FetchContent deps; only the library target is built (no tests/benchmarks).
+# ---------------------------------------------------------------------------
+if(_HPC_SME_FOUND)
+    set(_HPC_KLEIDIAI_DEFAULT ON)
+else()
+    set(_HPC_KLEIDIAI_DEFAULT OFF)
+endif()
+option(HPC_ENABLE_KLEIDIAI "Fetch Arm KleidiAI and build its SME2 reference GEMM (gemm_kleidiai)"
+       ${_HPC_KLEIDIAI_DEFAULT})
+
+if(HPC_ENABLE_KLEIDIAI)
+    if(NOT _HPC_SME_FOUND)
+        message(WARNING "HPC_ENABLE_KLEIDIAI=ON but SME is not enabled/working — "
+                         "gemm_kleidiai will not be compiled.")
+    else()
+        FetchContent_Declare(
+            kleidiai
+            GIT_REPOSITORY https://github.com/ARM-software/kleidiai.git
+            GIT_TAG        v1.31.0
+            GIT_SHALLOW    TRUE
+        )
+        set(KLEIDIAI_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+        set(KLEIDIAI_BUILD_BENCHMARK OFF CACHE BOOL "" FORCE)
+        FetchContent_MakeAvailable(kleidiai)
+        target_link_libraries(hpc_math_core INTERFACE kleidiai)
+        target_compile_definitions(hpc_math_core INTERFACE HPC_KLEIDIAI_AVAILABLE)
+        message(STATUS "KleidiAI enabled (v1.31.0, SME2 f32 matmul)")
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------

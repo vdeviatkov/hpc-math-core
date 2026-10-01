@@ -90,6 +90,7 @@ cd build; ctest --build-config Release --output-on-failure
 | `HPC_ENABLE_AVX512` | `OFF` | Adds AVX-512 compile flags (`-mavx512f…` / MSVC `/arch:AVX512`). ⚠ SIGILL on CPUs without AVX-512. |
 | `HPC_ENABLE_SME` | `OFF` | ARM SME2 kernels. Runs a compile-*and-execute* probe at configure time; supersedes `HPC_MARCH` with `-mcpu=apple-m4`. See below. |
 | `HPC_ENABLE_AMX` | `ON` on Apple, `OFF` elsewhere | Apple AMX via Accelerate.framework (`cblas_sgemm`/`cblas_dgemm`). See below. |
+| `HPC_ENABLE_KLEIDIAI` | `ON` when the SME probe passed, else `OFF` | Fetches Arm KleidiAI v1.31.0 (FetchContent) for its SME2 f32 reference GEMM. |
 | `HPC_ENABLE_LTO` | `OFF` | Link-time optimisation for Release builds. |
 | `CMAKE_CUDA_ARCHITECTURES` | `native` | The GPU in the build machine. CUDA is detected automatically; without nvcc a CPU stub is built. If the GPU is newer than the toolkit can target, the build falls back to the newest PTX that toolkit can emit and warns — see below. |
 
@@ -121,7 +122,7 @@ The reason is mostly the bundled math libraries rather than the JIT itself. Meas
 
 ## SME and AMX build flags
 
-`gemm_sme_*` and `gemm_amx_*` are both **matrix-engine** kernels (whole-tile
+`gemm_sme` and `gemm_amx_*` are both **matrix-engine** kernels (whole-tile
 outer-product / vendor-BLAS-dispatched compute, not wider SIMD FMA — see
 [src/gemm/README.md](../src/gemm/README.md) for the architectural explanation),
 but they need very different build handling:
@@ -177,7 +178,7 @@ the suite). Accelerate's BLAS may also use multiple CPU cores internally
 for large matrices — unlike every other, strictly single-threaded, CPU
 kernel in this repo — so treat its numbers as "best vendor-library
 throughput on this machine", not an apples-to-apples single-core
-comparison against `gemm_sme_*`/`gemm_avx512_*`/`gemm_neon_*`.
+comparison against `gemm_sme`/`gemm_avx512_*`/`gemm_neon_*`.
 
 ---
 
@@ -239,7 +240,7 @@ Which kernel families exist in a build is decided once, at compile time, by the 
 | **`build-macos`** | `macos-14` (Apple M) | Apple Clang | All CPU tests (scalar, NEON, prefetch, **AMX**); AVX2/AVX-512/CUDA/SME skipped (`HPC_ENABLE_SME` defaults OFF; `HPC_ENABLE_AMX` defaults ON on Apple) |
 | **`build-cuda-stub`** | `ubuntu-24.04` | GCC 14 (no nvcc) | CMake finds no nvcc → stub library; CUDA bench + tests built and run; every CUDA row prints `SKIPPED` |
 
-None of the CI runners above pass `-DHPC_ENABLE_SME=ON` — GitHub-hosted runners have no Apple M4-class hardware, so it stays at its default OFF and `gemm_sme_*` is not compiled there. `build-macos` DOES exercise real `gemm_amx_*` (Accelerate.framework ships in the `macos-14` runner's SDK, and `HPC_ENABLE_AMX` defaults ON there), so the AMX dispatch — though not the specific numbers in [benchmarks.md](benchmarks.md), which come from a local M4 Max run — is continuously verified. The SME and AMX benchmark numbers in [benchmarks.md](benchmarks.md) both come from a manual local run on Apple M4 Max hardware.
+None of the CI runners above pass `-DHPC_ENABLE_SME=ON` — GitHub-hosted runners have no Apple M4-class hardware, so it stays at its default OFF and `gemm_sme` (and KleidiAI, which needs it) is not compiled there. `build-macos` DOES exercise real `gemm_amx_*` (Accelerate.framework ships in the `macos-14` runner's SDK, and `HPC_ENABLE_AMX` defaults ON there), so the AMX dispatch — though not the specific numbers in [benchmarks.md](benchmarks.md), which come from a local M4 Max run — is continuously verified. The SME and AMX benchmark numbers in [benchmarks.md](benchmarks.md) both come from a manual local run on Apple M4 Max hardware.
 
 Each job restores **ccache** and the **FetchContent cache** (`build/_deps`), configures with `cmake -G Ninja -DCMAKE_BUILD_TYPE=Release`, builds in parallel, and uploads JUnit XML from `ctest --output-junit`.
 

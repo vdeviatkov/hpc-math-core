@@ -91,7 +91,7 @@
  * CPU kernel in this repo, which is strictly single-threaded. This makes
  * gemm_amx_* numbers a "best vendor-library throughput on this machine"
  * reference point, not an apples-to-apples single-core comparison against
- * gemm_sme_*, gemm_avx512_*, or gemm_neon_*. See README.md for the measured
+ * gemm_sme, gemm_avx512_*, or gemm_neon_*. See README.md for the measured
  * numbers and this caveat repeated in context.
  *
  *

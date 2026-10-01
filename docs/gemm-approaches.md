@@ -21,7 +21,7 @@ README's benchmark sections, machine noted per row.
 | AVX-512 (`gemm_avx512_blocked`) | AMD Zen 5 (GCC) | 218.9 G/s | 106.0 G/s | full-width 512-bit datapath (unlike Zen 4's double-pumped 256-bit) |
 | NEON (`gemm_neon_blocked`) | Apple M4 Max | 97.0 G/s | 36.3 G/s | flat across N — best-behaved CPU SIMD kernel here |
 | SVE | Not available | — | — | Apple Silicon has no non-streaming SVE unit |
-| **SME2** (`gemm_sme_reordered`/`_blocked`) | Apple M4 Max | **386 G/s** | **116 G/s** | outer-product engine, not FMA — see below |
+| **SME2** (`gemm_sme`) | Apple M4 Max | **1,450 G/s** | **410 G/s** | outer-product engine, not FMA; single core, 84–88% of Accelerate f32 and on par in f64 — see below |
 | **Apple AMX** (via Accelerate) | Apple M4 Max | **3,296 G/s** | **860 G/s** | multi-threaded vendor BLAS — not a single-core comparison |
 | CUDA (`gemm_cuda_double_buf`) | NVIDIA RTX 5080 (Blackwell) | **6,671 G/s** | 712 G/s | best plain-FMA CUDA kernel; N=4096, includes host↔device transfer |
 | CUDA (`gemm_cuda_reg_tile`) | NVIDIA RTX 5080 (Blackwell) | 6,583 G/s | 705 G/s | register-tiled shared-memory kernel, single GPU |
@@ -62,8 +62,9 @@ for when it does (and doesn't) help.
 | **AVX-512** | `avx512.hpp` | 512-bit ZMM: 16×f32 / 8×f64 | `_mm512_fmadd_ps/pd`, `_mm512_set1_ps/pd`, `_mm512_reduce_add_ps/pd` | reorder, block, register-tile |
 | **NEON** | `neon.hpp` | 128-bit Q: 4×f32 / 2×f64 | `vfmaq_f32/f64`, `vfmaq_laneq_f32` (fused broadcast+FMA), `vld1q_f32/f64`, `vaddvq_f32` (horizontal reduce) | reorder, block, register-tile |
 | **SVE / SVE2** | `sve.hpp` | Scalable (VLA), 128–2048-bit, width read at runtime | `svld1_f32/f64`, `svmla_f32/f64_x`, `svdup_n_f32/f64`, `svwhilelt_b32/b64` (predicated tail — no scalar remainder loop), `svcntw()/svcntd()` | reorder, block, register-tile, predication |
-| **SME2** (ARM) | `sme.hpp` | ZA tile: SVL×SVL 2-D accumulator (16×16 f32 / 8×8 f64 on Apple M4) | `svmopa_za32/za64_f32/f64_m` (outer-product-accumulate, **not** FMA), `svzero_za`, `svld1_hor_za32/64`, `svst1_hor_za32/64`, `svcntsw()/svcntsd()` | panel-packing (repacked "reorder"), K-tile "block" — see note below |
+| **SME2** (ARM) | `sme.hpp` | All ZA tiles: 2×2 × 16×16 f32 = 32×32 C block / 2×4 × 8×8 f64 = 16×32 (Apple M4) | `svmopa_za32/za64_f32/f64_m` (outer-product-accumulate, **not** FMA), `svld1_x2` (SME2 multi-vector), `svzero_za`, `svld1_hor_za32/64`, `svst1_hor_za32/64`, `svcntsw()/svcntsd()` | GotoBLAS: pack A+B (outside streaming mode), Mc/Kc/Nc cache blocking, multi-tile micro-kernel — see note below |
 | **Apple AMX** (via Accelerate) | `amx.hpp` | Opaque — vendor-controlled | `cblas_sgemm`, `cblas_dgemm` (standard BLAS call, `<Accelerate/Accelerate.h>`) | none exposed — Apple's implementation, not ours (see note below) |
+| **KleidiAI** (reference, f32) | `kleidiai.hpp` | 2VL×2VL (all 4 f32 ZA tiles) | `kai_run_lhs_pack_*`, `kai_run_rhs_pack_*`, `kai_run_matmul_clamp_f32_f32p2vlx1_f32p2vlx1biasf32_sme2_mopa` | Arm's hand-written SME2 assembly micro-kernel; pack, no cache blocking |
 | **CUDA (GPU)** | `cuda.hpp` + `src/cuda/gemm_kernels.cu` | Thread → 1 elem (naive) up to 8×8 register tile/thread (`reg_tile`); 8 warps × 8 WMMA fragments/block (`wmma_pipelined`) | `__shared__` tile buffers, `__syncthreads()`, `__pipeline_memcpy_async`/`cp.async` (double-buffer), `wmma::fragment`/`wmma::mma_sync` (Tensor Cores), `float4`/`double2` vectorized loads + XOR smem swizzle, `ldmatrix.sync`+`mma.sync` PTX (raw Tensor Cores), 128×128-tile `wmma::` + `cp.async` double buffering (`wmma_pipelined`) | shared-memory tiling, register tiling, double buffering, vectorized loads, Tensor Core tile-multiply (3 abstraction levels + a 4th, bigger-tile/pipelined level) |
 
 ---
@@ -94,9 +95,9 @@ multiply-add. SME's `svmopa_za32_f32_m` instead computes a whole SVL×SVL
 class of operation as CUDA's `wmma::mma_sync` or Apple AMX below. A real
 hardware quirk fell out of building this: gather-load intrinsics are
 illegal inside SME's required "streaming mode," so the `A` column vector
-must be assembled with a scalar loop and packed once per row-tile (see
-`gemm_sme_reordered`) rather than gathered directly — full writeup in
-`sme.hpp`'s file header.
+must be packed rather than gathered. `gemm_sme` packs both A and B outside
+streaming mode and keeps all ZA tiles busy (2×2 f32 / 2×4 f64). Full
+writeup in `sme.hpp`'s file header.
 
 **Apple AMX has no public intrinsics at all.** Unlike every other family
 here, there's no ACLE-style header to include — Apple's AMX coprocessor is

@@ -20,8 +20,9 @@ summary of every family's cache technique and key intrinsics side by side.
 | `avx512.hpp` | `gemm_avx512_naive` · `gemm_avx512_reordered` · `gemm_avx512_blocked` | `__AVX512F__` |
 | `neon.hpp` | `gemm_neon_naive` · `gemm_neon_reordered` · `gemm_neon_blocked` | `__ARM_NEON` |
 | `sve.hpp` | `gemm_sve_naive` · `gemm_sve_reordered` · `gemm_sve_blocked` | `__ARM_FEATURE_SVE` |
-| `sme.hpp` | `gemm_sme_naive` · `gemm_sme_reordered` · `gemm_sme_blocked` — **verified, Apple M4 Max** | `__ARM_FEATURE_SME` (+ `-DHPC_ENABLE_SME=ON`) |
+| `sme.hpp` | `gemm_sme` (packed, cache-blocked, all ZA tiles, SME2 loads) — **verified, Apple M4 Max** | `__ARM_FEATURE_SME` (+ `-DHPC_ENABLE_SME=ON`) |
 | `amx.hpp` | `gemm_amx_naive` · `gemm_amx_reordered` · `gemm_amx_blocked` — **verified, Apple M4 Max, via Accelerate.framework** | `HPC_HAS_AMX` (Apple + Accelerate.framework; on by default) |
+| `kleidiai.hpp` | `gemm_kleidiai` (f32 only) — reference, Arm KleidiAI SME2 `FMOPA` micro-kernel | `HPC_HAS_KLEIDIAI` (`HPC_ENABLE_KLEIDIAI=ON`, default when SME works; needs SME2) |
 | `prefetch.hpp` | `gemm_blocked_prefetch` · `gemm_avx2_blocked_prefetch` · `gemm_avx512_blocked_prefetch` · `gemm_neon_blocked_prefetch` · `gemm_sve_blocked_prefetch` | per ISA |
 | `cuda.hpp` | `gemm_cuda_naive` (L0) · `gemm_cuda_reordered` (L0b) · `gemm_cuda_blocked` (L1) · `gemm_cuda_reg_tile` (L2) · `gemm_cuda_double_buf` (L3) · `gemm_cuda_wmma` (L4, fp32) · `gemm_cuda_vectorized` (L5) · `gemm_cuda_mma_ldmatrix` (L6, fp32) · `gemm_cuda_wmma_pipelined` (L7, fp32) · `gemm_cuda_cublas{,_tf32,_fp16}` (reference, not part of the ladder) — **all verified, RTX 5080 (Blackwell sm_120)** | `HPC_HAVE_CUDA` |
 
@@ -834,8 +835,7 @@ function"*. Gather/scatter addressing modes are excluded from the
 Streaming SVE instruction subset by the architecture itself, not a
 NEON/SVE-style limitation. The column vector must instead be assembled
 with ordinary scalar loads into a buffer, then loaded contiguously with
-`svld1` — which reframes this repo's usual naive-vs-reordered lesson one
-level up (see the three kernels below).
+`svld1`. In practice that means packing A (see below).
 
 ### Hardware finding: `-march=native` silently disables SME on Apple Silicon
 
@@ -856,41 +856,84 @@ SME detection actually **compiles and runs** a probe program at configure
 time (`check_cxx_source_runs`, not `check_cxx_compiler_flag`) — see
 CMakeLists.txt's `HPC_ENABLE_SME` block.
 
-### Three kernels
+### The kernel: `gemm_sme`
 
-**`gemm_sme_naive`** — for each SVL×SVL output tile `(i0, j0)`: zero the ZA
-tile, then for each `k` re-gather `A(i0..i0+SVL, k)` via a scalar loop into
-a stack buffer, load `B(k, j0..j0+SVL)` contiguously, and accumulate one
-outer product. The A-column gather is redone for every `(i0, j0, k)`
-triple — `O(N/SVL)` more scalar work than necessary. Measured: ~3 GFLOP/s,
-flat across N — the same "SIMD width can't fix cache-hostile access"
-lesson as every other `*_naive` kernel, except here the hostility is a
-structural consequence of streaming mode rather than a memory-layout
-choice.
+An earlier version had three kernels (`gemm_sme_naive` / `_reordered` /
+`_blocked`), all using a single ZA tile and an unpacked B. The best of them
+peaked at 386 GFLOP/s f32 / 116 GFLOP/s f64 and fell to 180 GFLOP/s f32 at
+N=4096. On the same core Accelerate ran at ~1,650 / ~410. Those three were
+replaced by one kernel that makes four changes:
 
-**`gemm_sme_reordered`** — packs the entire `A(i0..i0+SVL, :)` row-panel
-into a contiguous buffer **once** per i0-tile (a single scalar pass), then
-reuses it with pure contiguous loads across every j0-tile. Removes the
-`O(N/SVL)` redundant gathering. Measured: 218–380 GFLOP/s single-threaded
-f32 — the highest CPU throughput anywhere in this repo. Degrades once the
-packed panel (`SVL × K × sizeof(T)` bytes) exceeds L1/L2.
+**1. All ZA tiles in use.** ZA holds 4 f32 tiles (16×16 each at 512-bit SVL)
+or 8 f64 tiles (8×8). With one tile, every `FMOPA` has to wait for the
+previous one to finish updating the same accumulator, so the loop runs at
+FMOPA *latency*. The micro-kernel keeps every tile busy with independent
+outer products:
 
-**`gemm_sme_blocked`** — adds K-tiling (`kSmeTileK = 256`) on top of the
-panel-packing scheme: the packed A buffer is bounded to `SVL × kSmeTileK`
-regardless of K, keeping it cache-resident. Partial C sums are carried
-across k-tiles by reloading them directly into ZA via `svld1_hor_za`
-(rather than re-deriving them from scratch) — using the hardware's ability
-to load an existing accumulator state, not just zero it — at the cost of
-extra C traffic. Wins over `gemm_sme_reordered` once K is large enough
-that the unbounded packed panel would spill L2: measured 254 vs 210
-GFLOP/s at N=2048, 172 vs 127 GFLOP/s at N=4096 (Apple M4 Max, f32).
+```
+f32: 2×2 tiles → 32×32 C block      f64: 2×4 tiles → 16×32 C block
+per k:  a0,a1 = A column (2 vectors)  per k:  a0,a1 = A column (2 vectors)
+        b0,b1 = B row    (2 vectors)          b0..b3 = B row (4 vectors)
+        za0 += a0⊗b0   za1 += a0⊗b1           za(4i+j) += ai⊗bj   (8 FMOPA)
+        za2 += a1⊗b0   za3 += a1⊗b1
+```
+
+Each loaded vector now feeds 2 (f32) or 2–4 (f64) FMOPAs instead of one.
+
+**2. A and B both packed, with GotoBLAS cache blocking.**
+`jc (Nc) → pc (Kc) → pack B panel → ic (Mc) → pack A block → jr (nr) → ir (mr) → k`.
+Inside the k loop both operands are now unit-stride streams. Before, each k
+read one B row `ldb` elements away from the last, which is why the old
+kernels fell apart at N ≥ 2048. Partial C sums across `pc` blocks are
+carried by loading C into ZA (`svld1_hor_za32/64`) before the k loop.
+The block sizes (`kSmeMc=128`, `kSmeKc=1024`, `kSmeNc=4096`) came from a
+sweep on M4 Max. Large Kc and Nc won because they amortise both the C
+reloads and the A repacking. On M4 the SME unit is shared by a P-core
+cluster and reads from L2, so blocks are sized for L2, not L1.
+
+**3. Packing outside streaming mode.** Scalar and NEON code is slow in
+streaming mode, so packing runs in the ordinary (non-streaming) driver. A
+is transposed into column strips with NEON 4×4 (f32) / 2×2 (f64)
+in-register transposes, which doubled packing bandwidth over a scalar loop
+(12 → 26 GB/s). Only the macro-kernel runs streaming: one
+`SMSTART`/`SMSTOP` per Mc×Nc×Kc block. `svcntsw()`/`svcntsd()` compile to
+`RDSVL`, an SME instruction that is legal outside streaming mode, so the
+driver can size buffers with them.
+
+**4. SME2 multi-vector loads.** `svld1_x2` fetches two vectors in one
+`LD1W {z0.s-z1.s}` / `LD1D {z0.d-z1.d}`. The f32 inner loop is 2 loads +
+4 FMOPAs; f64 is 3 loads + 8 FMOPAs. SME2 is required: `HPC_HAS_SME` checks
+`__ARM_FEATURE_SME2` as well as `__ARM_FEATURE_SME`.
+
+**One template for both precisions.** `macro_kernel<T>` covers f32 and
+f64. The only shape difference is `kCols<T>` (2 or 4 tile columns); one
+`if constexpr` adds f64's extra four FMOPAs. Small `__arm_inout("za")`
+helpers (`mopa`, `move_tile`, `move_column`, `move_c`) hide the
+`za32`/`za64` intrinsic split. A 2×2 layout for f64 as well (4 of 8 tiles)
+would remove even that branch, but measured 9% slower at N=4096.
+
+Edges: packing zero-pads partial strips, so FMOPAs always run with an
+all-true predicate. Only the C transfers into and out of ZA are predicated.
+
+**Pitfall: every streaming helper needs a ZA attribute.** A
+`__arm_streaming` helper without `__arm_preserves("za")` /
+`__arm_inout("za")` is "private-ZA". Clang refuses to inline it into a
+ZA-owning caller and instead wraps every call in a lazy ZA save
+(`TPIDR2_EL0` + `smstart za`). With the load helper in the k loop, that
+cut throughput from ~1,290 to ~270 GFLOP/s f32.
+
+**Measured (single core, M4 Max):** 1,450 GFLOP/s f32 / 410 GFLOP/s f64 at
+N=1024 (84–88% of single-threaded Accelerate f32 and on par in f64 for
+N ≥ 512), holding 1,345 / 404 at N=4096. Comparison against Accelerate,
+and KleidiAI:
+[docs/benchmarks.md § Matrix engines, single core](../../docs/benchmarks.md#matrix-engines-single-core).
 
 ### Hardware availability
 
 Apple M4 / M4 Pro / M4 Max (SME2, 512-bit SVL) is, as of this writing,
 essentially the only shipping SME2 hardware widely available to individual
 developers. Not on Apple M1/M2/M3, AWS Graviton3/4, Fujitsu A64FX, or
-x86 — there `gemm_sme_*` is declared `= delete` (`HPC_HAS_SME == 0`).
+x86 — there `gemm_sme` is declared `= delete` (`HPC_HAS_SME == 0`).
 
 ---
 
@@ -951,7 +994,7 @@ N=64 to ~3.3 TFLOP/s at N≥1024 (see README.md): more cores coming online
 as the problem grows large enough to amortise their coordination
 overhead, not (only) improving cache behaviour. Treat these numbers as
 "the fastest way to multiply matrices on this machine" rather than an
-apples-to-apples comparison against the single-threaded `gemm_sme_*`,
+apples-to-apples comparison against the single-threaded `gemm_sme`,
 `gemm_avx512_*`, or `gemm_neon_*` results elsewhere in this document.
 
 ### Hardware / platform availability

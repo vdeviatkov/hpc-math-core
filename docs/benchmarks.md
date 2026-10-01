@@ -76,20 +76,36 @@ use CPU time instead, which is unaffected.
 
 SME computes GEMM with a fundamentally different primitive than every other CPU kernel above: instead of per-lane FMA, a single `FMOPA` instruction accumulates a whole SVL×SVL **outer product** into a 2-D hardware accumulator (ZA), the same class of operation as NVIDIA Tensor Cores (`gemm_cuda_wmma`) and Apple's own AMX coprocessor (below) — see [src/gemm/README.md](../src/gemm/README.md#algorithm-10--arm-sme2-scalable-matrix-extension) for the full architectural writeup, including the two real hardware/toolchain issues found while building this (gather-loads are illegal in SME streaming mode; combining `-march=native` with `-mcpu=apple-m4` silently disables SME).
 
+One kernel, `gemm_sme`: A and B packed GotoBLAS-style, packing done outside streaming mode, all ZA tiles in use (2×2 za32 tiles for f32, a 32×32 C block; 2×4 za64 tiles for f64, a 16×32 block), and SME2 multi-vector loads. It replaced three single-tile kernels (`gemm_sme_naive`/`_reordered`/`_blocked`, peak 386 G/s f32 / 116 G/s f64). The replacement and its four changes are described in [src/gemm/README.md](../src/gemm/README.md#algorithm-10--arm-sme2-scalable-matrix-extension).
+
+> **Load Average during this run:** 10–16 on 16 cores. Treat ±5% as noise.
+
 | Kernel | N=64 | N=256 | N=512 | N=1024 | N=2048 | N=4096 |
 |---|---|---|---|---|---|---|
-| `gemm_sme_naive` f64 | 1.48 | 1.52 | 1.52 | 1.52 | — | — |
-| `gemm_sme_reordered` f64 | 54.08 | 100.80 | 112.46 | 112.57 | 39.17 | — |
-| `gemm_sme_blocked` f64 | 53.60 | 100.79 | 112.21 | **116.04** | 54.44 | — |
-| `gemm_sme_naive` f32 | 2.94 | 3.12 | 3.13 | 3.13 | — | — |
-| `gemm_sme_reordered` f32 | 65.77 | 222.58 | 317.60 | **385.56** | 236.08 | 129.19 |
-| `gemm_sme_blocked` f32 | 64.83 | 222.34 | 315.63 | 384.23 | **293.34** | **180.40** |
+| `gemm_sme` f64 | 84 | 315 | 397 | **410** | 407 | 404 |
+| `gemm_sme` f32 | 278 | 753 | 1,283 | **1,450** | 1,417 | 1,345 |
 
-- **386 GFLOP/s single-threaded f32** (`SmeReordered`, N=1024) is the highest single-threaded CPU throughput anywhere in this repo — roughly **1.8×** the AVX-512 f32 peak (219 G/s, AMD Zen 5 below) and **~4×** `gemm_neon_blocked` (97 G/s, same class of chip), despite SME running at a lower clock than either.
-- **`SmeNaive` is pinned at ~3 GFLOP/s, flat across N.** The same "SIMD width doesn't fix cache-hostile access" lesson every `*_naive` kernel here demonstrates, except the hostility is structural: SME's streaming mode forbids gather-loads entirely (Clang rejects `svld1_gather_index` with "builtin can only be called from a non-streaming function"), so the outer product's column vector must be assembled by a scalar loop on every k-iteration.
-- **`SmeReordered` fixes that by packing once per row-tile** — a single scalar pass over `A(i0..i0+16, :)` reused across every column-tile, instead of once per (row-tile, column-tile) pair. A 22–123× improvement depending on N, for identical arithmetic.
-- **`SmeBlocked` wins once the packed panel stops fitting cache.** At N=2048/4096 `SmeReordered`'s unbounded `SVL × K` buffer (128 KB / 256 KB) exceeds per-core L1 and the re-reads cost real throughput (236→129 G/s). Bounding the panel to a fixed K-tile (256 columns → 16 KB, comfortably L1-resident) and paying an extra C load/store per K-tile recovers most of it (293→180 G/s) — the same trade-off as `gemm_blocked` vs `gemm_reordered` at the start of the ladder, one abstraction level up.
-- **f64 peaks far lower than f32** (116 vs 386 G/s) because SVL is fixed in *bytes*: SVL=8 f64 vs 16 f32, so each f64 outer product covers a quarter of the elements (8×8 vs 16×16) per instruction.
+- **3.8× f32 / 3.5× f64 over the old single-tile kernels at N=1024**, and the old drop at large N is gone: 1,345 vs 180 G/s f32 at N=4096. The biggest single change was using all ZA tiles. With one tile, every FMOPA waits on the previous one's accumulator, so the loop ran at FMOPA latency.
+- **One compiler pitfall cost ~6× while building this.** A streaming helper function without a ZA attribute (`__arm_preserves("za")` / `__arm_inout("za")`) is "private-ZA". Clang won't inline it into a ZA-owning caller. Instead it emits a lazy ZA save (`TPIDR2` + `smstart za`) around every call, and that sat inside the k loop (270 vs 1,290 G/s).
+- **f64 is ~¼ of f32**, which matches the hardware: an f64 FMOPA covers 8×8 elements against 16×16 for f32.
+
+### Matrix engines, single core
+
+> **Command:** `VECLIB_MAXIMUM_THREADS=1 ./build/benchmarks/bench_gemm --benchmark_filter='Sme|AmxBlocked|KleidiAI'`
+
+Same machine and run as above. Every row uses one core, so this is the like-for-like comparison. Accelerate was limited to one thread with `VECLIB_MAXIMUM_THREADS=1`; KleidiAI is always single-threaded.
+
+| Kernel | N=64 | N=256 | N=512 | N=1024 | N=2048 | N=4096 |
+|---|---|---|---|---|---|---|
+| `gemm_sme` f64 | 84 | 315 | 397 | 410 | 407 | 404 |
+| Accelerate f64 | 326 | 460 | 421 | **434** | 394 | 396 |
+| `gemm_sme` f32 | 278 | 753 | 1,283 | 1,450 | 1,417 | 1,345 |
+| Accelerate f32 | 795 | 1,705 | **1,719** | 1,649 | 1,687 | 1,590 |
+| KleidiAI v1.31 f32 | 327 | 1,060 | 1,511 | 1,643 | 1,408 | 1,023 |
+
+- **f64: `gemm_sme` is within ~6% of Accelerate from N=512 up**, and ahead at N=2048–4096. Those gaps are close to the noise level of this run. Below N=512 Accelerate is far ahead (4× at N=64), because `gemm_sme` pays fixed per-call costs: allocating and packing A and B, plus a streaming-mode switch per block.
+- **f32: `gemm_sme` reaches 84–88% of Accelerate for N ≥ 1024.** It ties KleidiAI at N=2048 and beats it at N=4096 (1,345 vs 1,023). KleidiAI uses the same 2×2-tile micro-kernel but has no cache blocking, so it drops at large N. The remaining gap to Accelerate is in the micro-kernel itself.
+- **With all cores** (default threading, wall-clock time): Accelerate 3,124 G/s f32 / 785 G/s f64 at N=4096. Accelerate roughly doubles because M4 Max has two performance clusters, each with its own SME unit.
 
 ### Apple AMX (via Accelerate.framework)
 
@@ -106,7 +122,7 @@ This is Apple's own AMX coprocessor, reached through Accelerate.framework's BLAS
 | `gemm_amx_reordered` f32 | 799.46 | 1,727 | 2,923 | 3,261 | 3,218 | 3,186 |
 | `gemm_amx_blocked` f32 | 797.61 | 1,724 | 2,906 | **3,296** | 3,202 | 3,156 |
 
-- **Up to 3.3 TFLOP/s f32 and 860 GFLOP/s f64** — by a wide margin the highest throughput in this repo, ~8.5× the hand-written `gemm_sme_reordered` f32 peak and ~7.4× `gemm_sme_blocked`'s f64 peak. Not a fair fight: Accelerate is Apple's own vendor-tuned BLAS and, unlike every hand-written kernel here, is free to use every core. The jump from ~800 G/s at N=64 to ~3.3 T/s at N≥1024 is consistent with more threads coming online as the problem grows, not only better cache behaviour.
+- **Up to 3.3 TFLOP/s f32 and 860 GFLOP/s f64** — by a wide margin the highest throughput in this repo, ~2.3× / ~2.1× the single-threaded `gemm_sme`. Not a fair fight: Accelerate is Apple's own vendor-tuned BLAS and, unlike every hand-written kernel here, is free to use every core (single-core comparison: [§ Matrix engines, single core](#matrix-engines-single-core)). The jump from ~800 G/s at N=64 to ~3.3 T/s at N≥1024 is consistent with more threads coming online as the problem grows, not only better cache behaviour.
 - **All three variants produce near-identical numbers at every size** (3,281 / 3,261 / 3,296 G/s at N=1024 f32) — exactly as expected, since all three call the same `cblas_sgemm`/`cblas_dgemm` wrapper (see [src/gemm/amx.hpp](../src/gemm/amx.hpp)). The ≤1% spread is measurement noise; Accelerate exposes no staging knob for the naive/reordered/blocked progression to act on.
 - **The f32/f64 ratio is ~3.8×, not the ~2× lane-count ratio seen elsewhere** (NEON 2.7×, AVX-512 ~2×) — consistent with Accelerate exploiting a wider or more specialised f32 path beyond simple lane doubling, though Apple does not document this and it cannot be confirmed without disassembly.
 - **If the question is "what is the fastest way to multiply matrices on this Mac", this is the answer** — call `cblas_sgemm`/`cblas_dgemm` directly. The value of the rest of this repository is the pedagogy of reaching a meaningful fraction of that ceiling by hand, one optimisation at a time.
@@ -193,7 +209,7 @@ The register tile holds ~95–97 GFLOP/s from N=64 through N=1024. The auto-vect
 | `gemm_blocked` | 27.21 | 85.85 | 3.2× |
 | `gemm_neon_blocked` | 36.30 | 97.03 | 2.7× |
 | `gemm_neon_blocked_prefetch` (D=2) | 33.77 | 98.26 | 2.9× |
-| `gemm_sme_reordered` | 112.57 | **385.56** | 3.4× |
+| `gemm_sme` | 410 | **1,450** | 3.5× |
 | `gemm_amx_blocked` (Accelerate) | **860.28** | **3,295.78** | 3.8× |
 
 ---

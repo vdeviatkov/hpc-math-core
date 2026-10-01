@@ -14,7 +14,7 @@
  * All floating-point comparisons use EXPECT_NEAR with an epsilon that
  * accounts for double-precision rounding in the accumulation.
  *
- * ISA families (AVX2, AVX-512, NEON, SVE, SME, AMX) are compiled only where
+ * ISA / library families (AVX2, AVX-512, NEON, SVE, SME, AMX, KleidiAI) are compiled only where
  * the ISA is available (HPC_HAS_* from hpc/isa.hpp) — their kernels are
  * declared `= delete` elsewhere, so there is nothing to test and no
  * fallback that could pass in their place. The test count reported on a
@@ -23,6 +23,7 @@
 
 #include "gemm/amx.hpp"
 #include "gemm/blocked.hpp"
+#include "gemm/kleidiai.hpp"
 #include "gemm/naive.hpp"
 #include "gemm/neon.hpp"
 #include "gemm/reordered.hpp"
@@ -36,6 +37,7 @@
 #include <cmath>
 #include <cstddef>
 #include <random>
+#include <string>
 
 #include "gemm/avx2.hpp"
 #include "gemm/avx512.hpp"
@@ -1317,242 +1319,133 @@ INSTANTIATE_TEST_SUITE_P(Sizes, GemmSveBlockedCrossValidation,
 #if HPC_HAS_SME
 
 // ===========================================================================
-// 19. SME Naive  (single ZA tile, A-column re-gathered via scalar loop
-//     on every k — see gemm/sme.hpp for why gather-load intrinsics cannot
-//     be used in SME streaming mode)
+// 19. SME  (packed A+B, GotoBLAS cache blocking, all ZA tiles: 2×2 za32 for
+//     f32, 2×4 za64 for f64 — see gemm/sme.hpp)
 // ===========================================================================
 
-TEST(GemmSmeNaive, KnownResult2x2) {
-    MatrixD A(2, 2), B(2, 2), C(2, 2);
-    A(0, 0) = 1; A(0, 1) = 2; A(1, 0) = 3; A(1, 1) = 4;
-    B(0, 0) = 5; B(0, 1) = 6; B(1, 0) = 7; B(1, 1) = 8;
-    hpc::gemm::gemm_sme_naive(A, B, C);
-    EXPECT_NEAR(C(0, 0), 19.0, kEpsD); EXPECT_NEAR(C(0, 1), 22.0, kEpsD);
-    EXPECT_NEAR(C(1, 0), 43.0, kEpsD); EXPECT_NEAR(C(1, 1), 50.0, kEpsD);
-}
-
-TEST(GemmSmeNaive, FloatKnownResult2x2) {
-    hpc::MatrixF A(2, 2), B(2, 2), C(2, 2);
-    A(0, 0) = 1.f; A(0, 1) = 2.f; A(1, 0) = 3.f; A(1, 1) = 4.f;
-    B(0, 0) = 5.f; B(0, 1) = 6.f; B(1, 0) = 7.f; B(1, 1) = 8.f;
-    hpc::gemm::gemm_sme_naive(A, B, C);
-    EXPECT_NEAR(C(0, 0), 19.f, kEpsF); EXPECT_NEAR(C(0, 1), 22.f, kEpsF);
-    EXPECT_NEAR(C(1, 0), 43.f, kEpsF); EXPECT_NEAR(C(1, 1), 50.f, kEpsF);
-}
-
-class GemmSmeNaiveCrossValidation : public ::testing::TestWithParam<std::size_t> {};
-
-TEST_P(GemmSmeNaiveCrossValidation, MatchesNaiveDouble) {
-    const std::size_t N = GetParam();
-    MatrixD A(N, N), B(N, N), C_ref(N, N), C_sme(N, N);
-    fill_random(A, 801); fill_random(B, 802);
+/// gemm_sme vs gemm_naive on an M×K·K×N problem. C is pre-filled with junk
+/// to prove the kernel overwrites (rather than accumulates into) C.
+template <typename T>
+static void expect_sme_matches_naive(std::size_t M, std::size_t K, std::size_t N, unsigned seed) {
+    hpc::Matrix<T> A(M, K), B(K, N), C_ref(M, N), C_sme(M, N);
+    fill_random(A, seed, T{-1}, T{1});
+    fill_random(B, seed + 1, T{-1}, T{1});
+    C_sme.fill(T{123});
     hpc::gemm::gemm_naive(A, B, C_ref);
-    hpc::gemm::gemm_sme_naive(A, B, C_sme);
-    for (std::size_t i = 0; i < N; ++i)
+    hpc::gemm::gemm_sme(A, B, C_sme);
+    const T tol = sizeof(T) == 4 ? T(1e-4) : T(1e-10);
+    for (std::size_t i = 0; i < M; ++i)
         for (std::size_t j = 0; j < N; ++j)
-            EXPECT_NEAR(C_sme(i, j), C_ref(i, j), 1e-8 * (1.0 + std::abs(C_ref(i, j))))
-                << "f64 N=" << N << " (" << i << "," << j << ")";
+            ASSERT_NEAR(C_sme(i, j), C_ref(i, j), tol * (T{1} + std::abs(C_ref(i, j))))
+                << (sizeof(T) == 4 ? "f32 " : "f64 ") << M << "x" << K << "x" << N << " (" << i
+                << "," << j << ")";
 }
 
-TEST_P(GemmSmeNaiveCrossValidation, MatchesNaiveFloat) {
-    const std::size_t N = GetParam();
-    hpc::MatrixF A(N, N), B(N, N), C_ref(N, N), C_sme(N, N);
-    fill_random(A, 801); fill_random(B, 802);
-    hpc::gemm::gemm_naive(A, B, C_ref);
-    hpc::gemm::gemm_sme_naive(A, B, C_sme);
-    for (std::size_t i = 0; i < N; ++i)
-        for (std::size_t j = 0; j < N; ++j)
-            EXPECT_NEAR(C_sme(i, j), C_ref(i, j), 1e-4f * (1.0f + std::abs(C_ref(i, j))))
-                << "f32 N=" << N << " (" << i << "," << j << ")";
-}
-
-// Sizes deliberately span both sides of every known SME streaming vector
-// length (SVL=16 f32 / SVL=8 f64 on Apple M4 Max): N=1,3,7 exercise a
-// single, partially-predicated ZA tile; N=15/16/17 straddle exactly one SVL
-// boundary; N=63/65 straddle four SVL boundaries with a ragged remainder.
-INSTANTIATE_TEST_SUITE_P(Sizes, GemmSmeNaiveCrossValidation,
-                         ::testing::Values(std::size_t{1},  std::size_t{3},
-                                           std::size_t{7},  std::size_t{8},
-                                           std::size_t{15}, std::size_t{16},
-                                           std::size_t{17}, std::size_t{63},
-                                           std::size_t{65}, std::size_t{100}));
-
-// ===========================================================================
-// 20. SME Reordered  (A(i0..i0+SVL, :) panel packed once per i0-tile,
-//     reused contiguously across every j0-tile — removes the O(N/SVL)
-//     redundant gathering that gemm_sme_naive pays)
-// ===========================================================================
-
-TEST(GemmSmeReordered, KnownResult2x2) {
-    MatrixD A(2, 2), B(2, 2), C(2, 2);
-    A(0, 0) = 1; A(0, 1) = 2; A(1, 0) = 3; A(1, 1) = 4;
-    B(0, 0) = 5; B(0, 1) = 6; B(1, 0) = 7; B(1, 1) = 8;
-    hpc::gemm::gemm_sme_reordered(A, B, C);
-    EXPECT_NEAR(C(0, 0), 19.0, kEpsD); EXPECT_NEAR(C(0, 1), 22.0, kEpsD);
-    EXPECT_NEAR(C(1, 0), 43.0, kEpsD); EXPECT_NEAR(C(1, 1), 50.0, kEpsD);
-}
-
-TEST(GemmSmeReordered, FloatKnownResult2x2) {
-    hpc::MatrixF A(2, 2), B(2, 2), C(2, 2);
-    A(0, 0) = 1.f; A(0, 1) = 2.f; A(1, 0) = 3.f; A(1, 1) = 4.f;
-    B(0, 0) = 5.f; B(0, 1) = 6.f; B(1, 0) = 7.f; B(1, 1) = 8.f;
-    hpc::gemm::gemm_sme_reordered(A, B, C);
-    EXPECT_NEAR(C(0, 0), 19.f, kEpsF); EXPECT_NEAR(C(0, 1), 22.f, kEpsF);
-    EXPECT_NEAR(C(1, 0), 43.f, kEpsF); EXPECT_NEAR(C(1, 1), 50.f, kEpsF);
-}
-
-TEST(GemmSmeReordered, RectangularMatrices) {
-    MatrixD A(3, 5), B(5, 2), C_ref(3, 2), C_sme(3, 2);
-    fill_random(A, 803); fill_random(B, 804);
-    hpc::gemm::gemm_naive(A, B, C_ref);
-    hpc::gemm::gemm_sme_reordered(A, B, C_sme);
-    for (std::size_t i = 0; i < 3; ++i)
-        for (std::size_t j = 0; j < 2; ++j)
-            EXPECT_NEAR(C_sme(i, j), C_ref(i, j), kEpsD) << "(" << i << "," << j << ")";
-}
-
-class GemmSmeReorderedCrossValidation : public ::testing::TestWithParam<std::size_t> {};
-
-TEST_P(GemmSmeReorderedCrossValidation, MatchesNaiveDouble) {
-    const std::size_t N = GetParam();
-    MatrixD A(N, N), B(N, N), C_ref(N, N), C_sme(N, N);
-    fill_random(A, 901); fill_random(B, 902);
-    hpc::gemm::gemm_naive(A, B, C_ref);
-    hpc::gemm::gemm_sme_reordered(A, B, C_sme);
-    for (std::size_t i = 0; i < N; ++i)
-        for (std::size_t j = 0; j < N; ++j)
-            EXPECT_NEAR(C_sme(i, j), C_ref(i, j), 1e-8 * (1.0 + std::abs(C_ref(i, j))))
-                << "f64 N=" << N << " (" << i << "," << j << ")";
-}
-
-TEST_P(GemmSmeReorderedCrossValidation, MatchesNaiveFloat) {
-    const std::size_t N = GetParam();
-    hpc::MatrixF A(N, N), B(N, N), C_ref(N, N), C_sme(N, N);
-    fill_random(A, 901); fill_random(B, 902);
-    hpc::gemm::gemm_naive(A, B, C_ref);
-    hpc::gemm::gemm_sme_reordered(A, B, C_sme);
-    for (std::size_t i = 0; i < N; ++i)
-        for (std::size_t j = 0; j < N; ++j)
-            EXPECT_NEAR(C_sme(i, j), C_ref(i, j), 1e-4f * (1.0f + std::abs(C_ref(i, j))))
-                << "f32 N=" << N << " (" << i << "," << j << ")";
-}
-
-INSTANTIATE_TEST_SUITE_P(Sizes, GemmSmeReorderedCrossValidation,
-                         ::testing::Values(std::size_t{1},  std::size_t{3},
-                                           std::size_t{7},  std::size_t{8},
-                                           std::size_t{15}, std::size_t{16},
-                                           std::size_t{17}, std::size_t{63},
-                                           std::size_t{65}, std::size_t{129}));
-
-// ===========================================================================
-// 21. SME Blocked  (K-tiled panel pack; partial C sums reloaded into ZA
-//     across k-tiles via svld1_hor_za — bounds the packed-A working set
-//     to SVL x kSmeTileK regardless of K)
-// ===========================================================================
-
-TEST(GemmSmeBlocked, MultiplyByIdentityGivesOriginal) {
-    constexpr std::size_t N = 32;
+TEST(GemmSme, MultiplyByIdentityGivesOriginal) {
+    constexpr std::size_t N = 40;
     MatrixD A(N, N), I = make_identity(N), C(N, N);
     fill_random(A, 1);
-    hpc::gemm::gemm_sme_blocked(A, I, C);
+    hpc::gemm::gemm_sme(A, I, C);
     for (std::size_t i = 0; i < N; ++i)
         for (std::size_t j = 0; j < N; ++j)
             EXPECT_NEAR(C(i, j), A(i, j), kEpsD) << "(" << i << "," << j << ")";
 }
 
-TEST(GemmSmeBlocked, MultiplyByZeroGivesZero) {
+TEST(GemmSme, MultiplyByZeroGivesZero) {
     constexpr std::size_t N = 16;
     MatrixD A(N, N), Z(N, N), C(N, N);
     fill_random(A, 2);
-    hpc::gemm::gemm_sme_blocked(A, Z, C);
+    C.fill(7.0);
+    hpc::gemm::gemm_sme(A, Z, C);
     for (std::size_t i = 0; i < N; ++i)
         for (std::size_t j = 0; j < N; ++j)
             EXPECT_DOUBLE_EQ(C(i, j), 0.0);
 }
 
-TEST(GemmSmeBlocked, KnownResult2x2) {
+TEST(GemmSme, KnownResult2x2) {
     MatrixD A(2, 2), B(2, 2), C(2, 2);
     A(0, 0) = 1; A(0, 1) = 2; A(1, 0) = 3; A(1, 1) = 4;
     B(0, 0) = 5; B(0, 1) = 6; B(1, 0) = 7; B(1, 1) = 8;
-    hpc::gemm::gemm_sme_blocked(A, B, C);
+    hpc::gemm::gemm_sme(A, B, C);
     EXPECT_NEAR(C(0, 0), 19.0, kEpsD); EXPECT_NEAR(C(0, 1), 22.0, kEpsD);
     EXPECT_NEAR(C(1, 0), 43.0, kEpsD); EXPECT_NEAR(C(1, 1), 50.0, kEpsD);
 }
 
-TEST(GemmSmeBlocked, FloatKnownResult2x2) {
+TEST(GemmSme, FloatKnownResult2x2) {
     hpc::MatrixF A(2, 2), B(2, 2), C(2, 2);
     A(0, 0) = 1.f; A(0, 1) = 2.f; A(1, 0) = 3.f; A(1, 1) = 4.f;
     B(0, 0) = 5.f; B(0, 1) = 6.f; B(1, 0) = 7.f; B(1, 1) = 8.f;
-    hpc::gemm::gemm_sme_blocked(A, B, C);
+    hpc::gemm::gemm_sme(A, B, C);
     EXPECT_NEAR(C(0, 0), 19.f, kEpsF); EXPECT_NEAR(C(0, 1), 22.f, kEpsF);
     EXPECT_NEAR(C(1, 0), 43.f, kEpsF); EXPECT_NEAR(C(1, 1), 50.f, kEpsF);
 }
 
-TEST(GemmSmeBlocked, RectangularMatrices) {
-    MatrixD A(3, 4), B(4, 2), C(3, 2);
-    fill_random(A, 7); fill_random(B, 8);
-    hpc::gemm::gemm_sme_blocked(A, B, C);
-    double expected = 0.0;
-    for (std::size_t k = 0; k < 4; ++k) expected += A(0, k) * B(k, 0);
-    EXPECT_NEAR(C(0, 0), expected, kEpsD);
+TEST(GemmSme, EmptyInnerDimensionZeroesC) {
+    MatrixD A(3, 0), B(0, 4), C(3, 4);
+    C.fill(5.0);
+    hpc::gemm::gemm_sme(A, B, C);
+    for (std::size_t i = 0; i < 3; ++i)
+        for (std::size_t j = 0; j < 4; ++j)
+            EXPECT_DOUBLE_EQ(C(i, j), 0.0);
 }
 
-TEST(GemmSmeBlocked, KTileBoundaryIsExact) {
-    // Exercises the k_blk > 0 branch of gemm_sme_blocked, which reloads a
-    // partial C sum into ZA via svld1_hor_za instead of starting from zero.
-    // K = 2*kSmeTileK + remainder forces at least 3 k-tiles.
-    const std::size_t N = 40;
-    const std::size_t K = 2 * hpc::gemm::kSmeTileK + 17;
-    MatrixD A(N, K), B(K, N), C_ref(N, N), C_sme(N, N);
-    fill_random(A, 805); fill_random(B, 806);
-    hpc::gemm::gemm_naive(A, B, C_ref);
-    hpc::gemm::gemm_sme_blocked(A, B, C_sme);
-    for (std::size_t i = 0; i < N; ++i)
-        for (std::size_t j = 0; j < N; ++j)
-            EXPECT_NEAR(C_sme(i, j), C_ref(i, j), 1e-6 * (1.0 + std::abs(C_ref(i, j))))
-                << "(" << i << "," << j << ")";
+// Rectangular shapes chosen to hit every edge path: partial micro-tile rows
+// (M not a multiple of 2·SVL) and only the top row of tiles in use (M ≤ SVL),
+// partial/empty right-hand tiles (N not a multiple of 2·SVL / 4·SVL), K
+// below the NEON transpose width, and K/M/N crossing the kSmeKc / kSmeMc /
+// kSmeNc block boundaries — the K crossing exercises the reload of partial C
+// sums into ZA.
+struct SmeShape {
+    std::size_t M, K, N;
+};
+
+class GemmSmeShapes : public ::testing::TestWithParam<SmeShape> {};
+
+TEST_P(GemmSmeShapes, MatchesNaiveFloat) {
+    const auto [M, K, N] = GetParam();
+    expect_sme_matches_naive<float>(M, K, N, 1201);
 }
 
-class GemmSmeBlockedCrossValidation : public ::testing::TestWithParam<std::size_t> {};
-
-TEST_P(GemmSmeBlockedCrossValidation, MatchesNaiveDouble) {
-    const std::size_t N = GetParam();
-    MatrixD A(N, N), B(N, N), C_ref(N, N), C_sme(N, N);
-    fill_random(A, 1001); fill_random(B, 1002);
-    hpc::gemm::gemm_naive(A, B, C_ref);
-    hpc::gemm::gemm_sme_blocked(A, B, C_sme);
-    for (std::size_t i = 0; i < N; ++i)
-        for (std::size_t j = 0; j < N; ++j)
-            EXPECT_NEAR(C_sme(i, j), C_ref(i, j), 1e-8 * (1.0 + std::abs(C_ref(i, j))))
-                << "f64 N=" << N << " (" << i << "," << j << ")";
+TEST_P(GemmSmeShapes, MatchesNaiveDouble) {
+    const auto [M, K, N] = GetParam();
+    expect_sme_matches_naive<double>(M, K, N, 1203);
 }
 
-TEST_P(GemmSmeBlockedCrossValidation, MatchesNaiveFloat) {
-    const std::size_t N = GetParam();
-    hpc::MatrixF A(N, N), B(N, N), C_ref(N, N), C_sme(N, N);
-    fill_random(A, 1001); fill_random(B, 1002);
-    hpc::gemm::gemm_naive(A, B, C_ref);
-    hpc::gemm::gemm_sme_blocked(A, B, C_sme);
-    for (std::size_t i = 0; i < N; ++i)
-        for (std::size_t j = 0; j < N; ++j)
-            EXPECT_NEAR(C_sme(i, j), C_ref(i, j), 1e-4f * (1.0f + std::abs(C_ref(i, j))))
-                << "f32 N=" << N << " (" << i << "," << j << ")";
+INSTANTIATE_TEST_SUITE_P(
+    Shapes, GemmSmeShapes,
+    ::testing::Values(SmeShape{1, 1, 1}, SmeShape{3, 5, 2}, SmeShape{7, 3, 9},
+                      SmeShape{8, 8, 8}, SmeShape{15, 16, 17}, SmeShape{16, 16, 16},
+                      SmeShape{17, 33, 15}, SmeShape{33, 1, 65}, SmeShape{32, 64, 32},
+                      SmeShape{63, 65, 64}, SmeShape{129, 7, 33}, SmeShape{257, 64, 31},
+                      SmeShape{40, hpc::gemm::kSmeKc + 3, 50},
+                      SmeShape{20, 2 * hpc::gemm::kSmeKc + 17, 36},
+                      SmeShape{hpc::gemm::kSmeMc + 5, 70, 40},
+                      SmeShape{9, 11, hpc::gemm::kSmeNc + 7}),
+    [](const ::testing::TestParamInfo<SmeShape>& info) {
+        return std::to_string(info.param.M) + "x" + std::to_string(info.param.K) + "x" +
+               std::to_string(info.param.N);
+    });
+
+class GemmSmeCrossValidation : public ::testing::TestWithParam<std::size_t> {};
+
+TEST_P(GemmSmeCrossValidation, MatchesNaiveFloat) {
+    expect_sme_matches_naive<float>(GetParam(), GetParam(), GetParam(), 1001);
 }
 
-INSTANTIATE_TEST_SUITE_P(Sizes, GemmSmeBlockedCrossValidation,
-                         ::testing::Values(std::size_t{1},  std::size_t{3},
-                                           std::size_t{7},  std::size_t{8},
-                                           std::size_t{15}, std::size_t{16},
-                                           std::size_t{17}, std::size_t{63},
-                                           std::size_t{65}, std::size_t{129},
-                                           std::size_t{256}));
+TEST_P(GemmSmeCrossValidation, MatchesNaiveDouble) {
+    expect_sme_matches_naive<double>(GetParam(), GetParam(), GetParam(), 1001);
+}
+
+INSTANTIATE_TEST_SUITE_P(Sizes, GemmSmeCrossValidation,
+                         ::testing::Values(std::size_t{31}, std::size_t{64}, std::size_t{100},
+                                           std::size_t{128}, std::size_t{256}));
 
 #endif  // HPC_HAS_SME
 
 #if HPC_HAS_AMX
 
 // ===========================================================================
-// 22. AMX Naive / Reordered / Blocked (Apple AMX, via Accelerate.framework)
+// 20. AMX Naive / Reordered / Blocked (Apple AMX, via Accelerate.framework)
 //
 // VERIFIED on Apple M4 Max. gemm_amx_naive/reordered/blocked are
 // intentionally identical thin wrappers around Accelerate's cblas_sgemm /
@@ -1699,3 +1592,39 @@ INSTANTIATE_TEST_SUITE_P(Sizes, GemmAmxBlockedCrossValidation,
                                            std::size_t{128}, std::size_t{256}));
 
 #endif  // HPC_HAS_AMX
+
+#if HPC_HAS_KLEIDIAI
+
+// ===========================================================================
+// 21. KleidiAI (reference, SME2 f32 only — src/gemm/kleidiai.hpp)
+// ===========================================================================
+
+TEST(GemmKleidiAI, FloatKnownResult2x2) {
+    MatrixF A(2, 2), B(2, 2), C(2, 2);
+    A(0, 0) = 1.f; A(0, 1) = 2.f; A(1, 0) = 3.f; A(1, 1) = 4.f;
+    B(0, 0) = 5.f; B(0, 1) = 6.f; B(1, 0) = 7.f; B(1, 1) = 8.f;
+    hpc::gemm::gemm_kleidiai(A, B, C);
+    EXPECT_NEAR(C(0, 0), 19.f, kEpsF); EXPECT_NEAR(C(0, 1), 22.f, kEpsF);
+    EXPECT_NEAR(C(1, 0), 43.f, kEpsF); EXPECT_NEAR(C(1, 1), 50.f, kEpsF);
+}
+
+class GemmKleidiAICrossValidation : public ::testing::TestWithParam<std::size_t> {};
+
+TEST_P(GemmKleidiAICrossValidation, MatchesNaiveFloat) {
+    const std::size_t N = GetParam();
+    MatrixF A(N, N + 3), B(N + 3, N + 1), C_ref(N, N + 1), C_kai(N, N + 1);
+    fill_random(A, 1401, -1.f, 1.f); fill_random(B, 1402, -1.f, 1.f);
+    C_kai.fill(123.f);
+    hpc::gemm::gemm_naive(A, B, C_ref);
+    hpc::gemm::gemm_kleidiai(A, B, C_kai);
+    for (std::size_t i = 0; i < C_ref.rows(); ++i)
+        for (std::size_t j = 0; j < C_ref.cols(); ++j)
+            EXPECT_NEAR(C_kai(i, j), C_ref(i, j), 1e-4f * (1.0f + std::abs(C_ref(i, j))))
+                << "f32 N=" << N << " (" << i << "," << j << ")";
+}
+
+INSTANTIATE_TEST_SUITE_P(Sizes, GemmKleidiAICrossValidation,
+                         ::testing::Values(std::size_t{1}, std::size_t{15}, std::size_t{33},
+                                           std::size_t{64}, std::size_t{129}));
+
+#endif  // HPC_HAS_KLEIDIAI

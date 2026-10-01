@@ -28,9 +28,13 @@
  *   AVX-512  __AVX512F__         GCC/Clang -mavx512f, MSVC /arch:AVX512 (HPC_ENABLE_AVX512=ON)
  *   NEON     __ARM_NEON          any AArch64 target
  *   SVE      __ARM_FEATURE_SVE   -march=armv8-a+sve or a -mcpu= that implies it
- *   SME      __ARM_FEATURE_SME   HPC_ENABLE_SME=ON and the configure-time probe passed
+ *   SME      __ARM_FEATURE_SME   HPC_ENABLE_SME=ON and the configure-time probe passed,
+ *            && __ARM_FEATURE_SME2   gemm_sme uses SME2 multi-vector loads (every SME CPU this
+ *                                repo targets, e.g. Apple M4, has SME2)
  *   AMX      HPC_ACCELERATE_AVAILABLE (CMake: HPC_ENABLE_AMX=ON and Accelerate.framework found)
  *            && __APPLE__        the Apple AMX coprocessor is reached only through Accelerate
+ *   KleidiAI HPC_KLEIDIAI_AVAILABLE (CMake: HPC_ENABLE_KLEIDIAI=ON, fetched and built)
+ *            && __ARM_FEATURE_SME2   its f32 matmul micro-kernels are SME2 assembly
  */
 
 #if defined(__AVX2__)
@@ -57,7 +61,7 @@
     #define HPC_HAS_SVE 0
 #endif
 
-#if defined(__ARM_FEATURE_SME)
+#if defined(__ARM_FEATURE_SME) && defined(__ARM_FEATURE_SME2)
     #define HPC_HAS_SME 1
 #else
     #define HPC_HAS_SME 0
@@ -69,6 +73,12 @@
     #define HPC_HAS_AMX 0
 #endif
 
+#if defined(HPC_KLEIDIAI_AVAILABLE) && defined(__ARM_FEATURE_SME2)
+    #define HPC_HAS_KLEIDIAI 1
+#else
+    #define HPC_HAS_KLEIDIAI 0
+#endif
+
 namespace hpc {
 
 /// Compile-time mirrors of the macros above, for `if constexpr` in templates.
@@ -78,5 +88,6 @@ inline constexpr bool kHaveNeon   = HPC_HAS_NEON != 0;
 inline constexpr bool kHaveSve    = HPC_HAS_SVE != 0;
 inline constexpr bool kHaveSme    = HPC_HAS_SME != 0;
 inline constexpr bool kHaveAmx    = HPC_HAS_AMX != 0;
+inline constexpr bool kHaveKleidiAI = HPC_HAS_KLEIDIAI != 0;
 
 }  // namespace hpc
