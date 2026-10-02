@@ -47,7 +47,8 @@
  *  1. Has the *exact same* outer tiled loop as the base kernel.
  *  2. Adds __builtin_prefetch before each micro-kernel call.
  *  3. Calls the *same* micro-kernel — no SIMD code duplication.
- *  4. Compiles to a no-op body (benchmark SKIPPED) on unsupported ISA.
+ *  4. Is declared `= delete` on an unsupported ISA, like its base kernel
+ *     (benchmarks report it as SKIPPED).
  */
 
 #include "gemm/avx2.hpp"

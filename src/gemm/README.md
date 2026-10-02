@@ -1,6 +1,6 @@
 # GEMM Kernel Implementations
 
-This directory contains all CPU GEMM implementations for the `hpc-math-core` benchmark suite.
+This directory contains every GEMM implementation in the `hpc-math-core` benchmark suite — the CPU kernels and the host interface to the CUDA kernels (`cuda.hpp`; kernels in `src/cuda/`).
 All kernels compute **C = A × B** where A is M×K, B is K×N, C is M×N (row-major, `float` or `double`).
 
 Looking for a quick refresher rather than the full derivation below? See
@@ -20,13 +20,13 @@ summary of every family's cache technique and key intrinsics side by side.
 | `avx512.hpp` | `gemm_avx512_naive` · `gemm_avx512_reordered` · `gemm_avx512_blocked` | `__AVX512F__` |
 | `neon.hpp` | `gemm_neon_naive` · `gemm_neon_reordered` · `gemm_neon_blocked` | `__ARM_NEON` |
 | `sve.hpp` | `gemm_sve_naive` · `gemm_sve_reordered` · `gemm_sve_blocked` | `__ARM_FEATURE_SVE` |
-| `sme.hpp` | `gemm_sme` (packed, cache-blocked, all ZA tiles, SME2 loads) — **verified, Apple M4 Max** | `__ARM_FEATURE_SME` (+ `-DHPC_ENABLE_SME=ON`) |
+| `sme.hpp` | `gemm_sme` (packed, cache-blocked, all ZA tiles, SME2 loads) — **verified, Apple M4 Max** | `__ARM_FEATURE_SME` + `__ARM_FEATURE_SME2` (+ `-DHPC_ENABLE_SME=ON`) |
 | `amx.hpp` | `gemm_amx_naive` · `gemm_amx_reordered` · `gemm_amx_blocked` — **verified, Apple M4 Max, via Accelerate.framework** | `HPC_HAS_AMX` (Apple + Accelerate.framework; on by default) |
 | `kleidiai.hpp` | `gemm_kleidiai` (f32 only) — reference, Arm KleidiAI SME2 `FMOPA` micro-kernel | `HPC_HAS_KLEIDIAI` (`HPC_ENABLE_KLEIDIAI=ON`, default when SME works; needs SME2) |
 | `prefetch.hpp` | `gemm_blocked_prefetch` · `gemm_avx2_blocked_prefetch` · `gemm_avx512_blocked_prefetch` · `gemm_neon_blocked_prefetch` · `gemm_sve_blocked_prefetch` | per ISA |
-| `cuda.hpp` | `gemm_cuda_naive` (L0) · `gemm_cuda_blocked` (L1) · `gemm_cuda_reg_tile` (L2) · `gemm_cuda_double_buf` (L3) · `gemm_cuda_wmma` (L4, fp32) · `gemm_cuda_vectorized` (L5) · `gemm_cuda_mma_ldmatrix` (L6, fp32) · `gemm_cuda_wmma_pipelined` (L7, fp32) · `gemm_cuda_cublas{,_tf32,_fp16}` (reference, not part of the ladder) — **all verified, RTX 5080 (Blackwell sm_120)** | `HPC_HAVE_CUDA` |
+| `cuda.hpp` | `gemm_cuda_naive` (L0) · `gemm_cuda_blocked` (L1) · `gemm_cuda_reg_tile` (L2) · `gemm_cuda_double_buf` (L3) · `gemm_cuda_wmma` (L4, fp32) · `gemm_cuda_vectorized` (L5) · `gemm_cuda_mma_ldmatrix` (L6, fp32) · `gemm_cuda_wmma_pipelined` (L7, fp32) · `gemm_cuda_cublas{,_tf32,_fp16}` (reference, not part of the ladder) — **all verified, RTX 5080 (Blackwell sm_120)** | runtime: `cuda_device_count() > 0` |
 
-The ISA guards are the `HPC_HAS_*` macros from `include/hpc/isa.hpp`, each always defined to 0 or 1.
+The compile-time guards are the `HPC_HAS_*` macros from `include/hpc/isa.hpp`, each always defined to 0 or 1; CUDA is checked at runtime (see below).
 
 ---
 
@@ -184,11 +184,11 @@ Gathers B column j via a stack buffer, FMAs with sequential A row load.
 ### `gemm_avx2_reordered` — i→k→j, SIMD on j-loop
 
 `_mm256_broadcast_ss/sd` broadcasts A scalar · `_mm256_loadu` sequential B/C ·
-`_mm256_fmadd_ps/pd` FMA. Scalar tail for `N % 8`.
+`_mm256_fmadd_ps/pd` FMA. Scalar tail for `N % 8` (f32) / `N % 4` (f64).
 
 ```
-f32 peak (Skylake):  8 FLOP/FMA × 2 ports = 16 FLOP/cycle ≈ 8× scalar
-f64 peak (Skylake):  4 FLOP/FMA × 2 ports =  8 FLOP/cycle ≈ 4× scalar
+f32 peak (Skylake):  8 lanes × 2 FLOP/FMA × 2 ports = 32 FLOP/cycle ≈ 8× scalar FMA
+f64 peak (Skylake):  4 lanes × 2 FLOP/FMA × 2 ports = 16 FLOP/cycle ≈ 4× scalar FMA
 ```
 
 ### `gemm_avx2_blocked` — tiled, 4×16 f32 / 4×8 f64 register tile
@@ -205,7 +205,7 @@ Keeps a 4-row × 2-vector C tile in YMM registers across the entire k-tile:
 YMM in use: 8 acc + 4 broadcast + 2 B = 14 of 16
 ```
 
-Falls back to `gemm_blocked` on non-AVX2 targets.
+Declared `= delete` on targets without AVX2 (see [ISA availability](#isa-availability--no-silent-fallback)).
 
 ---
 
@@ -223,7 +223,7 @@ Same three-kernel structure as AVX2, extended to 512-bit ZMM registers (`__AVX51
 | Key FMA | `_mm256_fmadd_ps` | `_mm512_fmadd_ps` |
 
 AVX-512 also gains 32 ZMM registers (vs 16 YMM) — more room for accumulators.
-Falls back to `gemm_avx2_blocked` on non-AVX-512 targets.
+Declared `= delete` on targets without AVX-512.
 
 ---
 
@@ -245,12 +245,13 @@ Manual gather into Q-register buffer. Cache-hostile — identical lesson to AVX2
 
 `vdupq_n` broadcast · `vld1q` sequential load · `vfmaq` FMA · `vst1q` store.
 
-### `gemm_neon_blocked` — tiled, 4-row × 2-vector register tile
+### `gemm_neon_blocked` — tiled, 4-row register tile
 
-C tile: 4 rows × 2 NEON vectors = **4×8 f32** or **4×4 f64** in Q-registers.
-On Apple Silicon this is the highest-throughput CPU kernel (no SVE available).
+C tile: 4 rows × 4 Q-registers = **4×16 f32**, or 4 rows × 2 Q-registers =
+**4×4 f64**. On Apple Silicon this is the fastest plain-FMA kernel (no SVE
+available); the matrix-engine paths (`gemm_sme`, Accelerate) are far faster.
 
-Falls back to `gemm_avx2_blocked` on non-NEON targets, then to scalar.
+Declared `= delete` on targets without NEON.
 
 ---
 
@@ -278,11 +279,16 @@ Fills a `std::vector<T>(vl)` buffer (scalar loop) then loads as SVE vector.
 j-loop step `= svcntw/d()` — automatically wider on higher-VL hardware.
 
 ```
-Expected vs NEON (same clock):
-  128-bit SVE (VL=4 f32):  ≈ 1× NEON
-  256-bit SVE (VL=8 f32):  ≈ 2× NEON  ← Graviton3
-  512-bit SVE (VL=16 f32): ≈ 4× NEON  ← A64FX (Fugaku)
+Lanes per vector vs NEON (theoretical width ratio, same clock):
+  128-bit SVE (VL=4 f32):  1× NEON
+  256-bit SVE (VL=8 f32):  2× NEON  ← Graviton3
+  512-bit SVE (VL=16 f32): 4× NEON  ← A64FX (Fugaku)
 ```
+
+Not measured (no SVE machine was available). On every measured family the
+explicit-SIMD reordered kernel runs about as fast as scalar `gemm_reordered`,
+which the compiler auto-vectorises, so the width ratio is unlikely to show up
+as speedup for this loop.
 
 ### `gemm_sve_blocked` — tiled, VLA register tile (4 rows × 2 SVE vectors)
 
@@ -295,7 +301,7 @@ Tile width `kJStep = 2 × svcntw/d()` scales automatically with VL:
 ```
 
 Predicates `pg0` / `pg1` handle the j-tail inside the micro-kernel — no scalar tail loop.
-Falls back to `gemm_neon_blocked` on non-SVE targets.
+Declared `= delete` on targets without SVE.
 
 **Available on:** Graviton3/4, Neoverse V1/V2, A64FX. **Not on** Apple Silicon (M-series).
 
@@ -303,17 +309,22 @@ Falls back to `gemm_neon_blocked` on non-SVE targets.
 
 ## Algorithm 8 — Software Prefetch (`prefetch.hpp`)
 
-Wraps each ISA family's blocked kernel with `__builtin_prefetch` hints at tunable
-distance `PfDist` elements ahead (template parameter, default = 8).
+Wraps each ISA family's blocked kernel with `__builtin_prefetch` hints. The
+distance `PfDist` (template parameter, default 4) counts micro-kernel rows
+ahead — single rows for the scalar kernel, `PfDist × kRegRows` rows for the
+SIMD kernels.
 
 Three streams per kernel:
-1. A rows ahead: `__builtin_prefetch(A + (i+PfDist)*lda + k_blk, 0, 1)`
-2. B k-rows ahead: `__builtin_prefetch(B + (k+PfDist)*ldb + j_blk, 0, 1)`
-3. C write rows ahead: `__builtin_prefetch(C + (i+PfDist)*ldc + j_blk, 1, 1)`
+1. **A** — the row `PfDist` ahead, at the current k-tile: read, locality 2 (L2)
+2. **B** — the start of the *next* k-tile, issued once at each k-tile boundary: read, locality 2 (L2)
+3. **C** — the row `PfDist` ahead, at the current j-tile: write, locality 3 (L1)
 
-Benchmarks sweep `PfDist ∈ {2, 4, 8, 16}` to find the optimal distance for each machine.
-On Apple M the hardware prefetcher is aggressive enough that explicit hints provide no
-consistent gain. Measurable improvement expected on Graviton3 and Intel Xeon.
+Benchmarks sweep `PfDist ∈ {2, 4, 8, 16}`. Measured, the hints are close to
+neutral: on Apple M4 Max the scalar kernel stays within ±1% and the NEON
+kernel gains at most a few percent (best at D=4); on AMD Zen 5 every family
+is within noise except a +4.5% outlier. Both hardware prefetchers already
+follow these streaming patterns — see
+[benchmarks.md § Prefetch distance sweep](../../docs/benchmarks.md#prefetch-distance-sweep).
 
 Five variants: `gemm_blocked_prefetch` · `gemm_avx2_blocked_prefetch` ·
 `gemm_avx512_blocked_prefetch` · `gemm_neon_blocked_prefetch` · `gemm_sve_blocked_prefetch`
@@ -342,7 +353,8 @@ sm_120, CUDA 13.2); measured throughput is in
 | ref | `gemm_cuda_cublas{,_tf32,_fp16}` | cuBLAS SGEMM/DGEMM, TF32, dense FP16 | 8,285 / 8,735 / — |
 
 ¹ End-to-end (`cudaMalloc` + H2D + kernel + D2H every call), RTX 5080,
-Linux. Compute-only, Level 7 reaches **100.5 TFLOP/s** at N=16384 against
+Linux. `gemm_cuda_wmma` was measured before its edge-tile store fix; it
+has run at ~6.0 TFLOP/s since. Compute-only, Level 7 reaches **100.5 TFLOP/s** at N=16384 against
 cuBLAS FP16's 120.5 (83%).
 
 ---
@@ -489,7 +501,8 @@ wmma::store_matrix_sync(C_ptr, c_frag, N, wmma::mem_row_major);
   row (`compute-sanitizer` flags it; covered by `CudaWmmaFloat.EdgeTiles`).
 
 **Falls back** to `gemm_cuda_double_buf` on pre-Volta hardware at runtime.
-**Measured:** 5.3 TFLOP/s — below the FMA kernels at this size: with 64×64
+**Measured:** 5.3 TFLOP/s in the recorded run, ~6.0 after the edge-tile
+fix — still below the FMA kernels at this size: with 64×64
 tiles, one fragment per warp and a single buffer, there is too little work
 per synchronization to keep the Tensor Cores busy. Level 7 addresses that.
 
@@ -863,7 +876,7 @@ GFLOP/s (up to 3.3 TFLOP/s f32). On by default on Apple platforms
 that happen to share an acronym. Intel AMX is a public x86 ISA extension
 (tile registers + TMUL, programmed via `<immintrin.h>` intrinsics,
 Sapphire Rapids+ only). **Apple AMX** — the Apple Matrix coprocessor
-present in every Apple Silicon SoC since the M1 — is what this file
+present in every Apple Silicon SoC since the M1 — is what this family
 targets, and it works completely differently from a build/programming
 perspective: Apple has never published instruction-level documentation or
 an ACLE-style intrinsic header for it (unlike ARM SME, which is a public,
@@ -895,17 +908,20 @@ identically-named entry points purely so this family's benchmarks and
 tests slot into the same naming convention as every other family in this
 repo, not because there are three different implementations here. The
 measured benchmark numbers confirm this: all three report GFLOP/s within
-~1% of each other at every matrix size (see README.md).
+~1% of each other at every matrix size (see
+[benchmarks.md](../../docs/benchmarks.md#apple-amx-via-accelerateframework)).
 
 ### Threading
 
 Accelerate's BLAS may use multiple CPU cores internally for large
 matrices (an undocumented, size-dependent heuristic) — unlike every other
-CPU kernel in this repo, which is strictly single-threaded by design. This
-is almost certainly why measured throughput jumps from ~820 GFLOP/s at
-N=64 to ~3.3 TFLOP/s at N≥1024 (see README.md): more cores coming online
-as the problem grows large enough to amortise their coordination
-overhead, not (only) improving cache behaviour. Treat these numbers as
+CPU kernel in this repo, which is strictly single-threaded by design.
+Measured on M4 Max: limited to one thread (`VECLIB_MAXIMUM_THREADS=1`) it
+reaches ~1.7 TFLOP/s f32 from N=256 up; with default threading it reaches
+~3.2 TFLOP/s from N≈1024 — roughly double, consistent with the second
+performance cluster's matrix unit joining in (see
+[benchmarks.md § Matrix engines, single core](../../docs/benchmarks.md#matrix-engines-single-core)).
+Treat the default-threading numbers as
 "the fastest way to multiply matrices on this machine" rather than an
 apples-to-apples comparison against the single-threaded `gemm_sme`,
 `gemm_avx512_*`, or `gemm_neon_*` results elsewhere in this document.

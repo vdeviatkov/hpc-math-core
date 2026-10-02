@@ -26,7 +26,8 @@
  * Detection sources:
  *   AVX2     __AVX2__            GCC/Clang -mavx2 / -march=native, MSVC /arch:AVX2
  *   AVX-512  __AVX512F__         GCC/Clang -mavx512f, MSVC /arch:AVX512 (HPC_ENABLE_AVX512=ON)
- *   NEON     __ARM_NEON          any AArch64 target
+ *   NEON     __ARM_NEON && __aarch64__   any AArch64 target (32-bit ARMv7 NEON lacks
+ *                                        vfmaq_f64 / f64 lanes, so it is excluded)
  *   SVE      __ARM_FEATURE_SVE   -march=armv8-a+sve or a -mcpu= that implies it
  *   SME      __ARM_FEATURE_SME   HPC_ENABLE_SME=ON and the configure-time probe passed,
  *            && __ARM_FEATURE_SME2   gemm_sme uses SME2 multi-vector loads (every SME CPU this
@@ -49,7 +50,7 @@
     #define HPC_HAS_AVX512 0
 #endif
 
-#if defined(__ARM_NEON)
+#if defined(__ARM_NEON) && defined(__aarch64__)  // the kernels use AArch64-only f64 NEON
     #define HPC_HAS_NEON 1
 #else
     #define HPC_HAS_NEON 0

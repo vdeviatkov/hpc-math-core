@@ -24,10 +24,10 @@
  *  Kernel 2 — gemm_neon_reordered
  *    Loop order: i → k → j
  *    New technique: vdupq_n_f32/f64 broadcasts A(i,k) to all lanes;
- *                   vfmaq_f32/f64 (or vmlaq on older ISA) fused multiply-adds
+ *                   vfmaq_f32/f64 fused multiply-adds
  *                   against stride-1 B row and C row.
- *    Expected: ~4× scalar reordered for f32 (4-wide NEON vs scalar),
- *              ~2× for f64 (2-wide NEON).
+ *    Measured on M4 Max: no faster than scalar gemm_reordered, which the
+ *    compiler auto-vectorises at -O3 -ffast-math.
  *
  *  Kernel 3 — gemm_neon_blocked
  *    Loop order: tiled i → k → j
@@ -54,10 +54,10 @@
  *   vfmaq_lane_f32    — FMA with scalar from a specific lane (no extra broadcast register)
  *   vaddvq_f32(v)     — horizontal add of all 4 f32 lanes → scalar
  *
- * Apple M-series throughput (Firestorm / Icestorm, ~3 GHz):
- *   f32: 4 NEON units × 4 lanes × 2 FLOP = 32 FLOP/cycle → ~96 GFLOP/s/core
- *   f64: 4 NEON units × 2 lanes × 2 FLOP = 16 FLOP/cycle → ~48 GFLOP/s/core
- *   (M-series has 4 FP/SIMD units per P-core vs 2 on x86 Skylake)
+ * Apple M4 P-core peak (~4.5 GHz, 4 FP/SIMD units vs 2 on x86 Skylake):
+ *   f32: 4 NEON units × 4 lanes × 2 FLOP = 32 FLOP/cycle → ~144 GFLOP/s/core
+ *   f64: 4 NEON units × 2 lanes × 2 FLOP = 16 FLOP/cycle →  ~72 GFLOP/s/core
+ *   gemm_neon_blocked reaches ~97 / ~36 GFLOP/s (≈67% / 50% of peak).
  *
  * NEON vs AVX2 (register width):
  *   NEON Q: 128-bit = 4 f32 / 2 f64
@@ -101,9 +101,8 @@
  * (see hpc/isa.hpp): calling them is a compile-time error, never a silent
  * substitution of a slower kernel under the same name.
  *
- * vfmaq_f32 / vfmaq_f64 require AArch64 (ARM64).
- * On 32-bit ARMv7 with NEON, vmlaq_f32 is used as fallback
- * (no f64 NEON on 32-bit ARM).
+ * vfmaq_f32 / vfmaq_f64 require AArch64 (ARM64). 32-bit ARMv7 NEON has no
+ * f64 lanes, so HPC_HAS_NEON is 0 there and these kernels are deleted.
  */
 
 #include "hpc/isa.hpp"
@@ -148,11 +147,11 @@ inline constexpr std::size_t kNeonF64RegCols = 2;  // 2 Q-vectors → 4 f64
  * Register tile: 4 rows × 4 Q-vectors = 4×16 f32.
  * Uses 16 accumulators + 4 broadcast + 4 B-load = 24 of 32 Q registers.
  *
- * vfmaq_laneq_f32(acc, b_vec, a_vec, lane):
- *   Fuses broadcast of a single lane of a_vec with multiply-add into acc.
- *   This avoids a separate vdup instruction — one Q-register holds all 4
- *   scalar broadcasts simultaneously, each selected by lane index 0..3.
- *   On Apple M-series this is a single micro-op at 0.25 cycles throughput.
+ * The source broadcasts each A(i+r, k) with vdupq_n_f32 and uses plain
+ * vfmaq_f32. Clang folds most of those broadcasts into the by-element form
+ * of FMLA (fmla v.4s, v.4s, v.s[lane], what vfmaq_laneq_f32 spells
+ * explicitly): at -O3 -mcpu=apple-m4, 12 of the 16 FMAs per k step are
+ * by-element, with no separate dup instruction.
  *
  * @param a      Pointer to A(i, k_blk) — row-stride lda
  * @param b      Pointer to B(k_blk, j) — row-stride ldb
@@ -179,9 +178,8 @@ inline void neon_micro_f32_4x16(const float* __restrict__ a, const float* __rest
         const float32x4_t b2 = vld1q_f32(b + k * ldb + 8);
         const float32x4_t b3 = vld1q_f32(b + k * ldb + 12);
 
-        // Load A scalars for 4 rows into one Q-register each.
-        // Using vfmaq_laneq_f32 to fuse broadcast+FMA without extra vdup.
-        // a_row_r holds A(i+r, k) in lane 0 (we use vld1q_dup_f32 for clarity).
+        // Broadcast A(i+r, k) for the 4 rows (see the note above on how the
+        // compiler folds these into by-element FMAs).
         const float32x4_t a0 = vdupq_n_f32(a[0 * lda + k]);
         const float32x4_t a1 = vdupq_n_f32(a[1 * lda + k]);
         const float32x4_t a2 = vdupq_n_f32(a[2 * lda + k]);
@@ -377,8 +375,8 @@ void gemm_neon_naive(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
  *   B row k and C row i are accessed stride-1 across j — every byte loaded
  *   from cache is used.
  *
- * Expected result: ~4× scalar reordered for f32 (4-wide NEON),
- *                  ~2× scalar reordered for f64 (2-wide NEON).
+ * Measured on M4 Max: no faster than scalar gemm_reordered — the compiler
+ * auto-vectorises that loop too (f32 N=256: 29.6 vs 32.3 GFLOP/s).
  * Degrades at large N when C row i (N×sizeof(T)) exceeds L1, same as
  * AVX2 reordered — no blocking to prevent C eviction.
  */

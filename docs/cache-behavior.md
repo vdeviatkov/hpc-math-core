@@ -26,7 +26,7 @@ An algorithm is **compute-bound** when the CPU's arithmetic units are the bottle
 
 ## 2. Cache Lines
 
-The unit of transfer between any two adjacent levels of the hierarchy is the **cache line** — always 64 bytes on x86 and ARM CPUs. When you read a single `double` (8 bytes), the CPU loads the surrounding 64 bytes — 8 doubles — into the cache.
+The unit of transfer between any two adjacent levels of the hierarchy is the **cache line** — 64 bytes on x86 and most ARM cores, 128 bytes on Apple M-series (`sysctl hw.cachelinesize`). The examples below use 64-byte lines: when you read a single `double` (8 bytes), the CPU loads the surrounding 64 bytes — 8 doubles — into the cache.
 
 ```
 DRAM layout:
@@ -120,7 +120,7 @@ The reordered kernel's stride-1 access to B row k **activates** the prefetcher o
 
 ## 7. What Comes Next: Loop Tiling
 
-Even the reordered kernel has an issue for very large matrices: the outer k-loop causes row `i` of C to be evicted from L1 between k-iterations if N is large. **Loop tiling** (blocking) addresses this by processing a small tile (e.g. 64×64 elements) that fits entirely in L1 before moving on. This is the subject of Step 1.
+Even the reordered kernel has an issue for very large matrices: the outer k-loop causes row `i` of C to be evicted from L1 between k-iterations if N is large. **Loop tiling** (blocking) addresses this by processing a small tile (e.g. 64×64 elements) that stays cache-resident before moving on. This is Level 1, `gemm_blocked`.
 
 ```
 Tiled access pattern (tile size T_r × T_c):
@@ -147,16 +147,18 @@ The maximum achievable GFLOP/s for a memory-bound kernel is bounded by:
 Peak GFLOP/s ≤ (DRAM bandwidth GB/s) × (Arithmetic intensity FLOP/byte)
 ```
 
-For naïve GEMM with N=1024:
-- Arithmetic intensity ≈ N³ multiplies / (N² cache-line loads × 64 B/line) ≈ 0.125 FLOP/byte
-- DRAM bandwidth ≈ 50 GB/s (DDR4-3200 per channel)
-- Peak ≈ 50 × 0.125 = **6.25 GFLOP/s**
+For naïve GEMM in the worst case, where every access to B misses all the way to DRAM:
+- Each multiply-add (2 FLOPs) pulls a 64-byte line to use one 8-byte double → arithmetic intensity ≈ 2 / 64 ≈ **0.03 FLOP/byte**
+- DRAM bandwidth ≈ 50 GB/s (dual-channel DDR4-3200; 25.6 GB/s per channel)
+- Peak ≈ 50 × 0.03 = **~1.6 GFLOP/s**
+
+Caches soften this at moderate N (part of B stays resident), but the trend shows in the measurements: naïve f64 on M4 Max falls from 9.5 GFLOP/s at N=64 to 0.66 at N=4096 ([benchmarks.md](benchmarks.md#apple-m4-max)).
 
 For the reordered kernel, effective bandwidth is much higher (from caches), but tiling is needed to reach the **compute roofline** of:
 ```
 Peak compute = cores × SIMD width × FMA throughput × frequency
 ```
-This motivates the SIMD implementations in Steps 2 and 3.
+This motivates the SIMD implementations in Levels 2–4 (AVX2, AVX-512, NEON/SVE).
 
 
 ---
@@ -166,23 +168,25 @@ This motivates the SIMD implementations in Steps 2 and 3.
 The same latency ladder exists on a GPU, with one extra tier — per-SM shared memory — that the CUDA kernels in [src/gemm/README.md](../src/gemm/README.md#algorithm-9--cuda-kernels-cudahpp--srccudagemm_kernelscu) exploit explicitly.
 
 ```
-                  ┌────────────────────────────────────────────────┐
-                  │  GPU (e.g. NVIDIA A100 80 GB)                  │
-  ┌───────────────┴──────────────┐  ┌──────────────────────────┐   │
-  │  SM 0  (Streaming Multiproc) │  │  SM 1  …  SM 107         │   │
-  │  ┌─────────┐  ┌───────────┐  │  │                          │   │
-  │  │Registers│  │  Shared   │  │  │   (same structure)       │   │
-  │  │ 256 KB  │  │  Memory / │  │  │                          │   │
-  │  │per SM   │  │  L1 Cache │  │  │                          │   │
-  │  │  ~1 cy  │  │  192 KB   │  │  │                          │   │
-  │  │         │  │  ~4 cy    │  │  │                          │   │
-  │  └─────────┘  └─────┬─────┘  │  │                          │   │
-  └────────────────────-┼────────┘  └──────────────────────────┘   │
-                        │  L2 Cache: 40–72 MB shared across SMs     │
-                        │  ~200 cy, ~5 TB/s                         │
-                        │  HBM2e / HBM3 DRAM: 80 GB                │
-                        │  ~400–3900 GB/s                           │
-                        └────────────────────────────────────────────
+                  ┌──────────────────────────────────────────────────┐
+                  │  GPU (this repo's: NVIDIA RTX 5080, sm_120)      │
+  ┌───────────────┴──────────────┐  ┌──────────────────────────┐     │
+  │  SM 0  (Streaming Multiproc) │  │  SM 1  …  SM 83          │     │
+  │  ┌─────────┐  ┌───────────┐  │  │                          │     │
+  │  │Registers│  │  Shared   │  │  │   (same structure)       │     │
+  │  │ 256 KB  │  │  Memory / │  │  │                          │     │
+  │  │ per SM  │  │  L1 Cache │  │  │                          │     │
+  │  │  ~1 cy  │  │ ≤100 KB   │  │  │                          │     │
+  │  │         │  │  shared   │  │  │                          │     │
+  │  └─────────┘  └─────┬─────┘  │  │                          │     │
+  └─────────────────────┼────────┘  └──────────────────────────┘     │
+                        │  L2 Cache: 64 MB shared across SMs         │
+                        │  GDDR7 DRAM: 16 GB, 960 GB/s               │
+                        └────────────────────────────────────────────┘
 ```
+
+(Values from `cudaGetDeviceProperties` on the RTX 5080 used for
+[benchmarks.md](benchmarks.md#nvidia-rtx-5080--cuda). Shared memory and L1
+share one on-chip array per SM; up to 100 KB of it can be shared memory.)
 
 **Warp coalescence:** 32 threads in a warp issue memory loads together. If consecutive threads access consecutive addresses, the hardware merges them into a single 128-byte transaction. In our kernels, thread `(ty, tx)` computes `C(i, j)` where `j = blockCol*TILE + tx` — so consecutive threads in a warp differ only in `tx`, giving coalesced access to B rows and C rows.

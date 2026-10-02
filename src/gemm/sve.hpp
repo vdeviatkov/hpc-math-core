@@ -85,9 +85,9 @@
  *    Loop order: i → k → j
  *    SIMD on j-loop: broadcast A(i,k), VL-wide FMA against B row / C row.
  *    No scalar j-tail: svwhilelt predicate handles remainder lanes.
- *    Expected: ~VL/sizeof(T) × scalar reordered.  On 256-bit SVE:
- *      f32: 8 lanes ≈ 2× NEON, ~8× scalar
- *      f64: 4 lanes ≈ 2× NEON, ~4× scalar
+ *    Not measured (no SVE hardware available). On every measured family the
+ *    explicit-SIMD reordered kernel performs about the same as the scalar
+ *    one, which the compiler auto-vectorises, so a large gain is unlikely.
  *
  *  Kernel 3 — gemm_sve_blocked
  *    Loop order: tiled i → k → j
@@ -400,9 +400,9 @@ void gemm_sve_naive(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
  *     the tail exactly, without any scalar fallback code.
  *   • This is the key SVE elegance: one predicated loop covers all N.
  *
- * Expected result: ~svcntw()/svcntd() × scalar reordered.  On 256-bit SVE:
- *   f32: 8 lanes → ~8× scalar reordered (≈ 2× NEON, same as AVX2)
- *   f64: 4 lanes → ~4× scalar reordered (≈ 2× NEON, same as AVX2)
+ * Not measured (no SVE hardware available). On every measured family the
+ * explicit-SIMD reordered kernel performs about the same as the
+ * auto-vectorised scalar one.
  */
 #if !HPC_HAS_SVE
 template <typename T>

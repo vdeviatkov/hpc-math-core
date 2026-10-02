@@ -38,7 +38,7 @@ Best kernel per family, single-threaded unless noted. Full output, speedup table
 | 0 | `gemm_naive`, `gemm_reordered` | i-j-k baseline → cache-friendly i-k-j loop order |
 | 1 | `gemm_blocked` | L2 cache tiling (tile = 64) |
 | 2 | `gemm_avx2_{naive,reordered,blocked}` | AVX2 FMA intrinsics, 4×16 f32 / 4×8 f64 register tile |
-| 3 | `gemm_avx512_{naive,reordered,blocked}` | 512-bit ZMM register tile, embedded broadcast |
+| 3 | `gemm_avx512_{naive,reordered,blocked}` | 512-bit ZMM register tile, 4×32 f32 / 4×16 f64 |
 | 4 | `gemm_neon_*`, `gemm_sve_*` | ARM NEON Q-register tile; vector-length-agnostic SVE with predicated tails |
 | 5 | `gemm_*_blocked_prefetch` | `__builtin_prefetch` on A rows, B k-tiles and C rows; distance sweep D ∈ {2, 4, 8, 16} |
 | 6 | `gemm_cuda_{naive,blocked,reg_tile,double_buf,wmma,vectorized,mma_ldmatrix}` (CUDA Levels 0–6) | Shared-memory tiling → register tiling → `cp.async` double buffering → Tensor Cores via WMMA → `float4` loads + swizzle → raw `mma.sync`/`ldmatrix` |
@@ -69,7 +69,7 @@ Windows/MSVC uses a multi-config generator: drop `CMAKE_BUILD_TYPE` and pass `--
 | Option | Default | Purpose |
 |---|---|---|
 | `HPC_MARCH` | `native` | `-march=` value; `x86-64-v3` for a portable AVX2 build |
-| `HPC_ENABLE_AVX512` | `OFF` | AVX-512 kernels — enable only on AVX-512 hardware (SIGILL otherwise) |
+| `HPC_ENABLE_AVX512` | `OFF` | Force AVX-512 flags (MSVC, non-native `HPC_MARCH`); `-march=native` already enables AVX-512 on capable CPUs. SIGILL on CPUs without it |
 | `HPC_ENABLE_SME` | `OFF` | ARM SME2 kernels; configure-time compile-and-run probe, Apple M4-class only |
 | `HPC_ENABLE_AMX` | `ON` on Apple | Apple AMX via Accelerate.framework; no special flags, no SIGILL risk |
 | `HPC_ENABLE_KLEIDIAI` | `ON` when SME works | Fetches Arm KleidiAI for its SME2 reference GEMM (`gemm_kleidiai`, f32) |

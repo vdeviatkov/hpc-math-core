@@ -209,9 +209,10 @@ static void BM_Avx2Naive(benchmark::State& state) {
 /**
  * @brief Benchmark gemm_avx2_reordered<T> — i-k-j order, SIMD on the j-loop.
  *
- * Expected result: ~SIMD_WIDTH × scalar reordered. B and C are accessed
- * stride-1, so every cache line is fully consumed. No blocking — degrades
- * at large N when C row i is evicted from L1 between k-iterations.
+ * Measured: within a few percent of scalar gemm_reordered on Zen 5 — the compiler already auto-vectorises the scalar i-k-j loop at -O3 -ffast-math,
+ * so explicit intrinsics add little here. B and C are accessed stride-1, so
+ * every cache line is fully consumed. No blocking — degrades at large N when
+ * C row i is evicted from L1 between k-iterations.
  */
 template <std::size_t N, typename T = double>
 static void BM_Avx2Reordered(benchmark::State& state) {
@@ -361,7 +362,8 @@ static void BM_Avx512Naive(benchmark::State& state) {
 
 /**
  * @brief Benchmark gemm_avx512_reordered<T> — i-k-j, 512-bit SIMD on j-loop.
- * Expected: ~2× AVX2 reordered (16 vs 8 f32 per FMA, stride-1 access).
+ * Measured: within a few percent of scalar/AVX2 reordered on Zen 5 — the loop
+ * is limited by memory traffic, not FMA width.
  */
 template <std::size_t N, typename T = double>
 static void BM_Avx512Reordered(benchmark::State& state) {
@@ -466,7 +468,8 @@ static void BM_NeonNaive(benchmark::State& state) {
 
 /**
  * @brief Benchmark gemm_neon_reordered<T> — i-k-j, NEON on j-loop.
- * Expected: ~4× scalar reordered (f32, 4-wide NEON); ~2× (f64, 2-wide NEON).
+ * Measured on M4 Max: no faster than scalar gemm_reordered, which the compiler
+ * auto-vectorises (e.g. f32 N=256: 29.6 vs 32.3 GFLOP/s).
  */
 template <std::size_t N, typename T = double>
 static void BM_NeonReordered(benchmark::State& state) {
@@ -566,7 +569,7 @@ static void BM_SveNaive(benchmark::State& state) {
 
 /**
  * @brief Benchmark gemm_sve_reordered<T> — i-k-j, VLA SVE on j-loop.
- * Expected: ~svcntw/d() × scalar reordered. Predicated tail — no scalar fallback.
+ * Not measured (no SVE hardware). Predicated tail — no scalar remainder loop.
  */
 template <std::size_t N, typename T = double>
 static void BM_SveReordered(benchmark::State& state) {

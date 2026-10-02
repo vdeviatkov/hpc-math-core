@@ -55,8 +55,9 @@
  *   • 1 cache line for the current segment of C row i   (64 bytes)
  *   Total ≈ 128 bytes — easily fits in L1 (32 KB).
  *
- * Expected speedup: 4–8× over the naïve kernel for large N on a modern CPU,
- * depending on CPU model, cache sizes and compiler optimisation level.
+ * Measured speedup over the naïve kernel: 6–13× at N=256–1024 and 25–65× at
+ * N=4096 (Apple M4 Max and AMD Zen 5; f32 gains more than f64 — twice the
+ * elements per cache line). See docs/benchmarks.md.
  *
  * Complexity: O(M * N * K) — same algorithmic complexity; the improvement is
  * purely in constants (cache-miss rate, hardware prefetch effectiveness).

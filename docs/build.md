@@ -40,7 +40,7 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
 
 # 3. Run all tests (CPU suite sized by ISA + 64 CUDA; CUDA tests skip if no GPU)
-cd build && ctest --output-on-failure
+ctest --test-dir build --output-on-failure
 
 # 4. Run CPU benchmarks
 ./build/benchmarks/bench_gemm --benchmark_format=console
@@ -64,7 +64,7 @@ cmake -B build
 cmake --build build --config Release --parallel
 
 # 3. Run all tests
-cd build; ctest --build-config Release --output-on-failure
+ctest --test-dir build --build-config Release --output-on-failure
 
 # 4. Run CPU benchmarks
 .\build\benchmarks\Release\bench_gemm.exe --benchmark_format=console
@@ -79,7 +79,6 @@ cd build; ctest --build-config Release --output-on-failure
 ```
 
 ---
----
 
 ## CMake options
 
@@ -87,7 +86,7 @@ cd build; ctest --build-config Release --output-on-failure
 |---|---|---|
 | `CMAKE_BUILD_TYPE` | — | Use `Release` for benchmark numbers (single-config generators only). |
 | `HPC_MARCH` | `native` | Value passed to `-march=`. Set to `x86-64-v3` for a portable AVX2 build (used by CI); empty string disables the flag. Ignored by MSVC. |
-| `HPC_ENABLE_AVX512` | `OFF` | Adds AVX-512 compile flags (`-mavx512f…` / MSVC `/arch:AVX512`). ⚠ SIGILL on CPUs without AVX-512. |
+| `HPC_ENABLE_AVX512` | `OFF` | Adds AVX-512 compile flags (`-mavx512f…` / MSVC `/arch:AVX512`). Not needed with the default `-march=native` on an AVX-512 CPU, which already enables AVX-512; use it for MSVC or a non-native `HPC_MARCH`. ⚠ SIGILL on CPUs without AVX-512. |
 | `HPC_ENABLE_SME` | `OFF` | ARM SME2 kernels. Runs a compile-*and-execute* probe at configure time; supersedes `HPC_MARCH` with `-mcpu=apple-m4`. See below. |
 | `HPC_ENABLE_AMX` | `ON` on Apple, `OFF` elsewhere | Apple AMX via Accelerate.framework (`cblas_sgemm`/`cblas_dgemm`). See below. |
 | `HPC_ENABLE_KLEIDIAI` | `ON` when the SME probe passed, else `OFF` | Fetches Arm KleidiAI v1.31.0 (FetchContent) for its SME2 f32 reference GEMM. |
@@ -100,10 +99,10 @@ The default is `native` — the GPU in the build machine. Two cases need care:
 
 **The GPU is newer than the CUDA toolkit.** nvcc refuses any architecture newer than itself, so `native` fails outright (e.g. CUDA 12.0, which predates Blackwell, on an RTX 50-series card: `Unsupported gpu architecture 'compute_120'`). The configure step probes for this and falls back to the newest *virtual* architecture the toolkit can emit, which the driver JIT-compiles forward onto the actual GPU. The kernels then run correctly, at the cost of a JIT pause on first launch — but **do not benchmark in this configuration**; install a toolkit new enough to target the card.
 
-The reason is mostly the bundled math libraries rather than the JIT itself. Measured on an RTX 5080, CUDA 12.0 (`90-virtual` PTX) against CUDA 13.2 (native `sm_120`), compute-only at N=4096: cuBLAS dense-FP16 ran at **21.7 vs 114.0 TFLOP/s** — a 5.2× difference, because CUDA 12.0's cuBLAS has no Blackwell kernels to dispatch to. Hand-written kernel codegen moved far less, and not always in the same direction: `gemm_cuda_reg_tile` gained 18% from native compilation, while `gemm_cuda_wmma_pipelined` was 4.7% *faster* under the JIT (80.6 vs 76.6 TFLOP/s, σ = 0.003 ms over 5 repetitions). So the toolkit version matters enormously for anything touching cuBLAS, and is roughly a wash for this project's own kernels. The configure step prints a warning when this happens, and always reports the final choice:
+The reason is mostly the bundled math libraries rather than the JIT itself. Measured on an RTX 5080, CUDA 12.0 (`90-virtual` PTX) against CUDA 13.2 (native `sm_120`), compute-only at N=4096: cuBLAS dense-FP16 ran at **21.7 vs 114.0 TFLOP/s** — a 5.2× difference, because CUDA 12.0's cuBLAS has no Blackwell kernels to dispatch to. Hand-written kernel codegen moved far less, and not always in the same direction: `gemm_cuda_reg_tile` gained 18% from native compilation, while `gemm_cuda_wmma_pipelined` was 4.7% *faster* under the JIT (80.6 vs 76.6 TFLOP/s, σ = 0.003 ms over 5 repetitions; measured before its shared-memory padding, which brought it to ~100 TFLOP/s). So the toolkit version matters enormously for anything touching cuBLAS, and is roughly a wash for this project's own kernels. The configure step prints a warning when this happens, and always reports the final choice:
 
 ```
--- CUDA architectures: 89-virtual
+-- CUDA architectures: 90-virtual
 ```
 
 **Re-configuring an existing build directory.** `CMAKE_CUDA_ARCHITECTURES` is a cache variable, so a value from an earlier configure persists and overrides the default. Use a fresh build directory (or `-DCMAKE_CUDA_ARCHITECTURES=native`) when changing toolkits or GPUs.
@@ -207,7 +206,7 @@ Which kernel families exist in a build is decided once, at compile time, by the 
 | Machine | Runs | Skipped |
 |---|---|---|
 | **Apple M-series** (default build — `HPC_ENABLE_AMX` defaults ON) | Scalar · NEON · Scalar-Pf · NEON-Pf · **AMX** | AVX2 · AVX-512 · SVE · SME · CUDA |
-| **Apple M4 Max, `-DHPC_ENABLE_SME=ON`** (the run recorded in [benchmarks.md](benchmarks.md)) | Scalar · NEON · Scalar-Pf · NEON-Pf · **SME** · **AMX** | AVX2 · AVX-512 · SVE · CUDA |
+| **Apple M4 Max, `-DHPC_ENABLE_SME=ON`** (the run recorded in [benchmarks.md](benchmarks.md)) | Scalar · NEON · Scalar-Pf · NEON-Pf · **SME** · **AMX** · **KleidiAI** | AVX2 · AVX-512 · SVE · CUDA |
 | Intel Mac (Accelerate present, but no Apple AMX coprocessor — dispatches to AVX/AVX-512 internally instead) | Scalar · AVX2 · AVX-512 · all Pf · **AMX**\* | NEON · SVE · SME · CUDA |
 | Intel Skylake (Linux/Windows, AVX2, no AVX-512, no GPU) | Scalar · AVX2 · Scalar-Pf · AVX2-Pf | AVX-512 · NEON · SVE · SME · AMX · CUDA |
 | Intel Skylake + NVIDIA GPU | Scalar · AVX2 · Scalar-Pf · AVX2-Pf · **CUDA** | AVX-512 · NEON · SVE · SME · AMX |

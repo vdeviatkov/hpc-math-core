@@ -9,7 +9,7 @@ single-threaded unless noted (Apple AMX via Accelerate is the exception).
 **Contents**
 
 - [Deriving GFLOP/s](#deriving-gflops)
-- [Apple M4 Max](#apple-m4-max) — scalar · NEON · SME2 · AMX
+- [Apple M4 Max](#apple-m4-max) — scalar · NEON · SME2 · AMX · KleidiAI
 - [AMD Zen 5](#amd-zen-5--avx2--avx-512-linux--gcc) — scalar · AVX2 · AVX-512
 - [NVIDIA RTX 5080](#nvidia-rtx-5080--cuda) — CUDA Levels 0-7 · cuBLAS reference
 
@@ -26,7 +26,7 @@ GFLOP/s = (2 × N³) / (time_µs × 1000)
 
 A square N×N GEMM performs `2 × N³` floating-point operations. Dividing by wall-clock time in nanoseconds gives GFLOP/s.
 
-Example: `NeonBlockedPf2/f32/N=512`, 2715 µs → `2 × 512³ / (2715 × 1000)` ≈ **98.9 GFLOP/s**.
+Example: `Sme/f32/N=1024`, 1481 µs → `2 × 1024³ / (1481 × 1000)` ≈ **1,450 GFLOP/s**.
 
 ---
 
@@ -34,11 +34,12 @@ Example: `NeonBlockedPf2/f32/N=512`, 2715 µs → `2 × 512³ / (2715 × 1000)` 
 
 > **Machine:** Apple M4 Max, 16 cores, Apple Clang 17, C++20
 > **Build:** `cmake -B build -DCMAKE_BUILD_TYPE=Release -DHPC_ENABLE_SME=ON` → `-O3 -ffast-math -funroll-loops` (`-march` cleared in favour of `-mcpu=apple-m4`, see [§ SME and AMX build flags](build.md#sme-and-amx-build-flags))
-> **CPU Caches:** L1d 64 KiB · L1i 128 KiB · L2 4096 KiB (×16)
+> **CPU Caches (P-cores, which run the benchmarks):** L1d 128 KiB · L1i 192 KiB · L2 16 MiB shared per cluster (12 P-cores; the 4 E-cores have 64 KiB L1d and a 4 MiB L2 — the values Google Benchmark prints, since it reports the first core type)
 > **Load Average:** 4.15 / 4.16 / 4.25 on 16 cores ≈ 26% — moderate background activity, numbers still representative
 
-Four families run here: scalar, NEON, SME2 (opt-in) and AMX via
-Accelerate. AVX2, AVX-512 and SVE are absent and report `SKIPPED`.
+Five families run here: scalar, NEON, SME2 (opt-in), AMX via Accelerate,
+and the KleidiAI reference (built when SME is on). AVX2, AVX-512 and SVE are
+absent and report `SKIPPED`.
 
 ### GFLOP/s by kernel and size
 
@@ -135,31 +136,24 @@ Benchmarks named `<Family>BlockedPf<D>/<prec>/N=<size>` sweep prefetch distance 
 - **[PF-B]** `B(k_blk + TileK, 0)` → L2 (read), at the k-tile boundary
 - **[PF-C]** `C(i + D×kRegRows, j_blk)` → L1 (write)
 
-GFLOP/s, best distance per row in bold, against the same kernel without prefetch:
+GFLOP/s, best distance per row in bold, against the same kernel without prefetch. Measured in a separate run from the tables above (2026-10-01, current build, load average ~4 — treat ±2% as noise):
 
 | Kernel | N | D=2 | D=4 | D=8 | D=16 | no prefetch |
 |---|---|---|---|---|---|---|
-| `BlockedPf` f64 | 256 | 14.74 | **14.81** | 14.79 | 14.61 | 25.42 |
-| `BlockedPf` f64 | 512 | 12.96 | 12.97 | 12.93 | **13.00** | 22.23 |
-| `BlockedPf` f64 | 1024 | 11.36 | **11.41** | 11.35 | 11.35 | 19.48 |
-| `BlockedPf` f32 | 256 | **28.75** | 28.66 | 28.48 | 27.37 | 83.51 |
-| `BlockedPf` f32 | 512 | 22.15 | 22.14 | **22.19** | 22.17 | 51.27 |
-| `BlockedPf` f32 | 1024 | 21.39 | 21.43 | **21.44** | 21.33 | 43.00 |
-| `NeonBlockedPf` f64 | 256 | 33.77 | 32.20 | **33.80** | 32.19 | 33.95 |
-| `NeonBlockedPf` f64 | 512 | **31.94** | 30.66 | 31.87 | 30.75 | 32.05 |
-| `NeonBlockedPf` f64 | 1024 | 30.30 | 29.66 | **30.43** | 29.83 | 30.62 |
-| `NeonBlockedPf` f32 | 256 | **97.86** | 95.67 | 95.88 | 96.18 | 96.43 |
-| `NeonBlockedPf` f32 | 512 | **98.26** | 96.17 | 96.10 | 96.28 | 96.73 |
-| `NeonBlockedPf` f32 | 1024 | **95.46** | 93.49 | 93.71 | 93.97 | 94.41 |
+| `BlockedPf` f64 | 256 | 24.42 | 24.48 | 24.39 | **24.62** | 24.54 |
+| `BlockedPf` f64 | 512 | 21.00 | **21.03** | **21.03** | 20.96 | 21.39 |
+| `BlockedPf` f64 | 1024 | 18.51 | 18.50 | **18.54** | 18.53 | 18.55 |
+| `BlockedPf` f32 | 256 | **80.67** | 80.51 | 80.57 | 80.59 | 80.69 |
+| `BlockedPf` f32 | 512 | 46.60 | 46.65 | 46.75 | **46.80** | 49.38 |
+| `BlockedPf` f32 | 1024 | 41.18 | 41.32 | **41.34** | 41.27 | 41.31 |
+| `NeonBlockedPf` f64 | 256 | 31.54 | **33.06** | 31.50 | 32.90 | 31.92 |
+| `NeonBlockedPf` f64 | 512 | 29.36 | 30.63 | 29.67 | **30.70** | 30.04 |
+| `NeonBlockedPf` f64 | 1024 | 28.79 | 28.89 | 28.65 | **29.06** | 29.12 |
+| `NeonBlockedPf` f32 | 256 | 93.67 | **96.03** | 94.17 | 93.90 | 94.31 |
+| `NeonBlockedPf` f32 | 512 | 94.17 | **96.35** | 94.48 | 94.20 | 94.64 |
+| `NeonBlockedPf` f32 | 1024 | 91.36 | **93.16** | 92.31 | 91.65 | 91.71 |
 
-**Prefetch badly hurts the scalar kernel** — 14.81 vs 25.42 G/s at f64 N=256, and 28.75 vs 83.51 at f32 N=256, a 2.9× loss. That kernel is entirely compiler-auto-vectorised; the hardware prefetcher already handles its simple streaming access, so the explicit hints only add front-end pressure to a tight inner loop.
-
-**On the NEON kernel it gives a small consistent gain** at D=2: +1.5% / +1.6% / +1.1% for f32 at N=256/512/1024. For f64, D=2 and D=8 trade the lead, both ahead of D=4 and D=16. A rule of thumb that fits this hardware:
-
-```
-optimal D ≈ ceil(L2_latency_cycles / cycles_per_micro_kernel_call)
-          ≈ ceil(12 / ~6) = 2
-```
+**Software prefetch is close to neutral on M4.** On the scalar kernel every distance is within ±1% of no prefetch, apart from one −5% outlier (f32, N=512); M4's hardware prefetcher already follows these streaming accesses. On the NEON kernel D=4 is consistently best, but the gain is small: +1.6–1.8% for f32 and up to +3.6% for f64 at N=256 — close to the noise level of this run.
 
 ### Speedup vs `gemm_naive`
 
@@ -198,7 +192,7 @@ optimal D ≈ ceil(L2_latency_cycles / cycles_per_micro_kernel_call)
 
 The register tile holds ~95–97 GFLOP/s from N=64 through N=1024. The auto-vectorised kernel decays 84→43 because C rows are evicted from L1 between k-iterations as N grows.
 
-**NEON f64 vs f32 is 2.7×, not the theoretical 2×.** A Q-register holds 4 f32 lanes or 2 f64 lanes, so lane count alone predicts 2×. `gemm_neon_blocked` peaks at ~36 G/s f64 and ~97 G/s f32. The extra 0.7× comes from f32 tiles fitting entirely in L1 at sizes where f64 tiles spill.
+**NEON f64 vs f32 is 2.7×, not the theoretical 2×.** A Q-register holds 4 f32 lanes or 2 f64 lanes, so lane count alone predicts 2×. `gemm_neon_blocked` peaks at ~36 G/s f64 and ~97 G/s f32. A likely cause of the extra 0.7× (not profiled): the f32 micro-kernel keeps 16 accumulators (4 rows × 4 Q-registers), the f64 one only 8 (4 × 2), so f64 has half as many independent FMA chains to hide FMA latency.
 
 **Peak per family on this machine:**
 
@@ -208,7 +202,7 @@ The register tile holds ~95–97 GFLOP/s from N=64 through N=1024. The auto-vect
 | `gemm_reordered` | 27.74 | 86.10 | 3.1× |
 | `gemm_blocked` | 27.21 | 85.85 | 3.2× |
 | `gemm_neon_blocked` | 36.30 | 97.03 | 2.7× |
-| `gemm_neon_blocked_prefetch` (D=2) | 33.77 | 98.26 | 2.9× |
+| `gemm_neon_blocked_prefetch` (D=4, prefetch-sweep run) | 33.06 | 96.35 | 2.9× |
 | `gemm_sme` | 410 | **1,450** | 3.5× |
 | `gemm_amx_blocked` (Accelerate) | **860.28** | **3,295.78** | 3.8× |
 
@@ -314,9 +308,9 @@ irrelevant.** Across every family, precision and size, all four distances
 
 The largest effect anywhere is +4.5% (`Avx512BlockedPf` f32 at N=1024); most
 rows are within noise of the unprefetched kernel, and some are marginally
-slower. This differs from Apple M4 Max, where D=2 was consistently best and
-worth ~1.5%. Zen 5's hardware prefetcher already handles these streaming
-patterns, so the explicit hints add front-end work without new information.
+slower. Apple M4 Max shows the same picture (within ±1% for the scalar
+kernel, at most a few percent for NEON at D=4): both hardware prefetchers
+already follow these streaming access patterns, so explicit hints add little.
 
 **`gemm_naive` is slower in absolute terms than on Apple M4 Max at N=4096**
 (0.43 vs 0.66 GFLOP/s f64) despite the far higher clock — and f32 and f64 are
@@ -436,6 +430,11 @@ All figures GFLOP/s. Rows through `CudaCublasTf32` are **end-to-end**
 | `CudaCublasTf32ComputeOnly` | — | — | — | — | 51,763 | 58,410 | 59,663 |
 | `CudaCublasFp16ComputeOnly` | — | — | — | — | 108,658 | 116,991 | **120,499** |
 | `CudaWmmaPipelinedComputeOnly` | — | — | — | — | 97,161 | 101,474 | **100,481** |
+
+`CudaWmma` was measured before its edge-tile store fix (commit `13add97`).
+Re-measured afterwards in interleaved before/after runs, it reaches
+~6.0 TFLOP/s at N=4096 (5,988–6,025 vs 5,279–5,307 GFLOP/s); N=1024 is
+unchanged. The other rows are unaffected.
 
 **double (f64)** — consumer Blackwell has a heavily reduced FP64 datapath,
 so everything here is an order of magnitude below the f32 column and the

@@ -25,8 +25,9 @@
  *    Loop order: i → k → j  (same as scalar/AVX2 reordered)
  *    New vs AVX2 reordered: 16 f32 / 8 f64 per FMA instead of 8/4.
  *    B and C accessed stride-1 → every cache line fully consumed.
- *    Theoretical peak vs AVX2: 2× FLOP/cycle for same frequency.
- *    Expected: ~2× AVX2 reordered for f32; ~2× for f64.
+ *    Theoretical peak vs AVX2: 2× FLOP/cycle for same frequency, but
+ *    measured within a few percent of AVX2/scalar reordered on Zen 5: the
+ *    loop is limited by memory traffic, not FMA width.
  *
  *  Kernel 3 — gemm_avx512_blocked
  *    Loop order: tiled i → k → j  (same as scalar/AVX2 blocked)
@@ -55,8 +56,9 @@
  *   • 2× SIMD width → 2× FLOP/cycle (when compute-bound)
  *   • 32 ZMM registers vs 16 YMM → room for larger register tiles without
  *     spilling accumulators to the stack
- *   • Embedded broadcast (vfmadd231ps zmm, zmm, mem{1to16}) eliminates
- *     explicit broadcast instructions for A scalars
+ *   • Embedded broadcast (vfmadd231ps zmm, zmm, mem{1to16}) can fold a
+ *     broadcast into the FMA — though this kernel doesn't need it (see the
+ *     micro-kernel note below)
  *   • One ZMM load covers a full 64-byte cache line exactly
  *
  * Micro-kernel register tile (f32, 4×32):
@@ -138,12 +140,12 @@ inline constexpr std::size_t kAvx512F64RegCols = 2;  // 2 ZMM → 16 f64
  *   zmm12..zmm13 — B(k, j..j+15) and B(k, j+16..j+31)
  *
  * Note on embedded broadcast:
- *   Intel AVX-512 supports a memory-source broadcast operand in FMA:
- *     vfmadd231ps zmm_acc, zmm_a_broad, [mem]{1to16}
- *   This encodes broadcast + FMA in a single instruction with no extra register.
- *   Compilers with -O3 often exploit this automatically; writing explicit
- *   _mm512_set1_ps / _mm512_fmadd_ps makes the intent clear and lets us
- *   verify the instruction count.
+ *   AVX-512 supports a memory-source broadcast operand in FMA:
+ *     vfmadd231ps zmm_acc, zmm_b, [mem]{1to16}
+ *   which encodes broadcast + FMA in one instruction. It doesn't pay here:
+ *   each broadcast A(i+r, k) feeds 2 FMAs (two ZMM columns), so the compiler
+ *   broadcasts it once into a register instead. GCC 13 -O3 -march=native on
+ *   Zen 5 emits vbroadcastss/sd and no {1to16} operands for this kernel.
  *
  * @param a       Pointer to A(i, k_blk) — row-stride lda
  * @param b       Pointer to B(k_blk, j) — row-stride ldb
@@ -354,9 +356,10 @@ void gemm_avx512_naive(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
  *   Inner j-loop processes 16 f32 / 8 f64 per FMA instead of 8/4.
  *   B and C accessed stride-1 — every cache line fully consumed.
  *
- * Expected result: ~2× AVX2 reordered GFLOP/s (compute-bound regime).
- * At large N, C row eviction from L1 is identical to AVX2 — the degradation
- * slope matches but starts from a higher baseline.
+ * Measured: within a few percent of AVX2/scalar reordered on Zen 5 — not
+ * the 2× the wider FMA would suggest, since the loop streams B and C rather
+ * than being compute-bound. C row eviction from L1 at large N is the same
+ * as AVX2.
  */
 #if !HPC_HAS_AVX512
 template <typename T>

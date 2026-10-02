@@ -22,7 +22,7 @@
  *     Level 2 + double-buffered shared memory to overlap load and compute.
  *     On Ampere+ (sm_80+): uses cp.async for asynchronous global->shared copy.
  *
- *   Level 4  -- gemm_cuda_wmma  (Tensor Cores, fp32 only, sm_70+)    5.3 TFLOP/s
+ *   Level 4  -- gemm_cuda_wmma  (Tensor Cores, fp32 only, sm_70+)    6.0 TFLOP/s
  *     Converts fp32->fp16 on the fly, wmma::mma_sync Tensor Core MMA,
  *     accumulates in fp32. fp16 conversion introduces ~1e-3 relative error.
  *     64x64 tiles, single-buffered. Falls back to gemm_cuda_double_buf on

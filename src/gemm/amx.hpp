@@ -44,12 +44,11 @@
  *  Verification status
  * ============================================================
  *
- * VERIFIED on Apple M4 Max (macOS, Apple Clang 17) — see README.md for
- * measured GFLOP/s. Accelerate.framework ships in every macOS SDK, so
- * unlike this file's previous Intel-AMX design (which needed a runtime
- * CPUID + Linux kernel permission dance and could not be tested on this
- * arm64 machine at all), there is no meaningful "unsupported hardware"
- * failure mode to guard against beyond "not building for Apple platforms".
+ * Verified on Apple M4 Max (macOS, Apple Clang 17) — see docs/benchmarks.md
+ * for measured GFLOP/s. Accelerate.framework ships in every macOS SDK, so
+ * unlike Intel AMX (runtime CPUID + Linux kernel permission request) there
+ * is no "unsupported hardware" failure mode to guard against beyond "not
+ * building for Apple platforms".
  *
  *
  * ============================================================
@@ -91,8 +90,9 @@
  * CPU kernel in this repo, which is strictly single-threaded. This makes
  * gemm_amx_* numbers a "best vendor-library throughput on this machine"
  * reference point, not an apples-to-apples single-core comparison against
- * gemm_sme, gemm_avx512_*, or gemm_neon_*. See README.md for the measured
- * numbers and this caveat repeated in context.
+ * gemm_sme, gemm_avx512_*, or gemm_neon_*. See docs/benchmarks.md for the
+ * measured numbers, including a single-thread comparison
+ * (VECLIB_MAXIMUM_THREADS=1).
  *
  *
  * ============================================================

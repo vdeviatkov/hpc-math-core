@@ -11,8 +11,8 @@ measured GFLOP/s, see [benchmarks.md](benchmarks.md).
 
 ## Measured peak GFLOP/s, best kernel per family
 
-Single-threaded unless noted. f32/f64 = 32-/64-bit float. Sources: this
-README's benchmark sections, machine noted per row.
+Single-threaded unless noted. f32/f64 = 32-/64-bit float. Source:
+[benchmarks.md](benchmarks.md), machine noted per row.
 
 | Family | Machine | f32 peak | f64 peak | Notes |
 |---|---|---|---|---|
@@ -26,7 +26,7 @@ README's benchmark sections, machine noted per row.
 | CUDA (`gemm_cuda_double_buf`) | NVIDIA RTX 5080 (Blackwell) | **6,671 G/s** | 712 G/s | best plain-FMA CUDA kernel; N=4096, includes host↔device transfer |
 | CUDA (`gemm_cuda_reg_tile`) | NVIDIA RTX 5080 (Blackwell) | 6,583 G/s | 705 G/s | register-tiled shared-memory kernel, single GPU |
 | CUDA (`gemm_cuda_mma_ldmatrix`) | NVIDIA RTX 5080 (Blackwell) | 5,685 G/s | — | raw `mma.sync`+`ldmatrix` Tensor Cores, fp16-in/fp32-accumulate; on this small/untuned 64×64-tile kernel, below the plain-FMA kernels above at N=4096 |
-| CUDA (`gemm_cuda_wmma`) | NVIDIA RTX 5080 (Blackwell) | 5,266 G/s | — | `wmma::` Tensor Cores, fp16-in/fp32-accumulate; published Tensor Core peaks for this GPU class are ~250–300 TFLOP/s at large batched/tuned problem sizes — not what this small educational kernel is tuned for |
+| CUDA (`gemm_cuda_wmma`) | NVIDIA RTX 5080 (Blackwell) | 5,266 G/s (~6,000 after the edge-tile fix) | — | `wmma::` Tensor Cores, fp16-in/fp32-accumulate; small 64×64 tiles, single-buffered — far below the ~120 TFLOP/s cuBLAS FP16 reaches on this GPU (see the rows below) |
 | **CUDA (`gemm_cuda_wmma_pipelined`)** | NVIDIA RTX 5080 (Blackwell) | **100,481 G/s** (**100.5 TFLOP/s**) | — | Level 7; 128×128 tiles + cp.async double buffering + padded shared-memory ld, same `wmma::` API as above; compute-only (device-resident buffers), N=16384; ~19× `gemm_cuda_wmma` |
 | CUDA reference (`cublasSgemm`, plain FP32) | NVIDIA RTX 5080 (Blackwell) | 39,073 G/s (39.1 TFLOP/s) | — | vendor cuBLAS, compute-only, N=16384 — the real ceiling for the FMA-based kernels above, not part of this repo's own kernel families |
 | CUDA reference (`cublasGemmEx`, dense FP16) | NVIDIA RTX 5080 (Blackwell) | 120,499 G/s (120.5 TFLOP/s) | — | vendor cuBLAS, compute-only, N=16384 — the real ceiling for the Tensor Core kernels above |
@@ -48,8 +48,9 @@ A fourth, orthogonal technique — **software prefetch** (`prefetch.hpp`,
 `__builtin_prefetch`) — issues an explicit load hint some distance `D`
 ahead of where the loop currently is, to hide memory latency the hardware
 prefetcher doesn't predict on its own. It wraps the `*_blocked` kernel of
-every family; see the "Prefetch distance sweep" results in the top README
-for when it does (and doesn't) help.
+every family; see the
+[prefetch distance sweep](benchmarks.md#prefetch-distance-sweep) results for
+when it does (and doesn't) help.
 
 ---
 
@@ -60,9 +61,9 @@ for when it does (and doesn't) help.
 | **Scalar** | `naive.hpp`, `reordered.hpp`, `blocked.hpp` | 1 element | — (plain C++, relies on `-O3` auto-vectorisation) | reorder, block |
 | **AVX2** | `avx2.hpp` | 256-bit YMM: 8×f32 / 4×f64 | `_mm256_fmadd_ps/pd`, `_mm256_broadcast_ss/sd`, `_mm256_load(u)_ps/pd` | reorder, block, register-tile |
 | **AVX-512** | `avx512.hpp` | 512-bit ZMM: 16×f32 / 8×f64 | `_mm512_fmadd_ps/pd`, `_mm512_set1_ps/pd`, `_mm512_reduce_add_ps/pd` | reorder, block, register-tile |
-| **NEON** | `neon.hpp` | 128-bit Q: 4×f32 / 2×f64 | `vfmaq_f32/f64`, `vfmaq_laneq_f32` (fused broadcast+FMA), `vld1q_f32/f64`, `vaddvq_f32` (horizontal reduce) | reorder, block, register-tile |
+| **NEON** | `neon.hpp` | 128-bit Q: 4×f32 / 2×f64 | `vfmaq_f32/f64`, `vdupq_n_f32/f64` (broadcast; Clang folds it into by-element FMLA), `vld1q_f32/f64`, `vaddvq_f32` (horizontal reduce) | reorder, block, register-tile |
 | **SVE / SVE2** | `sve.hpp` | Scalable (VLA), 128–2048-bit, width read at runtime | `svld1_f32/f64`, `svmla_f32/f64_x`, `svdup_n_f32/f64`, `svwhilelt_b32/b64` (predicated tail — no scalar remainder loop), `svcntw()/svcntd()` | reorder, block, register-tile, predication |
-| **SME2** (ARM) | `sme.hpp` | All ZA tiles: 2×2 × 16×16 f32 = 32×32 C block / 2×4 × 8×8 f64 = 16×32 (Apple M4) | `svmopa_za32/za64_f32/f64_m` (outer-product-accumulate, **not** FMA), `svld1_x2` (SME2 multi-vector), `svzero_za`, `svld1_hor_za32/64`, `svst1_hor_za32/64`, `svcntsw()/svcntsd()` | GotoBLAS: pack A+B (outside streaming mode), Mc/Kc/Nc cache blocking, multi-tile micro-kernel — see note below |
+| **SME2** (ARM) | `sme.hpp` | All ZA tiles: 2×2 × 16×16 f32 = 32×32 C block / 2×4 × 8×8 f64 = 16×32 (Apple M4) | `svmopa_za32_m`/`svmopa_za64_m` (outer-product-accumulate, **not** FMA), `svld1_x2` (SME2 multi-vector), `svzero_za`, `svld1_hor_za32/64`, `svst1_hor_za32/64`, `svcntsw()/svcntsd()` | GotoBLAS: pack A+B (outside streaming mode), Mc/Kc/Nc cache blocking, multi-tile micro-kernel — see note below |
 | **Apple AMX** (via Accelerate) | `amx.hpp` | Opaque — vendor-controlled | `cblas_sgemm`, `cblas_dgemm` (standard BLAS call, `<Accelerate/Accelerate.h>`) | none exposed — Apple's implementation, not ours (see note below) |
 | **KleidiAI** (reference, f32) | `kleidiai.hpp` | 2VL×2VL (all 4 f32 ZA tiles) | `kai_run_lhs_pack_*`, `kai_run_rhs_pack_*`, `kai_run_matmul_clamp_f32_f32p2vlx1_f32p2vlx1biasf32_sme2_mopa` | Arm's hand-written SME2 assembly micro-kernel; pack, no cache blocking |
 | **CUDA (GPU)** | `cuda.hpp` + `src/cuda/gemm_kernels.cu` | Thread → 1 elem (naive) up to 8×8 register tile/thread (`reg_tile`); 8 warps × 8 WMMA fragments/block (`wmma_pipelined`) | `__shared__` tile buffers, `__syncthreads()`, `__pipeline_memcpy_async`/`cp.async` (double-buffer), `wmma::fragment`/`wmma::mma_sync` (Tensor Cores), `float4`/`double2` vectorized loads + XOR smem swizzle, `ldmatrix.sync`+`mma.sync` PTX (raw Tensor Cores), 128×128-tile `wmma::` + `cp.async` double buffering (`wmma_pipelined`) | shared-memory tiling, register tiling, double buffering, vectorized loads, Tensor Core tile-multiply (3 abstraction levels + a 4th, bigger-tile/pipelined level) |
@@ -78,9 +79,11 @@ additionally keep a small grid of `C` accumulators (e.g. 4 rows × 2
 vectors) resident in registers for the entire k-tile — that's the
 "register tiling" layer.
 
-**NEON's `vfmaq_laneq_f32`.** Instead of a separate broadcast instruction
-per scalar, this fuses "take lane N of this vector, broadcast it, and FMA"
-into one instruction — saves a `vdup` per row in the blocked micro-kernel.
+**NEON's by-element FMA.** The NEON kernels broadcast each `A(i,k)` with
+`vdupq_n_f32` and call plain `vfmaq_f32`, but Clang folds most of those
+broadcasts into the by-element form `fmla v.4s, v.4s, v.s[lane]` (what
+`vfmaq_laneq_f32` spells explicitly), so the blocked micro-kernel issues
+no separate broadcast instruction for 12 of its 16 FMAs per k step.
 
 **SVE has no fixed width.** `svcntw()`/`svcntd()` query the hardware vector
 length *at runtime*; the same compiled binary adapts its tile width to
@@ -90,12 +93,12 @@ kernels never need a separate scalar remainder loop, unlike AVX2/NEON.
 
 **SME is not "wider SVE" — it's a different primitive.** Every family above
 computes `C(i,j)` with vector **FMA**: one scalar broadcast, one vector
-multiply-add. SME's `svmopa_za32_f32_m` instead computes a whole SVL×SVL
+multiply-add. SME's `svmopa_za32_m` instead computes a whole SVL×SVL
 **outer product** in one instruction (`ZA[r][c] += a[r]*b[c]`), the same
-class of operation as CUDA's `wmma::mma_sync` or Apple AMX below. A real
-hardware quirk fell out of building this: gather-load intrinsics are
-illegal inside SME's required "streaming mode," so the `A` column vector
-must be packed rather than gathered. `gemm_sme` packs both A and B outside
+class of operation as CUDA's `wmma::mma_sync` or Apple AMX below. One
+hardware constraint shapes the kernel: gather-load intrinsics are illegal
+inside SME's required "streaming mode," so the `A` column vector must be
+packed rather than gathered. `gemm_sme` packs both A and B outside
 streaming mode and keeps all ZA tiles busy (2×2 f32 / 2×4 f64). Full
 writeup in `sme.hpp`'s file header.
 
@@ -142,5 +145,5 @@ where noted:
   convert inputs to fp16, accumulate in fp32 (~1e-3 relative error) —
   Tensor Cores require reduced-precision input.
 - **Apple AMX (`amx.hpp`)**: full fp32/fp64 throughout — Accelerate's BLAS
-  does *not* force a reduced-precision format, unlike the GPU/Intel-AMX
-  designs above.
+  does *not* force a reduced-precision format, unlike the GPU Tensor Core
+  kernels above.
