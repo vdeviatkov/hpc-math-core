@@ -17,8 +17,7 @@
  *    New technique: widen the inner k-loop to process 8 f32 / 4 f64 elements
  *                   per FMA using a single YMM accumulator per (i,j) pair.
  *    Remaining bottleneck: column-stride access to B is cache-hostile (same
- *    as scalar naive).  The SIMD width gives a theoretical 8× speedup for
- *    f32 but cache misses immediately cap it.
+ *    as scalar naive), so the 8-wide f32 SIMD gives little speedup.
  *
  *  Kernel 2 — gemm_avx2_reordered
  *    Loop order: i → k → j  (same as scalar reordered)
@@ -34,9 +33,8 @@
  *                   inner micro-kernel holds a 4×16 f32 (or 4×8 f64) tile
  *                   of C entirely in YMM registers for the full k-tile,
  *                   eliminating all store-reload round trips.
- *    Why better than reordered: at large N, C row i is evicted from L1
- *    between k-iterations.  Keeping the C tile in registers removes this
- *    bottleneck and drives utilisation of both FMA execution ports.
+ *    Versus reordered: at large N, C row i is evicted from L1 between
+ *    k-iterations; keeping the C tile in registers removes that traffic.
  *
  *
  * ============================================================
@@ -208,17 +206,10 @@ inline void avx2_micro_f64_4x8(const double* __restrict__ a, const double* __res
  *         acc += A_row_i[k..k+7] * B_col_j[k..k+7]   // gather! B is column-stride
  *       C(i,j) += hsum(acc) + scalar_tail
  *
- * IMPORTANT — B access pattern:
- *   B(k, j) with fixed j and varying k is a COLUMN of B in row-major layout.
- *   Consecutive k values are N elements apart in memory.
- *   → This is a STRIDE-N gather, not a sequential load.
- *   → For large N every B element is in a different cache line.
- *   → SIMD width does not help cache behaviour; the column is still cold.
- *   → Expected behaviour: GFLOP/s similar to scalar naive (cache-miss bound),
- *     possibly worse due to gather overhead.
- *
- * This kernel is included purely as a measurement point:
- * it shows that SIMD alone cannot overcome poor memory access patterns.
+ * B(k, j) with fixed j and varying k is a column of B: consecutive k are N
+ * elements apart, so each B element sits on a different cache line and has
+ * to be gathered. SIMD width doesn't change that; GFLOP/s stays close to
+ * scalar naive. The kernel is kept as a measurement point for exactly that.
  */
 #if !HPC_HAS_AVX2
 template <typename T>
@@ -320,15 +311,9 @@ void gemm_avx2_naive(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
  *       for j in steps of W:
  *         C[j..j+W] = FMA(a_broad, B[j..j+W], C[j..j+W])
  *
- * Memory access pattern:
- *   A(i,k)     — scalar broadcast, free                        ✔
- *   B(k, j..)  — stride-1, sequential across j                 ✔✔
- *   C(i, j..)  — stride-1, sequential across j, stays in L1   ✔✔
- *
- * Why better than gemm_avx2_naive:
- *   No gather required. Every cache line of B and C is fully used.
- *   This is the "minimum viable AVX2" kernel and shows the base SIMD benefit
- *   without any blocking — it degrades at large N when C row i exceeds L1.
+ * A(i,k) is broadcast once per k; B(k, j..) and C(i, j..) are read with
+ * stride 1, so no gather is needed and every cache line is fully used. No
+ * blocking: it degrades at large N when C row i no longer fits in L1.
  */
 #if !HPC_HAS_AVX2
 template <typename T>
@@ -407,12 +392,10 @@ void gemm_avx2_reordered(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
  *   ymm8..ymm11  — 4 × broadcast(A(i+r, k))
  *   ymm12..ymm13 — 2 × B(k, j..j+15)
  *
- * Why better than gemm_avx2_reordered at large N:
- *   In the reordered kernel, C row i (size N×sizeof(T)) may exceed L1 between
- *   k-iterations, causing reload traffic. The register tile keeps the C sub-tile
- *   (4 rows × 16 f32 = 256 B) in registers for kAvx2TileK iterations before
- *   any store occurs. Combined with outer tiling that fits B and A tiles in L2,
- *   this maximally utilises FMA throughput.
+ * Versus gemm_avx2_reordered at large N: there, C row i (N×sizeof(T)) can
+ * fall out of L1 between k-iterations. Here the 4×16 f32 C sub-tile stays in
+ * registers for kAvx2TileK iterations before it is stored, and the outer
+ * tiling keeps the A and B tiles in L2.
  */
 #if !HPC_HAS_AVX2
 template <typename T>

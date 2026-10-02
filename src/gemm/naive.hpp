@@ -2,34 +2,21 @@
 
 /**
  * @file naive.hpp
- * @brief Naïve (i-j-k) General Matrix Multiply — GEMM.
+ * @brief Naïve i-j-k GEMM — the reference baseline every other kernel is
+ *        validated and benchmarked against.
  *
- * ============================================================
- *  Algorithm: canonical triple-loop, order i → j → k
- * ============================================================
- *
- *   for i in [0, M):            // row of A and C
- *     for j in [0, N):          // column of B and C
- *       for k in [0, K):        // contraction (inner) dimension
+ *   for i in [0, M):
+ *     for j in [0, N):
+ *       for k in [0, K):
  *         C(i,j) += A(i,k) * B(k,j)
  *
+ * Row-major storage, so in the inner k-loop:
  *
- * Cache behaviour — WHY this is slow
- * ===================================
+ *   A(i,k) → A[i*K + k]   stride 1: sequential, cache-friendly
+ *   B(k,j) → B[k*N + j]   stride N: a new cache line on every k
+ *   C(i,j)                invariant: stays in a register
  *
- * All three matrices are stored in row-major order.  Index arithmetic:
- *
- *   A(i,k) → A.data()[ i*K + k ]   — row i, element k along that row
- *   B(k,j) → B.data()[ k*N + j ]   — row k, element j along that row
- *   C(i,j) → C.data()[ i*N + j ]   — row i, element j along that row
- *
- * Inner-loop access pattern (fixed i, fixed j, k varies):
- *
- *   A(i, k)  :  k advances by 1 → stride-1 (sequential) ✔ cache-friendly
- *   B(k, j)  :  k advances by 1 → stride-N (jumps N doubles per step) ✘ cache-hostile
- *   C(i, j)  :  k does NOT change j/i → same address every iteration ✔ (register)
- *
- *        Memory layout of B (row-major, N=4 example)
+ *        B, row-major (N=4)
  *        ┌───────────────────────────────────┐
  *   row0 │ B(0,0)  B(0,1)  B(0,2)  B(0,3)  │  ← cache line 0
  *   row1 │ B(1,0)  B(1,1)  B(1,2)  B(1,3)  │  ← cache line 1
@@ -37,19 +24,11 @@
  *   row3 │ B(3,0)  B(3,1)  B(3,2)  B(3,3)  │  ← cache line 3
  *        └───────────────────────────────────┘
  *
- * For a fixed column j, the inner k-loop reads B(0,j), B(1,j), B(2,j) …
- * Each read is on a *different* cache line.  For N=1024 doubles (8 bytes each)
- * one cache line holds 8 elements.  The k-loop therefore triggers N/8 = 128
- * cache-line loads per (i,j) pair, and barely reuses any of them because the
- * next (i, j+1) pair starts the same pattern on the adjacent column.
- *
- * Effective reuse distance of B:
- *   Between two accesses to B(k, j) and B(k, j') the loop visits M*K other
- *   elements — easily exceeding L1 (32 KB) and often L2 (256 KB) capacity.
- *   This results in L3 or DRAM traffic on every access to B.
- *
- * Complexity: O(M * N * K) multiply-add operations.
- * Memory traffic (worst case, no cache reuse): O(M*K + M*N*K/8 + M*N) cache lines.
+ * Walking column j touches K different cache lines of B and uses one
+ * element from each. The line holding B(k,j) is needed again for B(k,j+1),
+ * but only after the k-loop has touched ~K other lines of B; at K=1024 and
+ * 64-byte lines that is 64 KB, more than a typical L1. In the worst case
+ * every B access misses: O(M*N*K) cache-line loads for O(M*N*K) FMAs.
  */
 
 #include "hpc/matrix.hpp"
@@ -57,18 +36,14 @@
 namespace hpc::gemm {
 
 /**
- * @brief Naïve i-j-k GEMM: C = A × B  (C is overwritten, not accumulated).
+ * @brief C = A × B with the naïve i-j-k loop order (C is overwritten).
  *
  * @param A  Input matrix, M×K
  * @param B  Input matrix, K×N
- * @param C  Output matrix, M×N  (must already be allocated; will be zeroed)
+ * @param C  Output matrix, M×N (must already be allocated)
  *
  * @pre  A.cols() == B.rows()
  * @pre  C.rows() == A.rows() && C.cols() == B.cols()
- *
- * This implementation is intentionally unoptimised.  It serves as the
- * reference baseline against which all other kernels are validated and
- * benchmarked.
  */
 template <typename T>
 void gemm_naive(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
@@ -79,17 +54,13 @@ void gemm_naive(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
     assert(B.rows() == K && "Inner dimensions must agree");
     assert(C.rows() == M && C.cols() == N && "C must be M×N");
 
-    C.zero();  // Ensure C starts as zero before accumulation.
+    C.zero();
 
     for (std::size_t i = 0; i < M; ++i) {
         for (std::size_t j = 0; j < N; ++j) {
-            // C(i,j) accumulates a dot product of row i of A with col j of B.
             T acc{};
-            for (std::size_t k = 0; k < K; ++k) {
-                // A(i,k): stride-1 across k — good spatial locality.
-                // B(k,j): stride-N across k — poor spatial locality (column walk).
-                acc += A(i, k) * B(k, j);
-            }
+            for (std::size_t k = 0; k < K; ++k)
+                acc += A(i, k) * B(k, j);  // B walks a column: stride N
             C(i, j) = acc;
         }
     }
