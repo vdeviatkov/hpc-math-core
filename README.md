@@ -41,9 +41,9 @@ Best kernel per family, single-threaded unless noted. Full output, speedup table
 | 3 | `gemm_avx512_{naive,reordered,blocked}` | 512-bit ZMM register tile, embedded broadcast |
 | 4 | `gemm_neon_*`, `gemm_sve_*` | ARM NEON Q-register tile; vector-length-agnostic SVE with predicated tails |
 | 5 | `gemm_*_blocked_prefetch` | `__builtin_prefetch` on A rows, B k-tiles and C rows; distance sweep D ∈ {2, 4, 8, 16} |
-| 6 | `gemm_cuda_{naive,reordered,blocked,reg_tile,double_buf,vectorized,wmma,mma_ldmatrix}` | Shared-memory tiling → register tiling → `cp.async` double buffering → `float4` loads + swizzle → Tensor Cores via WMMA → raw `mma.sync`/`ldmatrix` |
+| 6 | `gemm_cuda_{naive,blocked,reg_tile,double_buf,wmma,vectorized,mma_ldmatrix}` (CUDA Levels 0–6) | Shared-memory tiling → register tiling → `cp.async` double buffering → Tensor Cores via WMMA → `float4` loads + swizzle → raw `mma.sync`/`ldmatrix` |
 | 7 | `gemm_sme` | ARM SME2 `FMOPA` outer products into all ZA tiles (2×2 f32 / 2×4 f64), packed A+B, GotoBLAS cache blocking, SME2 multi-vector loads |
-| 8 | `gemm_amx_*`, `gemm_cuda_wmma_pipelined` | Apple AMX through Accelerate BLAS; 128×128-tile, `cp.async`-pipelined WMMA kernel (~19× the Level 4 WMMA kernel) |
+| 8 | `gemm_amx_*`, `gemm_cuda_wmma_pipelined` (CUDA Level 7) | Apple AMX through Accelerate BLAS; 128×128-tile, `cp.async`-pipelined WMMA kernel (~19× `gemm_cuda_wmma`) |
 
 A family is compiled only where its ISA exists; elsewhere its kernels are declared `= delete`, so a wrong call is a compile-time error rather than a silently slower substitute. Benchmarks still list absent families as `SKIPPED`. Every family has been verified on real hardware except `gemm_sve_*`, for which no SVE machine was available.
 
@@ -56,7 +56,7 @@ Requires CMake ≥ 3.25 and a C++20 compiler (GCC 12 / Clang 16 / Apple Clang 15
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release   # -O3 -march=native -ffast-math; CUDA auto-detected
 cmake --build build --parallel
-ctest --test-dir build --output-on-failure  # 355 CPU + 54 CUDA tests
+ctest --test-dir build --output-on-failure  # CPU suite (size depends on ISA) + 62 CUDA tests
 
 ./build/benchmarks/bench_gemm                 --benchmark_filter="f32"
 ./build/benchmarks/cuda/bench_gemm_cuda       --benchmark_filter="N=4096"

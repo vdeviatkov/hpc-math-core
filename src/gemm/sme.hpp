@@ -58,11 +58,10 @@
  *  The kernel — gemm_sme
  * ============================================================
  *
- * An earlier version of this file had three kernels (naive / reordered /
- * blocked) that all used a single ZA tile and an unpacked B. They peaked at
- * ~380 GFLOP/s f32 on one M4 Max core while Accelerate reached ~1650 GFLOP/s
- * on the same core, so they were replaced by this one kernel (one template
- * for f32 and f64), which fixes the four reasons for that gap:
+ * A straightforward SME kernel — one ZA tile, B read in place — peaks at
+ * ~380 GFLOP/s f32 on one M4 Max core, against ~1650 GFLOP/s for
+ * Accelerate on the same core. gemm_sme (one template for f32 and f64)
+ * closes most of that gap with four design choices:
  *
  *  1. All ZA tiles in use. A single tile serialises every FMOPA on the
  *     previous one's accumulator, so the loop runs at FMOPA *latency*, not
@@ -83,8 +82,8 @@
  *       → macro-kernel: jr (nr) → ir (mr) → k
  *     The packed B strip is kc×nr and the packed A strip kc×mr, both read
  *     with unit stride, so the k loop touches two contiguous streams instead
- *     of one B row per k spaced ldb apart (which is what made the old kernels
- *     fall off at N ≥ 2048). Partial C sums across pc blocks are carried by
+ *     of one B row per k spaced ldb apart (which falls off sharply at
+ *     N ≥ 2048). Partial C sums across pc blocks are carried by
  *     loading C into ZA before the k loop.
  *
  *  3. Packing outside streaming mode. Scalar/NEON code is slow in streaming
@@ -97,7 +96,7 @@
  * Pitfall: every streaming helper called from the ZA-owning macro-kernel
  * needs a ZA attribute (__arm_inout("za") etc.). Without one it is
  * "private-ZA": Clang won't inline it and wraps each call in a lazy ZA save
- * (TPIDR2 + smstart za) — inside the k loop that cut throughput ~5×.
+ * (TPIDR2 + smstart za) — inside the k loop that cuts throughput ~5×.
  *
  *  4. SME2 multi-vector loads. The A and B operands of one k step are each
  *     fetched with LD1W/LD1D {z0-z1} (svld1_x2) — one instruction per 2

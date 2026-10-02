@@ -1,11 +1,10 @@
 /**
  * @file bench_gemm_cuda.cpp
- * @brief Google Benchmark driver for CUDA GEMM kernels (Levels 0-8, plus a
+ * @brief Google Benchmark driver for CUDA GEMM kernels (Levels 0-7, plus a
  *        cuBLAS reference).
  *
  * Levels:
  *   CudaNaive         -- Level 0: global memory only
- *   CudaReordered     -- Level 0b: CPU-symmetry baseline
  *   CudaBlocked       -- Level 1: TILE=16 shared-memory tiling
  *   CudaRegTile       -- Level 2: 128x128 block, 8x8 register tile per thread
  *   CudaDoubleBuf     -- Level 3: Level 2 + double buffering (cp.async on Ampere+)
@@ -13,22 +12,22 @@
  *   CudaVectorized    -- Level 5: float4/double2 loads + shared-memory XOR swizzle
  *   CudaMmaLdmatrix   -- Level 6: raw Tensor Cores via mma.sync+ldmatrix (fp32 only, sm_80+)
  *   CudaWmmaPipelined -- Level 7: WMMA, 128x128 tiles + cp.async double buffering
- *                        (fp32 only, sm_70+; NEW, added after the cuBLAS reference
- *                        below measured this GPU's real Tensor Core ceiling)
+ *                        (fp32 only, sm_70+)
  *   CudaCublas        -- Reference: cuBLAS SGEMM/DGEMM, ceiling for the FMA kernels above
- *   CudaCublasTf32    -- Reference: cuBLAS TF32 Tensor Cores (fp32 only, sm_80+),
- *                        ceiling for the Tensor Core kernels above
- *   CudaCublas*ComputeOnly -- same two cuBLAS kernels, but timing ONLY the
- *                        GEMM call against pre-staged device buffers (no
+ *   CudaCublasTf32    -- Reference: cuBLAS TF32 Tensor Cores (fp32 only, sm_80+)
+ *   *ComputeOnly      -- cuBLAS SGEMM / TF32 / FP16 and CudaWmmaPipelined, timing
+ *                        ONLY the GEMM call against pre-staged device buffers (no
  *                        per-iteration cudaMalloc/H2D/D2H) -- see
  *                        gemm_kernels.cu's "raw-device-pointer entry
- *                        points" comment for why every OTHER benchmark
- *                        here (including CudaCublas/CudaCublasTf32 above)
- *                        badly understates achievable throughput at large N.
+ *                        points" comment for why the end-to-end rows
+ *                        understate achievable throughput at large N.
+ *                        cuBLAS FP16 compute-only is the ceiling for the
+ *                        Tensor Core kernels.
  *
  * Runtime guards:
  *   All kernels check cuda_device_count() > 0 -> SKIPPED on CPU-only machines.
- *   CudaWmma additionally checks cuda_has_tensor_cores() -> SKIPPED on pre-Volta.
+ *   CudaWmma/CudaWmmaPipelined/CudaCublasFp16* additionally check
+ *   cuda_has_tensor_cores() -> SKIPPED on pre-Volta.
  *   CudaMmaLdmatrix/CudaCublasTf32(*) additionally check cuda_has_ampere() -> SKIPPED pre-Ampere.
  *   CudaDoubleBuf reports whether cp.async (Ampere+) is active.
  */
@@ -69,20 +68,6 @@ static void BM_CudaNaive(benchmark::State& state) {
     hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
     fill_random(A, 1); fill_random(B, 2);
     for (auto _ : state) { hpc::gemm::gemm_cuda_naive(A, B, C); benchmark::DoNotOptimize(C.data()); benchmark::ClobberMemory(); }
-    state.counters["GFLOP/s"] = benchmark::Counter(flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
-    state.counters["N"] = double(N);
-    state.counters["precision"] = double(sizeof(T) * 8);
-}
-
-// ---------------------------------------------------------------------------
-// Level 0b -- Reordered
-// ---------------------------------------------------------------------------
-template <std::size_t N, typename T = double>
-static void BM_CudaReordered(benchmark::State& state) {
-    if (hpc::gemm::cuda_device_count() == 0) { state.SkipWithMessage("No CUDA device available"); return; }
-    hpc::Matrix<T> A(N, N), B(N, N), C(N, N);
-    fill_random(A, 1); fill_random(B, 2);
-    for (auto _ : state) { hpc::gemm::gemm_cuda_reordered(A, B, C); benchmark::DoNotOptimize(C.data()); benchmark::ClobberMemory(); }
     state.counters["GFLOP/s"] = benchmark::Counter(flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
     state.counters["N"] = double(N);
     state.counters["precision"] = double(sizeof(T) * 8);
@@ -169,11 +154,6 @@ static void BM_CudaVectorized(benchmark::State& state) {
 
 // ---------------------------------------------------------------------------
 // Level 6 -- Raw Tensor Cores via mma.sync + ldmatrix -- fp32 only, sm_80+.
-// VERIFIED on real hardware (RTX 5080, Blackwell sm_120): the A-fragment
-// ldmatrix.x4 address mapping had its row/col quadrant bits swapped
-// (produced numerically wrong output, not a crash) -- fixed and
-// cross-checked against a reference implementation; see gemm_kernels.cu's
-// kernel_mma_ldmatrix file comment for the full writeup.
 // ---------------------------------------------------------------------------
 template <std::size_t N>
 static void BM_CudaMmaLdmatrix(benchmark::State& state) {
@@ -190,14 +170,10 @@ static void BM_CudaMmaLdmatrix(benchmark::State& state) {
 
 // ---------------------------------------------------------------------------
 // Level 7 -- Pipelined WMMA (bigger tiles + cp.async double buffering) --
-// fp32 only, sm_70+. NEW kernel, added after the cuBLAS reference below
-// measured this GPU's real Tensor Core ceiling. See gemm_kernels.cu's
-// kernel_wmma_pipelined file comment for the full design rationale.
-// N=64/128 are below or barely at the 128x128x32 exact-tile requirement
-// (N=64 always falls back to gemm_cuda_wmma; N=128 needs K=128, a
-// multiple of 32, which it is) -- kept in the standard size sweep for
-// direct comparison against every other Level 0-7 kernel at the same
-// sizes; N=4096 is where the fast path matters most.
+// fp32 only, sm_70+. N=64 is below the 128x128x32 exact-tile requirement
+// and falls back to gemm_cuda_wmma (the exact_tiles counter shows which
+// path ran); it stays in the standard size sweep for comparison against
+// every other kernel at the same sizes.
 // ---------------------------------------------------------------------------
 template <std::size_t N>
 static void BM_CudaWmmaPipelined(benchmark::State& state) {
@@ -215,11 +191,7 @@ static void BM_CudaWmmaPipelined(benchmark::State& state) {
 
 // ---------------------------------------------------------------------------
 // Reference -- cuBLAS (vendor-tuned upper bound, not part of the Level
-// 0-7 ladder above). See gemm_kernels.cu's "Reference -- cuBLAS" section
-// for why this exists: the hand-written Tensor Core kernels above measured
-// only ~5 TFLOP/s on this RTX 5080, well under Blackwell's realistic
-// Tensor Core potential -- this establishes what's actually achievable
-// here before attempting a larger hand-written rewrite to close that gap.
+// 0-7 ladder above): what NVIDIA's production GEMM achieves on the GPU.
 // ---------------------------------------------------------------------------
 template <std::size_t N, typename T = double>
 static void BM_CudaCublas(benchmark::State& state) {
@@ -304,10 +276,10 @@ static void BM_CudaCublasTf32ComputeOnly(benchmark::State& state) {
     state.counters["tensor_cores"] = 1;
 }
 
-// fp16-in/fp32-accumulate compute-only -- the natural next data point
-// after TF32 compute-only (~59 TFLOP/s), since dense FP16 Tensor Core
-// throughput is roughly 2x TF32's on Ampere-and-later. Converts once
-// outside the timed region via gemm_cuda_convert_f32_to_f16_device.
+// fp16-in/fp32-accumulate compute-only -- the ceiling for the Tensor Core
+// kernels; dense FP16 throughput is roughly 2x TF32's on Ampere and later.
+// Converts once outside the timed region via
+// gemm_cuda_convert_f32_to_f16_device.
 template <std::size_t N>
 static void BM_CudaCublasFp16ComputeOnly(benchmark::State& state) {
     if (hpc::gemm::cuda_device_count() == 0) { state.SkipWithMessage("No CUDA device available"); return; }
@@ -342,9 +314,9 @@ static void BM_CudaCublasFp16ComputeOnly(benchmark::State& state) {
 
 // Level 7's compute-only counterpart -- same pre-staging as
 // BM_CudaCublasFp16ComputeOnly above, so the two numbers are directly
-// comparable: this is "how close does the NEW hand-written kernel get to
-// cuBLAS's ~118 TFLOP/s dense-FP16 ceiling once transfer/conversion
-// overhead is excluded from both". Requires exact-tile N (multiple of
+// comparable: how close the hand-written kernel gets to cuBLAS's
+// dense-FP16 ceiling once transfer/conversion overhead is excluded from
+// both. Requires exact-tile N (multiple of
 // 128) -- gemm_cuda_wmma_pipelined_device has no fallback at this layer.
 template <std::size_t N>
 static void BM_CudaWmmaPipelinedComputeOnly(benchmark::State& state) {
@@ -403,7 +375,6 @@ static void BM_CudaWmmaPipelinedComputeOnly(benchmark::State& state) {
     BENCHMARK((TMPL<4096>))->Unit(benchmark::kMicrosecond)->Name(#TMPL "/f32/N=4096")
 
 HPC_REG_CUDA_T(BM_CudaNaive);
-HPC_REG_CUDA_T(BM_CudaReordered);
 HPC_REG_CUDA_T(BM_CudaBlocked);
 HPC_REG_CUDA_T(BM_CudaRegTile);
 HPC_REG_CUDA_T(BM_CudaDoubleBuf);
@@ -417,7 +388,7 @@ HPC_REG_CUDA_WMMA(BM_CudaCublasTf32);
 // Larger problem sizes -- N=4096 (the size shared with every other kernel
 // above) is too small for a GEMM to reach a GPU's asymptotic compute-bound
 // peak. cuBLAS gets N=8192/16384 to show what it can do; BM_CudaWmmaPipelined
-// gets the same sizes to see how close the new hand-written kernel gets.
+// gets the same sizes to see how close the hand-written kernel gets.
 BENCHMARK((BM_CudaCublas<8192,  float>))->Unit(benchmark::kMillisecond)->Name("BM_CudaCublas/f32/N=8192");
 BENCHMARK((BM_CudaCublas<16384, float>))->Unit(benchmark::kMillisecond)->Name("BM_CudaCublas/f32/N=16384");
 BENCHMARK((BM_CudaCublasTf32<8192>))->Unit(benchmark::kMillisecond)->Name("BM_CudaCublasTf32/f32/N=8192");

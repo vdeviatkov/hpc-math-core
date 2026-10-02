@@ -23,10 +23,6 @@ void gemm_cuda_naive(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) {
     throw std::runtime_error("CUDA not available: built without CUDA support");
 }
 template <typename T>
-void gemm_cuda_reordered(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) {
-    throw std::runtime_error("CUDA not available: built without CUDA support");
-}
-template <typename T>
 void gemm_cuda_blocked(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) {
     throw std::runtime_error("CUDA not available: built without CUDA support");
 }
@@ -94,8 +90,6 @@ void gemm_cuda_device_synchronize() {
 // Explicit instantiations -- required so the linker finds the symbols.
 template void gemm_cuda_naive<float>(const Matrix<float>&, const Matrix<float>&, Matrix<float>&);
 template void gemm_cuda_naive<double>(const Matrix<double>&, const Matrix<double>&, Matrix<double>&);
-template void gemm_cuda_reordered<float>(const Matrix<float>&, const Matrix<float>&, Matrix<float>&);
-template void gemm_cuda_reordered<double>(const Matrix<double>&, const Matrix<double>&, Matrix<double>&);
 template void gemm_cuda_blocked<float>(const Matrix<float>&, const Matrix<float>&, Matrix<float>&);
 template void gemm_cuda_blocked<double>(const Matrix<double>&, const Matrix<double>&, Matrix<double>&);
 template void gemm_cuda_reg_tile<float>(const Matrix<float>&, const Matrix<float>&, Matrix<float>&);

@@ -119,22 +119,14 @@ the GPU's own outer-product-style hardware, analogous to SME/AMX on CPU)
 self-consistent XOR shared-memory swizzle instead of padding) →
 `gemm_cuda_mma_ldmatrix` (the *same* Tensor Core computation as WMMA, one
 level lower: hand-issued `ldmatrix.sync` + `mma.sync` PTX instead of the
-C++ `wmma::` API) → `gemm_cuda_wmma_pipelined` (Level 7:
-`gemm_cuda_wmma`'s same `wmma::` API,
-but 128×128 tiles instead of 64×64, 8 warps each owning an 8-fragment
-32×64 region instead of 1 fragment, and `cp.async` double-buffered shared
-memory — the three fixes a cuBLAS-reference comparison showed were
-missing). **Every level is verified on real hardware** (NVIDIA
-RTX 5080, Blackwell sm_120, 2026-08-29) — that first real run found and
-fixed five genuine bugs across `double_buf`, `wmma`, and `mma_ldmatrix`
-(wrong cp.async address space, a hardcoded thread count, misaligned/
-transposed WMMA fragments, a swapped `ldmatrix` quadrant mapping), then
-motivated writing Level 7 after a cuBLAS reference comparison showed
-Levels 4/6's ~5 TFLOP/s was far below this GPU's ~118 TFLOP/s realistic
-Tensor Core ceiling; Level 7 reaches ~100 TFLOP/s (~19× Level 4, 83% of
-cuBLAS) using only the documented `wmma::` API — bigger tiles, cp.async
-double buffering, and a padded shared-memory leading dimension that removed
-a 85%-rate bank conflict found with Nsight Compute. See
+C++ `wmma::` API) → `gemm_cuda_wmma_pipelined` (Level 7: the same `wmma::`
+API as `gemm_cuda_wmma`, but 128×128 tiles instead of 64×64, 8 warps each
+owning an 8-fragment 32×64 region instead of 1 fragment, `cp.async`
+double-buffered shared memory, and padded leading dimensions that remove an
+85%-rate bank conflict measured with Nsight Compute). Levels 4 and 6 reach
+~5 TFLOP/s; Level 7 reaches ~100 TFLOP/s compute-only (~19× Level 4, 83% of
+cuBLAS's ~120 TFLOP/s dense-FP16 ceiling). Every level passes the CUDA test
+suite on an RTX 5080 (Blackwell sm_120). See
 [benchmarks.md § NVIDIA RTX 5080 — CUDA](benchmarks.md#nvidia-rtx-5080--cuda) and
 [§ Reference cuBLAS](benchmarks.md#reference-cublas--the-achievable-ceiling)
 for the full writeups.

@@ -162,14 +162,12 @@ add_compile_options(
     # it, $<CXX_COMPILER_ID:...> only asserts "the project's CXX compiler
     # is this vendor" -- it does NOT restrict the flag to CXX sources -- so
     # on a CUDA-enabled build these host flags leak into every nvcc
-    # invocation too. On Linux/macOS this went unnoticed because nvcc's
-    # -forward-unknown-to-host-compiler quietly hands GCC/Clang-style flags
-    # like -ffast-math/-march=native straight to the host compiler. On
-    # Windows it does NOT go unnoticed: nvcc's own argument parser chokes
-    # on the unguarded MSVC block below (see next comment) with "nvcc fatal
-    # : A single input file is required for a non-link phase when an
-    # outputfile is specified" -- caught only once real CUDA hardware
-    # (Windows + MSVC + nvcc) was available to build on.
+    # invocation too. On Linux/macOS nvcc's -forward-unknown-to-host-compiler
+    # quietly hands GCC/Clang-style flags like -ffast-math/-march=native to
+    # the host compiler, but on Windows nvcc's own argument parser rejects
+    # the unguarded MSVC block below (see next comment) with "nvcc fatal :
+    # A single input file is required for a non-link phase when an
+    # outputfile is specified".
     $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:GNU,Clang,AppleClang>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>:-O3>
     $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<BOOL:${HPC_MARCH}>,$<CXX_COMPILER_ID:GNU,Clang,AppleClang>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>:-march=${HPC_MARCH}>
     $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:GNU,Clang,AppleClang>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>:-ffast-math>
@@ -255,8 +253,8 @@ endif()
 # Accelerate.framework's BLAS (cblas_sgemm / cblas_dgemm) — Apple's own
 # highly-tuned implementation, understood (Apple does not publish which
 # execution unit it targets) to dispatch to the AMX coprocessor blocks
-# on Apple Silicon. Unlike the Intel-AMX design this replaced, this
-# requires no special compiler flags, no runtime CPUID/permission dance,
+# on Apple Silicon. Unlike Intel AMX, this requires no special compiler
+# flags, no runtime CPUID/permission dance,
 # and no risk of SIGILL — Accelerate.framework ships in every macOS SDK,
 # so this option is safe to default ON.
 # ---------------------------------------------------------------------------

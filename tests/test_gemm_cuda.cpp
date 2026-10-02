@@ -2,8 +2,8 @@
  * @file test_gemm_cuda.cpp
  * @brief Google Test correctness suite for all CUDA GEMM kernels.
  *
- * Kernels verified:
- *   gemm_cuda_naive, gemm_cuda_reordered, gemm_cuda_blocked  (Levels 0-1)
+ * Kernels tested:
+ *   gemm_cuda_naive, gemm_cuda_blocked                         (Levels 0-1)
  *   gemm_cuda_reg_tile, gemm_cuda_double_buf                  (Levels 2-3)
  *   gemm_cuda_wmma                                            (Level 4, fp32 only)
  *   gemm_cuda_vectorized                                      (Level 5)
@@ -12,19 +12,8 @@
  *   gemm_cuda_cublas, gemm_cuda_cublas_tf32, gemm_cuda_cublas_fp16 (Reference, tf32/fp16 fp32 only)
  *
  * All tests skip at runtime when no CUDA device is present.
- * gemm_cuda_wmma / gemm_cuda_mma_ldmatrix additionally skip when Tensor
- * Cores / sm_80+ are unavailable.
- *
- * STATUS: every kernel above has been verified on real hardware (RTX 5080,
- * Blackwell sm_120, CUDA 13.2). That verification run found and fixed real
- * bugs in gemm_cuda_double_buf (cp.async source in the wrong address
- * space), the DoubleBuf launch config (hardcoded thread count, wrong for
- * double), gemm_cuda_wmma (shared-memory padding broke load_matrix_sync's
- * alignment requirement, and the A/B fragment major-order tags were
- * swapped relative to the physical layout), and gemm_cuda_mma_ldmatrix
- * (the A-fragment ldmatrix.x4 quadrant mapping had its row/col bits
- * swapped) -- see each kernel's file comment in gemm_kernels.cu for the
- * full writeup.
+ * The Tensor Core kernels and cuBLAS TF32/FP16 additionally skip when
+ * Tensor Cores (sm_70+) / sm_80+ are unavailable.
  *
  * Tolerances:
  *   float  (SIMT): rel 1e-4, abs 1e-3
@@ -65,8 +54,7 @@ protected:
 };
 
 // gemm_cuda_mma_ldmatrix requires sm_80+ specifically (mma.sync m16n8k16
-// f16 shape). Verified on real hardware -- see gemm_kernels.cu's file
-// comment for the bug that was found and fixed.
+// f16 shape); so does TF32 in cuBLAS.
 class CudaAmpereMmaTest : public ::testing::Test {
 protected:
     void SetUp() override {
@@ -148,18 +136,6 @@ HPC_CUDA_TEST(CudaNaiveDouble, gemm_cuda_naive, double,  32, 1, 2)
 HPC_CUDA_TEST(CudaNaiveDouble, gemm_cuda_naive, double,  64, 3, 4)
 HPC_CUDA_TEST(CudaNaiveDouble, gemm_cuda_naive, double, 128, 5, 6)
 HPC_CUDA_TEST(CudaNaiveDouble, gemm_cuda_naive, double, 256, 7, 8)
-
-// ===========================================================================
-// Level 0b -- Reordered
-// ===========================================================================
-struct CudaReorderedFloat  : CudaTest {};
-struct CudaReorderedDouble : CudaTest {};
-HPC_CUDA_TEST(CudaReorderedFloat,  gemm_cuda_reordered, float,   32, 1, 2)
-HPC_CUDA_TEST(CudaReorderedFloat,  gemm_cuda_reordered, float,   64, 3, 4)
-HPC_CUDA_TEST(CudaReorderedFloat,  gemm_cuda_reordered, float,  128, 5, 6)
-HPC_CUDA_TEST(CudaReorderedFloat,  gemm_cuda_reordered, float,  256, 7, 8)
-HPC_CUDA_TEST(CudaReorderedDouble, gemm_cuda_reordered, double,  32, 1, 2)
-HPC_CUDA_TEST(CudaReorderedDouble, gemm_cuda_reordered, double, 128, 5, 6)
 
 // ===========================================================================
 // Level 1 -- Blocked
@@ -278,9 +254,6 @@ TEST_F(CudaVectorizedFloat, NonSquare_100x200x50) {
 
 // ===========================================================================
 // Level 6 -- Raw Tensor Cores via mma.sync + ldmatrix -- fp32 only, sm_80+.
-// Verified on real hardware (RTX 5080, Blackwell sm_120) -- all three
-// cases below pass; see gemm_kernels.cu's kernel_mma_ldmatrix file comment
-// for the ldmatrix quadrant-mapping bug that was found and fixed here.
 // Relaxed tolerance for the same reason as WMMA (fp16 conversion).
 // ===========================================================================
 struct CudaMmaLdmatrixFloat : CudaAmpereMmaTest {};
@@ -309,13 +282,9 @@ TEST_F(CudaMmaLdmatrixFloat, N256) {
 
 // ===========================================================================
 // Level 7 -- Pipelined WMMA (bigger tiles + cp.async double buffering) --
-// fp32 only, sm_70+. NEW kernel, added after the cuBLAS reference below
-// measured this GPU's real Tensor Core ceiling (~118 TFLOP/s dense FP16,
-// compute-only) vs Level 4/6's ~5 TFLOP/s. See gemm_kernels.cu's
-// kernel_wmma_pipelined file comment for the full design rationale.
-// VERIFIED on RTX 5080. Sizes: N=128/256/512 exercise the fast path
-// (exact multiples of 128/128/32); N=192 is NOT a multiple of 128 and
-// exercises the fallback to the always-correct gemm_cuda_wmma.
+// fp32 only, sm_70+. Sizes: N=128/256/512 exercise the fast path (exact
+// multiples of 128/128/32); N=192 is NOT a multiple of 128 and exercises
+// the fallback to gemm_cuda_wmma.
 // ===========================================================================
 struct CudaWmmaPipelinedFloat : CudaTensorCoreTest {};
 
@@ -360,10 +329,8 @@ TEST_F(CudaWmmaPipelinedFloat, NonSquare_384x256x160) {
 
 // ===========================================================================
 // Reference -- cuBLAS (vendor-tuned upper bound, not part of the Level 0-7
-// ladder above). See gemm_kernels.cu's "Reference -- cuBLAS" section: this
-// measures what NVIDIA's own production GEMM achieves on this GPU, as the
-// realistic ceiling for the hand-written kernels above to be judged
-// against and (for gemm_cuda_cublas_tf32) rewritten toward.
+// ladder above): the realistic ceiling the hand-written kernels are judged
+// against.
 //
 // gemm_cuda_cublas<T>: plain SGEMM/DGEMM -- full precision, tight tolerance
 // like every other non-Tensor-Core kernel in this file.
@@ -404,10 +371,8 @@ TEST_F(CudaCublasTf32Float, N512) {
 }
 
 // gemm_cuda_cublas_fp16: dense FP16 Tensor Cores (fp16-in/fp32-accumulate)
-// via cublasGemmEx -- see gemm_kernels.cu for why this exists (TF32
-// compute-only topped out ~59 TFLOP/s on RTX 5080; dense FP16 is the next
-// data point toward the "100-200 TFLOP/s" question this was added to
-// answer). Gated the same way as CudaWmmaFloat (sm_70+, Tensor Cores).
+// via cublasGemmEx -- the ceiling for the hand-written Tensor Core kernels.
+// Gated the same way as CudaWmmaFloat (sm_70+, Tensor Cores).
 struct CudaCublasFp16Float : CudaTensorCoreTest {};
 
 TEST_F(CudaCublasFp16Float, N64) {

@@ -3,70 +3,56 @@
  * @file cuda.hpp
  * @brief Host-side C++ interface for CUDA GEMM kernels.
  *
- * Kernel ladder (nine levels of optimization):
+ * Kernel ladder (eight levels, 0-7). Throughput figures are f32, N=4096,
+ * measured on an RTX 5080 including host<->device transfer
+ * (docs/benchmarks.md has the full tables):
  *
- *   Level 0  -- gemm_cuda_naive
- *     One thread per C(i,j), no shared memory. DRAM-bound at all sizes.
+ *   Level 0  -- gemm_cuda_naive                                      2.6 TFLOP/s
+ *     One thread per C(i,j), no shared memory.
  *
- *   Level 0b -- gemm_cuda_reordered
- *     CPU-symmetry naming; structurally identical to naive on GPU.
+ *   Level 1  -- gemm_cuda_blocked  (TILE=16)                         2.4 TFLOP/s
+ *     TILE x TILE shared-memory tiling, 16x fewer global loads. Each thread
+ *     still owns 1 output, so __syncthreads overhead isn't amortised and
+ *     f32 runs slightly below naive (it is the fastest f64 kernel).
  *
- *   Level 1  -- gemm_cuda_blocked  (TILE=16)
- *     TILE x TILE shared-memory tiling, 16x fewer HBM loads.
- *     Each thread owns 1 output element -- low arithmetic intensity (~2 FLOP/byte).
- *
- *   Level 2  -- gemm_cuda_reg_tile  (128x128 block, 8x8 register tile)
+ *   Level 2  -- gemm_cuda_reg_tile  (128x128 block, 8x8 register tile) 6.6 TFLOP/s
  *     Each thread owns 64 outputs. Arithmetic intensity ~32 FLOP/byte.
- *     Typical: 50-75% of GPU peak FP32 throughput.
  *
- *   Level 3  -- gemm_cuda_double_buf
+ *   Level 3  -- gemm_cuda_double_buf                                 6.7 TFLOP/s
  *     Level 2 + double-buffered shared memory to overlap load and compute.
- *     On Ampere+ (sm_80+): uses cp.async for hardware async DMA.
- *     Typical: 75-85% of GPU peak FP32 throughput.
+ *     On Ampere+ (sm_80+): uses cp.async for asynchronous global->shared copy.
  *
- *   Level 4  -- gemm_cuda_wmma  (Tensor Cores, fp32 only, sm_70+)
- *     Converts fp32->fp16 on-the-fly, wmma::mma_sync Tensor Core MMA,
- *     accumulates in fp32. ~8x throughput vs SIMT FP32.
- *     fp16 conversion introduces ~1e-3 relative error.
- *     Falls back to gemm_cuda_double_buf on pre-Volta hardware.
+ *   Level 4  -- gemm_cuda_wmma  (Tensor Cores, fp32 only, sm_70+)    5.3 TFLOP/s
+ *     Converts fp32->fp16 on the fly, wmma::mma_sync Tensor Core MMA,
+ *     accumulates in fp32. fp16 conversion introduces ~1e-3 relative error.
+ *     64x64 tiles, single-buffered. Falls back to gemm_cuda_double_buf on
+ *     pre-Volta hardware.
  *
- *   Level 5  -- gemm_cuda_vectorized  (float4/double2 loads + smem XOR swizzle)
+ *   Level 5  -- gemm_cuda_vectorized  (float4/double2 loads + XOR swizzle) 5.7 TFLOP/s
  *     Same register-tile shape as Level 2, but global->shared loads use
- *     128-bit vector instructions and shared memory uses a self-consistent
- *     XOR swizzle instead of +1 padding. Requires K and N to be multiples
- *     of the vector width (4 for float, 2 for double); falls back to
- *     gemm_cuda_reg_tile otherwise.
+ *     128-bit vector instructions and shared memory uses an XOR swizzle
+ *     instead of +1 padding. Requires K and N to be multiples of the vector
+ *     width (4 for float, 2 for double); falls back to gemm_cuda_reg_tile
+ *     otherwise.
  *
- *   Level 6  -- gemm_cuda_mma_ldmatrix  (raw Tensor Cores, fp32 only, sm_80+)
+ *   Level 6  -- gemm_cuda_mma_ldmatrix  (raw Tensor Cores, fp32 only, sm_80+) 5.7 TFLOP/s
  *     Same computation as Level 4 (fp16 in, fp32 accumulate) one level
  *     below the WMMA C++ API: hand-issued ldmatrix.sync + mma.sync PTX.
- *     UNVERIFIED (see file header in gemm_kernels.cu) -- no CUDA hardware
- *     or toolkit was available to compile or run this kernel. Falls back
- *     to gemm_cuda_wmma on sm_70-75.
+ *     Falls back to gemm_cuda_wmma on sm_70-75.
  *
- *   Level 7  -- gemm_cuda_wmma_pipelined  (bigger tiles + cp.async double
- *               buffering, fp32 only, sm_70+; NEW, added after the
- *               Reference -- cuBLAS entry below measured this GPU's real
- *               Tensor Core ceiling)
- *     Same wmma:: C++ API as Level 4, but a 128x128 block tile (vs 64x64),
- *     8 warps each owning a 32x64 (8-fragment) output region instead of
- *     one 16x16 fragment, and cp.async-driven double-buffered shared
- *     memory (Ampere+; falls back to a synchronous double buffer on
- *     older Tensor-Core hardware). VERIFIED on RTX 5080 -- see
- *     gemm_kernels.cu's kernel_wmma_pipelined file comment for the full
- *     design rationale and the cuBLAS numbers that motivated it. Requires
- *     M, N exact multiples of 128 and K an exact multiple of 32 (no tail
- *     handling); falls back to the
- *     always-correct gemm_cuda_wmma otherwise.
+ *   Level 7  -- gemm_cuda_wmma_pipelined  (fp32 only, sm_70+)       9.0 TFLOP/s
+ *     Same wmma:: API as Level 4, but a 128x128 block tile, 8 warps each
+ *     owning a 32x64 (8-fragment) region, cp.async double-buffered shared
+ *     memory and padded leading dimensions. ~100 TFLOP/s compute-only at
+ *     N=16384 (83% of cuBLAS FP16). Requires M, N multiples of 128 and K a
+ *     multiple of 32; falls back to gemm_cuda_wmma otherwise.
  *
  *   Reference -- gemm_cuda_cublas / gemm_cuda_cublas_tf32 / gemm_cuda_cublas_fp16
- *     Not part of the ladder above -- vendor-tuned cuBLAS, used as a
- *     realistic achievable-peak ceiling for the hand-written kernels
- *     (this is what motivated writing Level 7 above). gemm_cuda_cublas is
- *     plain SGEMM/DGEMM; gemm_cuda_cublas_tf32/_fp16 (float only) use
- *     TF32/dense-FP16 Tensor Core compute via cublasGemmEx. Raw-device-
- *     pointer, compute-only variants of all three exist for peak-
- *     throughput measurement -- see the block below.
+ *     Not part of the ladder -- vendor-tuned cuBLAS, the realistic ceiling
+ *     for the hand-written kernels. gemm_cuda_cublas is plain SGEMM/DGEMM;
+ *     gemm_cuda_cublas_tf32/_fp16 (float only) use TF32/dense-FP16 Tensor
+ *     Core compute via cublasGemmEx. Raw-device-pointer, compute-only
+ *     variants exist for peak-throughput measurement -- see below.
  *
  * Runtime guards:
  *   cuda_device_count()     -- returns 0 on CPU-only builds.
@@ -90,11 +76,6 @@ bool cuda_has_ampere()       noexcept;
 // ---------------------------------------------------------------------------
 template <typename T>
 void gemm_cuda_naive(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C);
-// ---------------------------------------------------------------------------
-// Level 0b -- Reordered: CPU-symmetry baseline, same as naive on GPU.
-// ---------------------------------------------------------------------------
-template <typename T>
-void gemm_cuda_reordered(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C);
 // ---------------------------------------------------------------------------
 // Level 1 -- Blocked: TILE=16 shared-memory tiling, +1 column padding.
 // ---------------------------------------------------------------------------
@@ -128,20 +109,16 @@ template <typename T>
 void gemm_cuda_vectorized(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C);
 // ---------------------------------------------------------------------------
 // Level 6 -- Raw Tensor Core MMA via mma.sync + ldmatrix (separate from WMMA).
-//   UNVERIFIED -- no CUDA hardware/toolkit was available to compile or run
-//   this. Requires sm_80+; falls back to gemm_cuda_wmma on sm_70-75.
+//   Requires sm_80+; falls back to gemm_cuda_wmma on sm_70-75.
 //   float only, like WMMA.
 // ---------------------------------------------------------------------------
 void gemm_cuda_mma_ldmatrix(const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C);
 // ---------------------------------------------------------------------------
 // Level 7 -- Pipelined WMMA (bigger tiles + cp.async double buffering).
-//   NEW kernel -- see gemm_kernels.cu's kernel_wmma_pipelined file
-//   comment for the full design rationale (motivated by the cuBLAS
-//   reference below measuring ~118 TFLOP/s dense-FP16 achievable on this
-//   GPU vs Level 4/6's ~5 TFLOP/s). VERIFIED on RTX 5080. Requires sm_70+
-//   (Tensor Cores) and M/N exact multiples of 128, K an exact multiple of
-//   32 (no tail handling); falls back to gemm_cuda_wmma otherwise.
-//   float only.
+//   See gemm_kernels.cu's kernel_wmma_pipelined comment for the design.
+//   Requires sm_70+ (Tensor Cores) and M/N exact multiples of 128, K an
+//   exact multiple of 32 (no tail handling); falls back to gemm_cuda_wmma
+//   otherwise. float only.
 // ---------------------------------------------------------------------------
 void gemm_cuda_wmma_pipelined(const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C);
 // Raw-device-pointer, compute-only entry point (void* fp16 buffers -- same
@@ -152,17 +129,13 @@ void gemm_cuda_wmma_pipelined_device(const void* dA16, const void* dB16, float* 
                                       int M, int K, int N);
 // ---------------------------------------------------------------------------
 // Reference -- cuBLAS (vendor-tuned upper bound, not part of the ladder
-// above). Added to measure the realistic achievable peak on this GPU
-// before attempting a larger rewrite of the hand-written Tensor Core
-// kernels (Levels 4/6, which measured only ~5 TFLOP/s on RTX 5080 --
-// see gemm_kernels.cu's "Reference -- cuBLAS" section for the full story).
+// above): the realistic achievable peak on the GPU.
 //
 //   gemm_cuda_cublas<T>   -- plain SGEMM/DGEMM. Ceiling for the FMA-based
 //                            kernels (naive/blocked/reg_tile/double_buf/
 //                            vectorized).
 //   gemm_cuda_cublas_tf32 -- fp32 in/out, TF32 Tensor Core compute
-//                            (10-bit mantissa). Ceiling for the Tensor
-//                            Core kernels (wmma/mma_ldmatrix). float only.
+//                            (10-bit mantissa). float only.
 // ---------------------------------------------------------------------------
 template <typename T>
 void gemm_cuda_cublas(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C);
@@ -182,10 +155,9 @@ void gemm_cuda_cublas_tf32_device(const float* dA, const float* dB, float* dC,
                                    int M, int K, int N);
 // ---------------------------------------------------------------------------
 // Reference -- cuBLAS, dense FP16 (fp16-in/fp32-accumulate) via
-// cublasGemmEx. TF32 compute-only tops out around 59 TFLOP/s on RTX
-// 5080 -- still under the "100-200 TFLOP/s" range dense FP16 Tensor
-// Cores should reach (roughly 2x TF32, since TF32 elements occupy twice
-// the bits FP16 does through the same tensor pipe). gemm_cuda_cublas_fp16
+// cublasGemmEx: the ceiling for the Tensor Core kernels (Levels 4, 6, 7).
+// Roughly 2x TF32's throughput, since TF32 elements occupy twice the bits
+// FP16 does through the same tensor pipe. gemm_cuda_cublas_fp16
 // is the Matrix<float>-based wrapper (converts to fp16 internally, for
 // correctness testing); gemm_cuda_convert_f32_to_f16_device +
 // gemm_cuda_cublas_fp16_device are the raw-device-pointer, compute-only
@@ -220,8 +192,6 @@ void  gemm_cuda_device_synchronize();
 // ---------------------------------------------------------------------------
 extern template void gemm_cuda_naive<float>(const Matrix<float>&, const Matrix<float>&, Matrix<float>&);
 extern template void gemm_cuda_naive<double>(const Matrix<double>&, const Matrix<double>&, Matrix<double>&);
-extern template void gemm_cuda_reordered<float>(const Matrix<float>&, const Matrix<float>&, Matrix<float>&);
-extern template void gemm_cuda_reordered<double>(const Matrix<double>&, const Matrix<double>&, Matrix<double>&);
 extern template void gemm_cuda_blocked<float>(const Matrix<float>&, const Matrix<float>&, Matrix<float>&);
 extern template void gemm_cuda_blocked<double>(const Matrix<double>&, const Matrix<double>&, Matrix<double>&);
 extern template void gemm_cuda_reg_tile<float>(const Matrix<float>&, const Matrix<float>&, Matrix<float>&);

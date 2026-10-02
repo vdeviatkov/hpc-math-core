@@ -1447,7 +1447,7 @@ INSTANTIATE_TEST_SUITE_P(Sizes, GemmSmeCrossValidation,
 // ===========================================================================
 // 20. AMX Naive / Reordered / Blocked (Apple AMX, via Accelerate.framework)
 //
-// VERIFIED on Apple M4 Max. gemm_amx_naive/reordered/blocked are
+// Verified on Apple M4 Max. gemm_amx_naive/reordered/blocked are
 // intentionally identical thin wrappers around Accelerate's cblas_sgemm /
 // cblas_dgemm — see src/gemm/amx.hpp's file header for why there is only
 // one real implementation in this family (Accelerate exposes no
@@ -1456,8 +1456,7 @@ INSTANTIATE_TEST_SUITE_P(Sizes, GemmSmeCrossValidation,
 // Full fp32/fp64 precision throughout — unlike Intel AMX or
 // gemm_cuda_wmma, Accelerate's BLAS does not truncate to bf16/fp16, so
 // tolerances here match the tight ones used by every other family
-// (SVE/SME/NEON/AVX2/AVX512), not the loose bf16-style bound this section
-// used before switching from the (unverified, Intel-only) design.
+// (SVE/SME/NEON/AVX2/AVX512).
 // ===========================================================================
 
 TEST(GemmAmxNaive, KnownResult2x2) {
