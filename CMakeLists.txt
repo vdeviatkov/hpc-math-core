@@ -264,7 +264,7 @@ set(HPC_AMX_ENABLED FALSE)
 if(HPC_ENABLE_AMX)
     if(NOT APPLE)
         message(WARNING "HPC_ENABLE_AMX=ON but not building for Apple — Accelerate.framework "
-                         "is Apple-only; gemm_amx_* will not be compiled.")
+                         "is Apple-only; gemm_amx will not be compiled.")
     else()
         find_library(HPC_ACCELERATE_FRAMEWORK Accelerate)
         if(HPC_ACCELERATE_FRAMEWORK)
@@ -273,7 +273,7 @@ if(HPC_ENABLE_AMX)
             message(STATUS "Apple AMX enabled via Accelerate.framework (${HPC_ACCELERATE_FRAMEWORK})")
         else()
             message(WARNING "HPC_ENABLE_AMX=ON but Accelerate.framework was not found — "
-                             "gemm_amx_* will not be compiled.")
+                             "gemm_amx will not be compiled.")
         endif()
     endif()
 endif()
@@ -388,10 +388,9 @@ add_subdirectory(benchmarks)
 # CUDA is enabled automatically if a CUDA toolkit is found on the system.
 # When found:
 #   - CUDA language is enabled for the project.
-#   - A shared library `hpc_math_cuda` is compiled from src/cuda/*.cu.
+#   - A static library `hpc_math_cuda` is compiled from src/cuda/*.cu.
 #     It links against hpc_math_core (for the Matrix<T> header).
 #   - bench_gemm_cuda and hpc_tests_cuda targets are added.
-#   - The preprocessor macro HPC_HAVE_CUDA=1 is propagated to all consumers.
 #
 # When NOT found (macOS CPU-only, CI, …):
 #   - A stub library `hpc_math_cuda` is created from
@@ -484,7 +483,6 @@ if(CMAKE_CUDA_COMPILER)
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
     )
     target_compile_features(hpc_math_cuda PUBLIC cxx_std_20)
-    target_compile_definitions(hpc_math_cuda PUBLIC HPC_HAVE_CUDA=1)
     # Allow .cu files to use C++20 features.
     set_target_properties(hpc_math_cuda PROPERTIES
         CUDA_STANDARD 17        # nvcc C++17 is the max widely supported standard
@@ -513,7 +511,6 @@ else()
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
     )
     target_compile_features(hpc_math_cuda PUBLIC cxx_std_20)
-    # HPC_HAVE_CUDA is intentionally NOT defined here.
     target_link_libraries(hpc_math_cuda PUBLIC hpc_math_core)
 endif()
 

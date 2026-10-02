@@ -687,98 +687,37 @@ BENCHMARK(BM_Sme<2048, float>)->Unit(benchmark::kMicrosecond)->Name("Sme/f32/N=2
 BENCHMARK(BM_Sme<4096, float>)->Unit(benchmark::kMicrosecond)->Name("Sme/f32/N=4096");
 
 // ============================================================================
-// AMX (Apple Matrix coprocessor, via Accelerate.framework) benchmarks
+// AMX (Apple Matrix coprocessor, via Accelerate.framework) benchmark
 //
-// VERIFIED on Apple M4 Max. gemm_amx_naive/reordered/blocked are
-// intentionally identical thin wrappers around Accelerate's cblas_sgemm /
-// cblas_dgemm (Apple's own vendor-tuned BLAS) — see src/gemm/amx.hpp's file
-// header for why there is only one real implementation in this family, and
-// for the important caveat that Accelerate's BLAS may use multiple cores
-// internally (unlike every other, strictly single-threaded, CPU kernel in
-// this repo).
+// gemm_amx is a thin wrapper around Accelerate's cblas_sgemm / cblas_dgemm
+// (Apple's own vendor-tuned BLAS) — see src/gemm/amx.hpp. Accelerate may use
+// multiple cores internally (unlike every other, strictly single-threaded,
+// CPU kernel in this repo), so it is timed with UseRealTime(); set
+// VECLIB_MAXIMUM_THREADS=1 for a single-core comparison.
 //
-// Full fp32/fp64 precision throughout (no bf16/fp16 truncation) — unlike
-// Intel AMX or gemm_cuda_wmma, Accelerate's BLAS does not force a
-// reduced-precision input format.
+// Full fp32/fp64 precision throughout — unlike gemm_cuda_wmma, Accelerate's
+// BLAS does not force a reduced-precision input format.
 // ============================================================================
 
-/**
- * @brief Benchmark gemm_amx_naive<T> — Accelerate cblas_sgemm/dgemm.
- * See src/gemm/amx.hpp: identical to gemm_amx_reordered/_blocked.
- */
 template <std::size_t N, typename T = double>
-static void BM_AmxNaive(benchmark::State& state) {
+static void BM_Amx(benchmark::State& state) {
     run_gemm<N, T, kHaveAmx>(
         state, kNoAmx,
-        [](auto& A, auto& B, auto& C) { hpc::gemm::gemm_amx_naive(A, B, C); });
+        [](auto& A, auto& B, auto& C) { hpc::gemm::gemm_amx(A, B, C); });
 }
 
-/**
- * @brief Benchmark gemm_amx_reordered<T> — Accelerate cblas_sgemm/dgemm.
- * See src/gemm/amx.hpp: identical to gemm_amx_naive/_blocked.
- */
-template <std::size_t N, typename T = double>
-static void BM_AmxReordered(benchmark::State& state) {
-    run_gemm<N, T, kHaveAmx>(
-        state, kNoAmx,
-        [](auto& A, auto& B, auto& C) { hpc::gemm::gemm_amx_reordered(A, B, C); });
-}
-
-/**
- * @brief Benchmark gemm_amx_blocked<T> — Accelerate cblas_sgemm/dgemm.
- * See src/gemm/amx.hpp: identical to gemm_amx_naive/_reordered.
- */
-template <std::size_t N, typename T = double>
-static void BM_AmxBlocked(benchmark::State& state) {
-    run_gemm<N, T, kHaveAmx>(
-        state, kNoAmx,
-        [](auto& A, auto& B, auto& C) { hpc::gemm::gemm_amx_blocked(A, B, C); });
-}
-
-// ---- AMX Naive / Reordered / Blocked (f64) ----------------------------------
-BENCHMARK(BM_AmxNaive<64>)->UseRealTime()->Unit(benchmark::kMicrosecond)->Name("AmxNaive/f64/N=64");
-BENCHMARK(BM_AmxNaive<256>)->UseRealTime()->Unit(benchmark::kMicrosecond)->Name("AmxNaive/f64/N=256");
-BENCHMARK(BM_AmxNaive<512>)->UseRealTime()->Unit(benchmark::kMicrosecond)->Name("AmxNaive/f64/N=512");
-BENCHMARK(BM_AmxNaive<1024>)->UseRealTime()->Unit(benchmark::kMicrosecond)->Name("AmxNaive/f64/N=1024");
-
-BENCHMARK(BM_AmxReordered<64>)->UseRealTime()->Unit(benchmark::kMicrosecond)->Name("AmxReordered/f64/N=64");
-BENCHMARK(BM_AmxReordered<256>)->UseRealTime()->Unit(benchmark::kMicrosecond)->Name("AmxReordered/f64/N=256");
-BENCHMARK(BM_AmxReordered<512>)->UseRealTime()->Unit(benchmark::kMicrosecond)->Name("AmxReordered/f64/N=512");
-BENCHMARK(BM_AmxReordered<1024>)->UseRealTime()->Unit(benchmark::kMicrosecond)->Name("AmxReordered/f64/N=1024");
-BENCHMARK(BM_AmxReordered<2048>)->UseRealTime()->Unit(benchmark::kMicrosecond)->Name("AmxReordered/f64/N=2048");
-BENCHMARK(BM_AmxReordered<4096>)->UseRealTime()->Unit(benchmark::kMicrosecond)->Name("AmxReordered/f64/N=4096");
-
-BENCHMARK(BM_AmxBlocked<64>)->UseRealTime()->Unit(benchmark::kMicrosecond)->Name("AmxBlocked/f64/N=64");
-BENCHMARK(BM_AmxBlocked<256>)->UseRealTime()->Unit(benchmark::kMicrosecond)->Name("AmxBlocked/f64/N=256");
-BENCHMARK(BM_AmxBlocked<512>)->UseRealTime()->Unit(benchmark::kMicrosecond)->Name("AmxBlocked/f64/N=512");
-BENCHMARK(BM_AmxBlocked<1024>)->UseRealTime()->Unit(benchmark::kMicrosecond)->Name("AmxBlocked/f64/N=1024");
-BENCHMARK(BM_AmxBlocked<2048>)->UseRealTime()->Unit(benchmark::kMicrosecond)->Name("AmxBlocked/f64/N=2048");
-BENCHMARK(BM_AmxBlocked<4096>)->UseRealTime()->Unit(benchmark::kMicrosecond)->Name("AmxBlocked/f64/N=4096");
-
-// ---- AMX Naive / Reordered / Blocked (f32) ----------------------------------
-BENCHMARK(BM_AmxNaive<64, float>)->UseRealTime()->Unit(benchmark::kMicrosecond)->Name("AmxNaive/f32/N=64");
-BENCHMARK(BM_AmxNaive<256, float>)->UseRealTime()->Unit(benchmark::kMicrosecond)->Name("AmxNaive/f32/N=256");
-BENCHMARK(BM_AmxNaive<512, float>)->UseRealTime()->Unit(benchmark::kMicrosecond)->Name("AmxNaive/f32/N=512");
-BENCHMARK(BM_AmxNaive<1024, float>)->UseRealTime()->Unit(benchmark::kMicrosecond)->Name("AmxNaive/f32/N=1024");
-
-BENCHMARK(BM_AmxReordered<64, float>)->UseRealTime()->Unit(benchmark::kMicrosecond)->Name("AmxReordered/f32/N=64");
-BENCHMARK(BM_AmxReordered<256, float>)->UseRealTime()->Unit(benchmark::kMicrosecond)
-    ->Name("AmxReordered/f32/N=256");
-BENCHMARK(BM_AmxReordered<512, float>)->UseRealTime()->Unit(benchmark::kMicrosecond)
-    ->Name("AmxReordered/f32/N=512");
-BENCHMARK(BM_AmxReordered<1024, float>)->UseRealTime()->Unit(benchmark::kMicrosecond)
-    ->Name("AmxReordered/f32/N=1024");
-BENCHMARK(BM_AmxReordered<2048, float>)->UseRealTime()->Unit(benchmark::kMicrosecond)
-    ->Name("AmxReordered/f32/N=2048");
-BENCHMARK(BM_AmxReordered<4096, float>)->UseRealTime()->Unit(benchmark::kMicrosecond)
-    ->Name("AmxReordered/f32/N=4096");
-
-BENCHMARK(BM_AmxBlocked<64, float>)->UseRealTime()->Unit(benchmark::kMicrosecond)->Name("AmxBlocked/f32/N=64");
-BENCHMARK(BM_AmxBlocked<256, float>)->UseRealTime()->Unit(benchmark::kMicrosecond)->Name("AmxBlocked/f32/N=256");
-BENCHMARK(BM_AmxBlocked<512, float>)->UseRealTime()->Unit(benchmark::kMicrosecond)->Name("AmxBlocked/f32/N=512");
-BENCHMARK(BM_AmxBlocked<1024, float>)->UseRealTime()->Unit(benchmark::kMicrosecond)->Name("AmxBlocked/f32/N=1024");
-BENCHMARK(BM_AmxBlocked<2048, float>)->UseRealTime()->Unit(benchmark::kMicrosecond)->Name("AmxBlocked/f32/N=2048");
-BENCHMARK(BM_AmxBlocked<4096, float>)->UseRealTime()->Unit(benchmark::kMicrosecond)->Name("AmxBlocked/f32/N=4096");
+BENCHMARK(BM_Amx<64>)->UseRealTime()->Unit(benchmark::kMicrosecond)->Name("Amx/f64/N=64");
+BENCHMARK(BM_Amx<256>)->UseRealTime()->Unit(benchmark::kMicrosecond)->Name("Amx/f64/N=256");
+BENCHMARK(BM_Amx<512>)->UseRealTime()->Unit(benchmark::kMicrosecond)->Name("Amx/f64/N=512");
+BENCHMARK(BM_Amx<1024>)->UseRealTime()->Unit(benchmark::kMicrosecond)->Name("Amx/f64/N=1024");
+BENCHMARK(BM_Amx<2048>)->UseRealTime()->Unit(benchmark::kMicrosecond)->Name("Amx/f64/N=2048");
+BENCHMARK(BM_Amx<4096>)->UseRealTime()->Unit(benchmark::kMicrosecond)->Name("Amx/f64/N=4096");
+BENCHMARK(BM_Amx<64, float>)->UseRealTime()->Unit(benchmark::kMicrosecond)->Name("Amx/f32/N=64");
+BENCHMARK(BM_Amx<256, float>)->UseRealTime()->Unit(benchmark::kMicrosecond)->Name("Amx/f32/N=256");
+BENCHMARK(BM_Amx<512, float>)->UseRealTime()->Unit(benchmark::kMicrosecond)->Name("Amx/f32/N=512");
+BENCHMARK(BM_Amx<1024, float>)->UseRealTime()->Unit(benchmark::kMicrosecond)->Name("Amx/f32/N=1024");
+BENCHMARK(BM_Amx<2048, float>)->UseRealTime()->Unit(benchmark::kMicrosecond)->Name("Amx/f32/N=2048");
+BENCHMARK(BM_Amx<4096, float>)->UseRealTime()->Unit(benchmark::kMicrosecond)->Name("Amx/f32/N=4096");
 
 // ============================================================================
 // Reference library: Arm KleidiAI
@@ -787,7 +726,7 @@ BENCHMARK(BM_AmxBlocked<4096, float>)->UseRealTime()->Unit(benchmark::kMicroseco
 //   single-threaded, f32 only (no f64 rows). Times include LHS/RHS packing,
 //   as gemm_sme's do.
 //
-// Accelerate (the Amx* rows above) is multi-threaded, so it is timed with
+// Accelerate (the Amx rows above) is multi-threaded, so it is timed with
 // UseRealTime(): Google Benchmark's default is the *calling thread's* CPU
 // time, which overstates throughput when worker threads do the work while
 // the caller sleeps.

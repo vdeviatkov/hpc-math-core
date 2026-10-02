@@ -92,7 +92,7 @@ One kernel, `gemm_sme`: A and B packed GotoBLAS-style, packing done outside stre
 
 ### Matrix engines, single core
 
-> **Command:** `VECLIB_MAXIMUM_THREADS=1 ./build/benchmarks/bench_gemm --benchmark_filter='Sme|AmxBlocked|KleidiAI'`
+> **Command:** `VECLIB_MAXIMUM_THREADS=1 ./build/benchmarks/bench_gemm --benchmark_filter='Sme|Amx|KleidiAI'`
 
 Same machine and run as above. Every row uses one core, so this is the like-for-like comparison. Accelerate was limited to one thread with `VECLIB_MAXIMUM_THREADS=1`; KleidiAI is always single-threaded.
 
@@ -112,20 +112,17 @@ Same machine and run as above. Every row uses one core, so this is the like-for-
 
 > **Command:** `./build/benchmarks/bench_gemm --benchmark_filter=Amx` (`HPC_ENABLE_AMX` defaults ON on Apple)
 
-This is Apple's own AMX coprocessor, reached through Accelerate.framework's BLAS (`cblas_sgemm`/`cblas_dgemm`) rather than any hand-written kernel — see [§ SME and AMX build flags](build.md#sme-and-amx-build-flags) and [src/gemm/README.md](../src/gemm/README.md#algorithm-11--apple-amx-via-accelerateframework) for why this is architecturally unrelated to Intel's AMX, why `gemm_amx_naive`/`_reordered`/`_blocked` are intentionally identical wrappers, and why these numbers are **not** a single-core comparison against the rest of this document (Accelerate's BLAS may use multiple cores internally).
+This is Apple's own AMX coprocessor, reached through Accelerate.framework's BLAS (`cblas_sgemm`/`cblas_dgemm`) via `gemm_amx`, rather than any hand-written kernel — see [§ SME and AMX build flags](build.md#sme-and-amx-build-flags) and [src/gemm/README.md](../src/gemm/README.md#algorithm-11--apple-amx-via-accelerateframework) for why this is architecturally unrelated to Intel's AMX, and why these numbers are **not** a single-core comparison against the rest of this document (Accelerate's BLAS may use multiple cores internally).
 
 | Kernel | N=64 | N=256 | N=512 | N=1024 | N=2048 | N=4096 |
 |---|---|---|---|---|---|---|
-| `gemm_amx_naive` f64 | 330.00 | 465.66 | 820.39 | 839.41 | — | — |
-| `gemm_amx_reordered` f64 | 329.55 | 465.92 | 822.24 | 858.59 | 801.48 | 809.79 |
-| `gemm_amx_blocked` f64 | 329.78 | 466.61 | 822.88 | **860.28** | 804.22 | 813.36 |
-| `gemm_amx_naive` f32 | 807.89 | 1,729 | 2,984 | 3,281 | — | — |
-| `gemm_amx_reordered` f32 | 799.46 | 1,727 | 2,923 | 3,261 | 3,218 | 3,186 |
-| `gemm_amx_blocked` f32 | 797.61 | 1,724 | 2,906 | **3,296** | 3,202 | 3,156 |
+| `gemm_amx` f64 | 329.78 | 466.61 | 822.88 | **860.28** | 804.22 | 813.36 |
+| `gemm_amx` f32 | 797.61 | 1,724 | 2,906 | **3,296** | 3,202 | 3,156 |
 
-- **Up to 3.3 TFLOP/s f32 and 860 GFLOP/s f64** — by a wide margin the highest throughput in this repo, ~2.3× / ~2.1× the single-threaded `gemm_sme`. Not a fair fight: Accelerate is Apple's own vendor-tuned BLAS and, unlike every hand-written kernel here, is free to use every core (single-core comparison: [§ Matrix engines, single core](#matrix-engines-single-core)). The jump from ~800 G/s at N=64 to ~3.3 T/s at N≥1024 is consistent with more threads coming online as the problem grows, not only better cache behaviour.
-- **All three variants produce near-identical numbers at every size** (3,281 / 3,261 / 3,296 G/s at N=1024 f32) — exactly as expected, since all three call the same `cblas_sgemm`/`cblas_dgemm` wrapper (see [src/gemm/amx.hpp](../src/gemm/amx.hpp)). The ≤1% spread is measurement noise; Accelerate exposes no staging knob for the naive/reordered/blocked progression to act on.
-- **The f32/f64 ratio is ~3.8×, not the ~2× lane-count ratio seen elsewhere** (NEON 2.7×, AVX-512 ~2×) — consistent with Accelerate exploiting a wider or more specialised f32 path beyond simple lane doubling, though Apple does not document this and it cannot be confirmed without disassembly.
+(Recorded when the family still had three entry points — naive/reordered/blocked — that all called the same `cblas_*gemm`; they measured within ~1% of each other, which is why they were merged into `gemm_amx`. The row above is the former `gemm_amx_blocked`.)
+
+- **Up to 3.3 TFLOP/s f32 and 860 GFLOP/s f64** — by a wide margin the highest throughput in this repo, ~2.3× / ~2.1× the single-threaded `gemm_sme`. Not a fair fight: Accelerate is Apple's own vendor-tuned BLAS and, unlike every hand-written kernel here, is free to use every core. Limited to one thread it reaches ~1.7 TFLOP/s f32 from N=256 up ([§ Matrix engines, single core](#matrix-engines-single-core)), so the climb from ~0.8 to ~3.3 TFLOP/s is about half problem size and half the second performance cluster joining in.
+- **The f32/f64 ratio is ~3.8×, not the ~2× lane-count ratio seen elsewhere** (NEON 2.7×, AVX-512 ~2×). It is close to the 4× of the M4's matrix unit, where an f64 outer product covers 8×8 elements against 16×16 for f32 (`gemm_sme` measures 3.5×) — consistent with Accelerate running on that unit, though Apple does not document it.
 - **If the question is "what is the fastest way to multiply matrices on this Mac", this is the answer** — call `cblas_sgemm`/`cblas_dgemm` directly. The value of the rest of this repository is the pedagogy of reaching a meaningful fraction of that ceiling by hand, one optimisation at a time.
 
 ### Prefetch distance sweep
@@ -204,7 +201,7 @@ The register tile holds ~95–97 GFLOP/s from N=64 through N=1024. The auto-vect
 | `gemm_neon_blocked` | 36.30 | 97.03 | 2.7× |
 | `gemm_neon_blocked_prefetch` (D=4, prefetch-sweep run) | 33.06 | 96.35 | 2.9× |
 | `gemm_sme` | 410 | **1,450** | 3.5× |
-| `gemm_amx_blocked` (Accelerate) | **860.28** | **3,295.78** | 3.8× |
+| `gemm_amx` (Accelerate) | **860.28** | **3,295.78** | 3.8× |
 
 ---
 ## AMD Zen 5 — AVX2 + AVX-512 (Linux / GCC)

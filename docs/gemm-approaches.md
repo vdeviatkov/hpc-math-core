@@ -106,9 +106,8 @@ writeup in `sme.hpp`'s file header.
 here, there's no ACLE-style header to include — Apple's AMX coprocessor is
 reached only by calling into `Accelerate.framework`'s BLAS
 (`cblas_sgemm`/`cblas_dgemm`), Apple's own vendor-tuned implementation.
-Because that's a single opaque call with no tiling/blocking parameter,
-`gemm_amx_naive`/`_reordered`/`_blocked` are intentionally identical
-wrappers — see `amx.hpp`'s file header for the full reasoning.
+Because that's a single opaque call with no tiling/blocking parameter, the
+family is a single function, `gemm_amx` — see `amx.hpp`'s file header.
 
 **CUDA's tile progression is the clearest illustration of all three
 techniques stacked, and then some.** `gemm_cuda_naive` (no shared memory) →

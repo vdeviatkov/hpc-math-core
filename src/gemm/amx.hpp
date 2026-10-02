@@ -32,12 +32,10 @@
  * *verified* wrapper around Accelerate's BLAS — not a hand-written
  * tile-multiply kernel.
  *
- * This means gemm_amx_* in this repo answers a different question than
- * every other kernel family: not "how fast can a hand-written GEMM in this
- * style go on this ISA", but "what does Apple's own vendor-tuned
- * implementation achieve, as a ceiling to compare our other kernels
- * against". See the "Naive / Reordered / Blocked are intentionally
- * identical here" section below for why.
+ * This means gemm_amx answers a different question than every other kernel
+ * family: not "how fast can a hand-written GEMM in this style go on this
+ * ISA", but "what does Apple's own vendor-tuned implementation achieve, as a
+ * ceiling to compare our other kernels against".
  *
  *
  * ============================================================
@@ -59,26 +57,20 @@
  * (fp16-in/fp32-accumulate), Accelerate's cblas_sgemm/cblas_dgemm compute
  * at full fp32/fp64 precision throughout — whatever the AMX coprocessor
  * does internally, it does not force a reduced-precision input format the
- * way Intel AMX's tile-multiply instructions do. So gemm_amx_naive/
- * reordered/blocked support both float AND double at full precision, with
- * no bf16-style relative-error caveat.
+ * way Intel AMX's tile-multiply instructions do. So gemm_amx supports both
+ * float AND double at full precision, with no bf16-style relative-error
+ * caveat.
  *
  *
  * ============================================================
- *  Naive / Reordered / Blocked are intentionally identical here
+ *  One function, not three
  * ============================================================
  *
- * Every other kernel family in this repo progresses through three
- * genuinely different implementations (bad access pattern → cache-friendly
- * → cache-blocked + register-tiled). Accelerate's BLAS is an opaque,
- * already-optimal vendor implementation: it exposes no algorithm-staging
- * knob, no tile-size parameter, nothing to reorder or block from the
- * caller's side. All three gemm_amx_* entry points below call the exact
- * same cblas_sgemm/cblas_dgemm wrapper. They exist as separate, identically
- * named functions purely so this family's benchmarks and tests slot into
- * the same BM_Amx{Naive,Reordered,Blocked} / gemm_amx_{...} naming
- * convention as every other family, for filtering and comparison
- * convenience — not because there are three different algorithms here.
+ * Every other CPU family in this repo progresses through genuinely
+ * different implementations (bad access pattern -> cache-friendly ->
+ * cache-blocked + register-tiled). Accelerate's BLAS is an opaque vendor
+ * implementation with no tile size, blocking or packing knob to stage from
+ * the caller's side, so this family is a single gemm_amx.
  *
  *
  * ============================================================
@@ -88,7 +80,7 @@
  * Accelerate's BLAS may use multiple CPU cores internally for large
  * matrices (undocumented, size-dependent heuristic) — unlike every other
  * CPU kernel in this repo, which is strictly single-threaded. This makes
- * gemm_amx_* numbers a "best vendor-library throughput on this machine"
+ * gemm_amx numbers a "best vendor-library throughput on this machine"
  * reference point, not an apples-to-apples single-core comparison against
  * gemm_sme, gemm_avx512_*, or gemm_neon_*. See docs/benchmarks.md for the
  * measured numbers, including a single-thread comparison
@@ -99,7 +91,7 @@
  *  Hardware / platform availability
  * ============================================================
  *
- * Accelerate.framework (and therefore gemm_amx_*'s real path): macOS and
+ * Accelerate.framework (and therefore gemm_amx's real path): macOS and
  * iOS only, on Apple Silicon (M1 and later) or Intel Macs (where it
  * dispatches to AVX instead of AMX — still a valid, fast BLAS, just not
  * exercising the AMX coprocessor this file is about).
@@ -109,7 +101,7 @@
  * CMakeLists.txt's HPC_ENABLE_AMX option found Accelerate.framework
  * (default ON on Apple platforms, since linking Accelerate carries none of
  * the SIGILL/runtime-permission risk that keeps HPC_ENABLE_AVX512 and
- * HPC_ENABLE_SME opt-in). Where it is 0 all three kernels are declared
+ * HPC_ENABLE_SME opt-in). Where it is 0 gemm_amx is declared
  * `= delete`: calling them is a compile-time error, never a silent
  * substitution of a different kernel under the AMX name.
  */
@@ -133,73 +125,26 @@ namespace hpc::gemm {
 #if !HPC_HAS_AMX
 
 template <typename T>
-void gemm_amx_naive(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) = delete;      // Accelerate.framework not available on this target
-template <typename T>
-void gemm_amx_reordered(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) = delete;  // Accelerate.framework not available on this target
-template <typename T>
-void gemm_amx_blocked(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) = delete;    // Accelerate.framework not available on this target
+void gemm_amx(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) = delete;  // Accelerate.framework not available on this target
 
 #else
 
-/// Row-major C = A * B via Accelerate's single-precision BLAS (cblas_sgemm).
-inline void amx_accelerate_gemm(const float* A, const float* B, float* C, std::size_t M,
-                                 std::size_t N, std::size_t K) {
-    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, static_cast<int>(M),
-                static_cast<int>(N), static_cast<int>(K), 1.0f, A, static_cast<int>(K), B,
-                static_cast<int>(N), 0.0f, C, static_cast<int>(N));
-}
-
-/// Row-major C = A * B via Accelerate's double-precision BLAS (cblas_dgemm).
-inline void amx_accelerate_gemm(const double* A, const double* B, double* C, std::size_t M,
-                                 std::size_t N, std::size_t K) {
-    cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, static_cast<int>(M),
-                static_cast<int>(N), static_cast<int>(K), 1.0, A, static_cast<int>(K), B,
-                static_cast<int>(N), 0.0, C, static_cast<int>(N));
-}
-
+/// Row-major C = A * B via Accelerate's BLAS (cblas_sgemm / cblas_dgemm).
 template <typename T>
-void amx_dispatch(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
+void gemm_amx(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
     static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>,
-                  "gemm_amx_*: T must be float or double");
+                  "gemm_amx: T must be float or double");
     const std::size_t M = A.rows(), K = A.cols(), N = B.cols();
     assert(B.rows() == K && C.rows() == M && C.cols() == N);
-    amx_accelerate_gemm(A.data(), B.data(), C.data(), M, N, K);
-}
-
-// ============================================================================
-// gemm_amx_naive / gemm_amx_reordered / gemm_amx_blocked
-//
-// All three call the identical Accelerate BLAS wrapper — see the file
-// header ("Naive / Reordered / Blocked are intentionally identical here")
-// for why there is only one real implementation in this family.
-// ============================================================================
-
-/// @copydoc amx_dispatch — see file header for why this equals gemm_amx_reordered/_blocked.
-template <typename T>
-void gemm_amx_naive(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
-    amx_dispatch(A, B, C);
-}
-
-/// @copydoc amx_dispatch — see file header for why this equals gemm_amx_naive/_blocked.
-template <typename T>
-void gemm_amx_reordered(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
-    amx_dispatch(A, B, C);
-}
-
-/// @copydoc amx_dispatch — see file header for why this equals gemm_amx_naive/_reordered.
-template <typename T>
-void gemm_amx_blocked(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
-    amx_dispatch(A, B, C);
+    const int m = static_cast<int>(M), n = static_cast<int>(N), k = static_cast<int>(K);
+    if constexpr (std::is_same_v<T, float>)
+        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, m, n, k, 1.0f, A.data(), k,
+                    B.data(), n, 0.0f, C.data(), n);
+    else
+        cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, m, n, k, 1.0, A.data(), k,
+                    B.data(), n, 0.0, C.data(), n);
 }
 
 #endif  // HPC_HAS_AMX
-
-// ---------------------------------------------------------------------------
-// Convenience alias: gemm_amx → gemm_amx_blocked
-// ---------------------------------------------------------------------------
-template <typename T>
-inline void gemm_amx(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
-    gemm_amx_blocked(A, B, C);
-}
 
 }  // namespace hpc::gemm

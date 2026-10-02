@@ -21,7 +21,7 @@ summary of every family's cache technique and key intrinsics side by side.
 | `neon.hpp` | `gemm_neon_naive` · `gemm_neon_reordered` · `gemm_neon_blocked` | `__ARM_NEON` |
 | `sve.hpp` | `gemm_sve_naive` · `gemm_sve_reordered` · `gemm_sve_blocked` | `__ARM_FEATURE_SVE` |
 | `sme.hpp` | `gemm_sme` (packed, cache-blocked, all ZA tiles, SME2 loads) — **verified, Apple M4 Max** | `__ARM_FEATURE_SME` + `__ARM_FEATURE_SME2` (+ `-DHPC_ENABLE_SME=ON`) |
-| `amx.hpp` | `gemm_amx_naive` · `gemm_amx_reordered` · `gemm_amx_blocked` — **verified, Apple M4 Max, via Accelerate.framework** | `HPC_HAS_AMX` (Apple + Accelerate.framework; on by default) |
+| `amx.hpp` | `gemm_amx` — **verified, Apple M4 Max, via Accelerate.framework** | `HPC_HAS_AMX` (Apple + Accelerate.framework; on by default) |
 | `kleidiai.hpp` | `gemm_kleidiai` (f32 only) — reference, Arm KleidiAI SME2 `FMOPA` micro-kernel | `HPC_HAS_KLEIDIAI` (`HPC_ENABLE_KLEIDIAI=ON`, default when SME works; needs SME2) |
 | `prefetch.hpp` | `gemm_blocked_prefetch` · `gemm_avx2_blocked_prefetch` · `gemm_avx512_blocked_prefetch` · `gemm_neon_blocked_prefetch` · `gemm_sve_blocked_prefetch` | per ISA |
 | `cuda.hpp` | `gemm_cuda_naive` (L0) · `gemm_cuda_blocked` (L1) · `gemm_cuda_reg_tile` (L2) · `gemm_cuda_double_buf` (L3) · `gemm_cuda_wmma` (L4, fp32) · `gemm_cuda_vectorized` (L5) · `gemm_cuda_mma_ldmatrix` (L6, fp32) · `gemm_cuda_wmma_pipelined` (L7, fp32) · `gemm_cuda_cublas{,_tf32,_fp16}` (reference, not part of the ladder) — **all verified, RTX 5080 (Blackwell sm_120)** | runtime: `cuda_device_count() > 0` |
@@ -887,7 +887,7 @@ benefit from the AMX coprocessor's throughput is **Accelerate.framework**
 — its BLAS (`cblas_sgemm`/`cblas_dgemm`) is Apple's own implementation,
 and Apple's own performance guidance points to Accelerate for matrix math
 on Apple Silicon; the reverse-engineering community has identified that it
-dispatches to AMX blocks internally. `gemm_amx_*` in this file is
+dispatches to AMX blocks internally. `gemm_amx` in this file is
 therefore a thin, verified wrapper around Accelerate's BLAS — not a
 hand-written tile-multiply kernel — and it answers a different question
 than every other family in this repo: not "how fast can a hand-written
@@ -898,18 +898,11 @@ implementation achieve, as a ceiling to compare everything else against".
 
 Unlike Intel AMX (bf16-in/fp32-accumulate only) and `gemm_cuda_wmma`
 (fp16-in/fp32-accumulate), Accelerate's BLAS computes at full fp32/fp64
-precision throughout, so `gemm_amx_*` supports both `float` and `double`
+precision throughout, so `gemm_amx` supports both `float` and `double`
 with no reduced-precision caveat. It also exposes no algorithm-staging
 knob: there is no tile size, blocking factor, or packing strategy for a
-caller to select. Consequently `gemm_amx_naive`, `gemm_amx_reordered`, and
-`gemm_amx_blocked` are **intentionally identical** — all three call the
-same `cblas_sgemm`/`cblas_dgemm` wrapper. They exist as three separate,
-identically-named entry points purely so this family's benchmarks and
-tests slot into the same naming convention as every other family in this
-repo, not because there are three different implementations here. The
-measured benchmark numbers confirm this: all three report GFLOP/s within
-~1% of each other at every matrix size (see
-[benchmarks.md](../../docs/benchmarks.md#apple-amx-via-accelerateframework)).
+caller to select, so the family is a single function, `gemm_amx`, rather
+than a naive → reordered → blocked progression.
 
 ### Threading
 
@@ -932,7 +925,7 @@ Accelerate.framework: macOS and iOS only. On Apple Silicon (M1 and later)
 it is understood to dispatch to the AMX coprocessor; on Intel Macs it
 dispatches to AVX/AVX-512 instead — still a fast, correct BLAS, just not
 exercising the AMX coprocessor this file is about. Not on Linux or
-Windows — there `gemm_amx_*` is declared `= delete` (`HPC_HAS_AMX == 0`).
+Windows — there `gemm_amx` is declared `= delete` (`HPC_HAS_AMX == 0`).
 
 ---
 

@@ -19,7 +19,7 @@ Best kernel per family, single-threaded unless noted. Full output, speedup table
 | AVX2 (`gemm_avx2_blocked`) | AMD Zen 5, GCC | 152 GFLOP/s | 75 GFLOP/s |
 | AVX-512 (`gemm_avx512_blocked`) | AMD Zen 5, GCC | **219 GFLOP/s** | **106 GFLOP/s** |
 | ARM SME2 (`gemm_sme`) | Apple M4 Max | **1.45 TFLOP/s** | **410 GFLOP/s** |
-| Apple AMX via Accelerate (`gemm_amx_*`) ¹ | Apple M4 Max | 3.3 TFLOP/s | 860 GFLOP/s |
+| Apple AMX via Accelerate (`gemm_amx`) ¹ | Apple M4 Max | 3.3 TFLOP/s | 860 GFLOP/s |
 | Accelerate / KleidiAI, 1 core (reference) | Apple M4 Max | 1.72 / 1.64 TFLOP/s | 434 GFLOP/s / — |
 | CUDA, FMA (`gemm_cuda_double_buf`) ² | NVIDIA RTX 5080 | 6.7 TFLOP/s | 0.7 TFLOP/s |
 | CUDA, Tensor Cores (`gemm_cuda_wmma_pipelined`) ³ | NVIDIA RTX 5080 | **100 TFLOP/s** | — |
@@ -43,7 +43,7 @@ Best kernel per family, single-threaded unless noted. Full output, speedup table
 | 5 | `gemm_*_blocked_prefetch` | `__builtin_prefetch` on A rows, B k-tiles and C rows; distance sweep D ∈ {2, 4, 8, 16} |
 | 6 | `gemm_cuda_{naive,blocked,reg_tile,double_buf,wmma,vectorized,mma_ldmatrix}` (CUDA Levels 0–6) | Shared-memory tiling → register tiling → `cp.async` double buffering → Tensor Cores via WMMA → `float4` loads + swizzle → raw `mma.sync`/`ldmatrix` |
 | 7 | `gemm_sme` | ARM SME2 `FMOPA` outer products into all ZA tiles (2×2 f32 / 2×4 f64), packed A+B, GotoBLAS cache blocking, SME2 multi-vector loads |
-| 8 | `gemm_amx_*`, `gemm_cuda_wmma_pipelined` (CUDA Level 7) | Apple AMX through Accelerate BLAS; 128×128-tile, `cp.async`-pipelined WMMA kernel (~19× `gemm_cuda_wmma`) |
+| 8 | `gemm_amx`, `gemm_cuda_wmma_pipelined` (CUDA Level 7) | Apple AMX through Accelerate BLAS; 128×128-tile, `cp.async`-pipelined WMMA kernel (~19× `gemm_cuda_wmma`) |
 
 A family is compiled only where its ISA exists; elsewhere its kernels are declared `= delete`, so a wrong call is a compile-time error rather than a silently slower substitute. Benchmarks still list absent families as `SKIPPED`. Every family has been verified on real hardware except `gemm_sve_*`, for which no SVE machine was available.
 
