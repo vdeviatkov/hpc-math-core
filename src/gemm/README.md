@@ -481,6 +481,12 @@ wmma::store_matrix_sync(C_ptr, c_frag, N, wmma::mem_row_major);
   transposed (`As[k][m]`), so `a_frag` is `col_major`; `Bs` is stored
   naturally (`Bs[k][n]`), so `b_frag` is `row_major`. A mismatch silently
   transposes the operand — wrong values, no error.
+- **Edge tiles are staged.** `store_matrix_sync` always writes a full 16×16
+  tile and needs a 32-byte-aligned destination. Tiles wholly inside C with
+  `N % 8 == 0` store directly; any other tile is stored to a per-warp
+  shared-memory tile and copied out with bounds checks. Without this, sizes
+  that aren't multiples of 16 write past the end of C or wrap into the next
+  row (`compute-sanitizer` flags it; covered by `CudaWmmaFloat.EdgeTiles`).
 
 **Falls back** to `gemm_cuda_double_buf` on pre-Volta hardware at runtime.
 **Measured:** 5.3 TFLOP/s — below the FMA kernels at this size: with 64×64

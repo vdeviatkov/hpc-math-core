@@ -39,7 +39,7 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release
 # 2. Build everything (CPU + CUDA if available, stubs otherwise)
 cmake --build build --parallel
 
-# 3. Run all tests (CPU suite sized by ISA + 62 CUDA; CUDA tests skip if no GPU)
+# 3. Run all tests (CPU suite sized by ISA + 64 CUDA; CUDA tests skip if no GPU)
 cd build && ctest --output-on-failure
 
 # 4. Run CPU benchmarks

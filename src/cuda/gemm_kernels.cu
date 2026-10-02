@@ -194,6 +194,36 @@ __global__ void kernel_blocked(const T* __restrict__ A,
 }
 
 // ============================================================================
+// 8x8 register-tile micro-kernel shared by Levels 2, 3 and 5
+//
+// Each thread owns a kTM x kTN tile of C in registers. Per k step it loads
+// kTM values of A and kTN values of B from shared memory (how depends on the
+// level's shared-memory layout), then accumulates their outer product.
+// ============================================================================
+template <typename T>
+__device__ __forceinline__ void fma_outer(T (&c)[kTM][kTN], const T (&a)[kTM], const T (&b)[kTN]) {
+    #pragma unroll
+    for (int m = 0; m < kTM; ++m)
+        #pragma unroll
+        for (int n = 0; n < kTN; ++n)
+            c[m][n] += a[m] * b[n];
+}
+
+// Write a thread's register tile to C at (row, col), clipped to M x N.
+template <typename T>
+__device__ __forceinline__ void store_tile(T* C, const T (&c)[kTM][kTN], int row, int col,
+                                           int M, int N) {
+    #pragma unroll
+    for (int m = 0; m < kTM; ++m)
+        #pragma unroll
+        for (int n = 0; n < kTN; ++n) {
+            const int gi = row + m, gj = col + n;
+            if (gi < M && gj < N)
+                C[gi * N + gj] = c[m][n];
+        }
+}
+
+// ============================================================================
 // Level 2: Register-tiled
 //
 // Thread block: kBMxkBN = 128x128 outputs
@@ -234,10 +264,6 @@ kernel_reg_tile(const T* __restrict__ A,
     // Register accumulator tile: kTM x kTN = 8x8 = 64 registers per thread.
     T reg_C[kTM][kTN] = {};
 
-    // Registers to cache A and B columns/rows during the inner loop.
-    T reg_A[kTM] = {};
-    T reg_B[kTN] = {};
-
     // 256 threads load 128*16 = 2048 elements of As (8 each) and
     // 16*128 = 2048 elements of Bs (8 each) via a strided loop.
     constexpr int kAElems = kBK * kBM;  // 2048
@@ -268,39 +294,24 @@ kernel_reg_tile(const T* __restrict__ A,
 
         __syncthreads();
 
-        // Inner loop: walk the kBK dimension, accumulate outer products.
+        // Inner loop: walk the kBK dimension, accumulate outer products of
+        // A column k (this thread's kTM rows) and B row k (its kTN cols).
         #pragma unroll
         for (int k = 0; k < kBK; ++k) {
-            // Load A column k (kTM elements for this thread's rows).
+            T reg_A[kTM], reg_B[kTN];
             #pragma unroll
             for (int m = 0; m < kTM; ++m)
                 reg_A[m] = As[k][threadRow * kTM + m];
-            // Load B row k (kTN elements for this thread's cols).
             #pragma unroll
             for (int n = 0; n < kTN; ++n)
                 reg_B[n] = Bs[k][threadCol * kTN + n];
-            // Outer product -> accumulate into register tile.
-            #pragma unroll
-            for (int m = 0; m < kTM; ++m)
-                #pragma unroll
-                for (int n = 0; n < kTN; ++n)
-                    reg_C[m][n] += reg_A[m] * reg_B[n];
+            fma_outer(reg_C, reg_A, reg_B);
         }
 
         __syncthreads();
     }
 
-    // Write register tile back to global memory C.
-    #pragma unroll
-    for (int m = 0; m < kTM; ++m) {
-        #pragma unroll
-        for (int n = 0; n < kTN; ++n) {
-            const int gi = cRow + m;
-            const int gj = cCol + n;
-            if (gi < M && gj < N)
-                C[gi * N + gj] = reg_C[m][n];
-        }
-    }
+    store_tile(C, reg_C, cRow, cCol, M, N);
 }
 
 // ============================================================================
@@ -349,8 +360,6 @@ kernel_double_buf(const T* __restrict__ A,
     __shared__ T Bs[2][kBK][LBN + 1];
 
     T reg_C[kTM][kTN] = {};
-    T reg_A[kTM] = {};
-    T reg_B[kTN] = {};
 
     // Strided tile loads, as in kernel_reg_tile.
     constexpr int kAElems = kBK * LBM;
@@ -402,18 +411,17 @@ kernel_double_buf(const T* __restrict__ A,
 #endif
     };
 
-    auto wait_tile = []([[maybe_unused]] int n_ahead) {
+    // Wait for the in-flight tile, then make it visible to the whole block.
+    auto wait_tile = [] {
 #ifdef HPC_HAVE_CP_ASYNC
-        __pipeline_wait_prior(n_ahead);
-#else
-        __syncthreads();
+        __pipeline_wait_prior(0);
 #endif
+        __syncthreads();
     };
 
     // Prefetch tile 0 into buffer 0.
     load_tile(0, 0);
-    wait_tile(0);
-    __syncthreads();
+    wait_tile();
 
     for (int tileK = 0; tileK < nTilesK; ++tileK) {
         const int cur = tileK & 1;       // current buffer
@@ -427,35 +435,22 @@ kernel_double_buf(const T* __restrict__ A,
         // Compute outer products from current buffer.
         #pragma unroll
         for (int k = 0; k < kBK; ++k) {
+            T reg_A[kTM], reg_B[kTN];
             #pragma unroll
             for (int m = 0; m < kTM; ++m)
                 reg_A[m] = As[cur][k][threadRow * kTM + m];
             #pragma unroll
             for (int n = 0; n < kTN; ++n)
                 reg_B[n] = Bs[cur][k][threadCol * kTN + n];
-            #pragma unroll
-            for (int m = 0; m < kTM; ++m)
-                #pragma unroll
-                for (int n = 0; n < kTN; ++n)
-                    reg_C[m][n] += reg_A[m] * reg_B[n];
+            fma_outer(reg_C, reg_A, reg_B);
         }
 
         // Wait for the next tile to finish loading before swapping.
-        if (tileK + 1 < nTilesK) {
-            wait_tile(0);
-            __syncthreads();
-        }
+        if (tileK + 1 < nTilesK)
+            wait_tile();
     }
 
-    // Store register tile.
-    #pragma unroll
-    for (int m = 0; m < kTM; ++m)
-        #pragma unroll
-        for (int n = 0; n < kTN; ++n) {
-            const int gi = cRow + m, gj = cCol + n;
-            if (gi < M && gj < N)
-                C[gi * N + gj] = reg_C[m][n];
-        }
+    store_tile(C, reg_C, cRow, cCol, M, N);
 }
 
 // ============================================================================
@@ -533,8 +528,6 @@ kernel_vectorized(const T* __restrict__ A,
     __shared__ alignas(16) T Bs[kBK][kBN];
 
     T reg_C[kTM][kTN] = {};
-    T reg_A[kTM] = {};
-    T reg_B[kTN] = {};
 
     const int nTilesK = (K + kBK - 1) / kBK;
 
@@ -595,6 +588,7 @@ kernel_vectorized(const T* __restrict__ A,
 
         #pragma unroll
         for (int k = 0; k < kBK; ++k) {
+            T reg_A[kTM], reg_B[kTN];
             #pragma unroll
             for (int m = 0; m < kTM; ++m) {
                 const int col           = threadRow * kTM + m;
@@ -611,24 +605,13 @@ kernel_vectorized(const T* __restrict__ A,
                 const int phys_slot     = swizzle_slot(k, logical_slot, kBSlots);
                 reg_B[n] = Bs[k][phys_slot * kVecW + lane];
             }
-            #pragma unroll
-            for (int m = 0; m < kTM; ++m)
-                #pragma unroll
-                for (int n = 0; n < kTN; ++n)
-                    reg_C[m][n] += reg_A[m] * reg_B[n];
+            fma_outer(reg_C, reg_A, reg_B);
         }
 
         __syncthreads();
     }
 
-    #pragma unroll
-    for (int m = 0; m < kTM; ++m)
-        #pragma unroll
-        for (int n = 0; n < kTN; ++n) {
-            const int gi = cRow + m, gj = cCol + n;
-            if (gi < M && gj < N)
-                C[gi * N + gj] = reg_C[m][n];
-        }
+    store_tile(C, reg_C, cRow, cCol, M, N);
 }
 
 // ============================================================================
@@ -750,10 +733,26 @@ kernel_wmma(const float* __restrict__ A,
         __syncthreads();
     }
 
-    // Store the accumulated fp32 fragment back to global memory.
+    // Store the accumulated fp32 fragment. store_matrix_sync always writes a
+    // full 16x16 tile and needs a 32-byte-aligned destination, so a direct
+    // store is only safe for a tile wholly inside C with N % 8 == 0. Any
+    // other tile goes through a per-warp shared-memory staging tile and is
+    // copied out element by element.
+    __shared__ float Cs[kWarpM * kWarpN][kWMMA_M * kWMMA_N];
     if (cWarpRow < M && cWarpCol < N) {
-        wmma::store_matrix_sync(C + cWarpRow * N + cWarpCol, c_frag, N,
-                                wmma::mem_row_major);
+        if (cWarpRow + kWMMA_M <= M && cWarpCol + kWMMA_N <= N && N % 8 == 0) {
+            wmma::store_matrix_sync(C + cWarpRow * N + cWarpCol, c_frag, N,
+                                    wmma::mem_row_major);
+        } else {
+            float* tile = Cs[warpId];
+            wmma::store_matrix_sync(tile, c_frag, kWMMA_N, wmma::mem_row_major);
+            __syncwarp();
+            for (int e = threadIdx.x % 32; e < kWMMA_M * kWMMA_N; e += 32) {
+                const int r = cWarpRow + e / kWMMA_N, c = cWarpCol + e % kWMMA_N;
+                if (r < M && c < N)
+                    C[r * N + c] = tile[e];
+            }
+        }
     }
 }
 
@@ -1133,12 +1132,11 @@ kernel_mma_ldmatrix(const float* __restrict__ A,
                 : "=r"(a_frag[0]), "=r"(a_frag[1]), "=r"(a_frag[2]), "=r"(a_frag[3])
                 : "l"(__cvta_generic_to_shared(a_addr)));
 
+            // --- B fragment: 16(K)x8(N) tile, 2 quadrants, ldmatrix.x2 + .trans ---
+            // Lanes 0-15 address rows K=0..15 (quadrant = lane/8); lanes
+            // 16-31 repeat them, since every lane must supply a valid address.
+            const int bK = lane % 16;
             for (int which = 0; which < 2; ++which) {
-                // --- B fragment: 16(K)x8(N) tile, 2 quadrants, ldmatrix.x2 + .trans ---
-                const int bLane    = lane % 16;
-                const int bQuadIdx = bLane / 8;          // 0..1
-                const int bQuadRow = bLane % 8;           // 0..7
-                const int bK = bQuadIdx * 8 + bQuadRow;
                 const int bN = warpCol * (kMmaN * 2) + which * kMmaN;
                 const __half* b_addr = &Bs[bK][bN];
 
@@ -1251,163 +1249,111 @@ struct DeviceBuffer {
 };
 
 // ============================================================================
-// Generic host launcher
+// Host launchers -- one per level, on device pointers. Each falls back to the
+// level below it when its hardware or shape requirement isn't met.
 // ============================================================================
 
-enum class GemmKind { Naive, Blocked, RegTile, DoubleBuf, Wmma,
-                      Vectorized, MmaLdmatrix, WmmaPipelined };
+template <typename T>
+static void launch_naive(const T* A, const T* B, T* C, int M, int K, int N) {
+    const dim3 block(kTile, kTile), grid((N + kTile-1)/kTile, (M + kTile-1)/kTile);
+    kernel_naive<T><<<grid, block>>>(A, B, C, M, K, N);
+}
 
 template <typename T>
-static void launch(GemmKind kind, const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
+static void launch_blocked(const T* A, const T* B, T* C, int M, int K, int N) {
+    const dim3 block(kTile, kTile), grid((N + kTile-1)/kTile, (M + kTile-1)/kTile);
+    kernel_blocked<T><<<grid, block>>>(A, B, C, M, K, N);
+}
+
+template <typename T>
+static void launch_reg_tile(const T* A, const T* B, T* C, int M, int K, int N) {
+    const dim3 block(256), grid((N + kBN-1)/kBN, (M + kBM-1)/kBM);
+    kernel_reg_tile<T><<<grid, block>>>(A, B, C, M, K, N);
+}
+
+template <typename T>
+static void launch_double_buf(const T* A, const T* B, T* C, int M, int K, int N) {
+    constexpr int LBM = kDBufBM<T>, LBN = kDBufBN<T>;
+    // One thread per kTM x kTN sub-tile: 256 threads for float
+    // (128x128 tile), 64 for double (64x64 tile -- see kDBufBM).
+    const dim3 block((LBM / kTM) * (LBN / kTN)), grid((N + LBN-1)/LBN, (M + LBM-1)/LBM);
+    kernel_double_buf<T><<<grid, block>>>(A, B, C, M, K, N);
+}
+
+// Vectorized loads require K and N to be multiples of the 128-bit vector
+// width (4 for float, 2 for double); otherwise fall back to Level 2.
+template <typename T>
+static void launch_vectorized(const T* A, const T* B, T* C, int M, int K, int N) {
+    constexpr int kVecW = VecTraits<T>::kWidth;
+    if (K % kVecW != 0 || N % kVecW != 0)
+        return launch_reg_tile(A, B, C, M, K, N);
+    const dim3 block(256), grid((N + kBN-1)/kBN, (M + kBM-1)/kBM);
+    kernel_vectorized<T><<<grid, block>>>(A, B, C, M, K, N);
+}
+
+// Tensor Cores need sm_70+; otherwise fall back to Level 3.
+static void launch_wmma(const float* A, const float* B, float* C, int M, int K, int N) {
+    if (!cuda_has_tensor_cores())
+        return launch_double_buf(A, B, C, M, K, N);
+    const dim3 block(kWarpM * kWarpN * 32);  // 4*4*32 = 512 threads
+    const dim3 grid((N + kBlockN-1)/kBlockN, (M + kBlockM-1)/kBlockM);
+    kernel_wmma<<<grid, block>>>(A, B, C, M, K, N);
+}
+
+// The f16 m16n8k16 mma.sync shape needs sm_80+; otherwise fall back to WMMA.
+static void launch_mma_ldmatrix(const float* A, const float* B, float* C, int M, int K, int N) {
+    if (!cuda_has_ampere())
+        return launch_wmma(A, B, C, M, K, N);
+    const dim3 block(kMmaWarpM * kMmaWarpN * 32);  // 512 threads
+    const dim3 grid((N + kMmaBlockN-1)/kMmaBlockN, (M + kMmaBlockM-1)/kMmaBlockM);
+    kernel_mma_ldmatrix<<<grid, block>>>(A, B, C, M, K, N);
+}
+
+// fp32 -> fp16 conversion of a device buffer (cp.async, used by Level 7, is a
+// same-dtype byte copy and can't convert while loading).
+static void convert_f32_to_f16(const float* src, __half* dst, int count) {
+    const int threads = 256;
+    kernel_f32_to_f16<<<(count + threads - 1) / threads, threads>>>(src, dst, count);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+// Requires sm_70+ (the cp.async overlap needs sm_80+, see HPC_HAVE_CP_ASYNC's
+// #else fallback in kernel_wmma_pipelined), M/N exact multiples of 128 and K
+// an exact multiple of 32 (no tail handling); otherwise falls back to WMMA.
+static void launch_wmma_pipelined(const float* A, const float* B, float* C, int M, int K, int N) {
+    const bool exactTiles = (M % kPipeBM == 0) && (N % kPipeBN == 0) && (K % kPipeBK == 0);
+    if (!cuda_has_tensor_cores() || !exactTiles)
+        return launch_wmma(A, B, C, M, K, N);
+    DeviceBuffer<__half> A16(static_cast<std::size_t>(M) * K);
+    DeviceBuffer<__half> B16(static_cast<std::size_t>(K) * N);
+    convert_f32_to_f16(A, A16.ptr, M * K);
+    convert_f32_to_f16(B, B16.ptr, K * N);
+    const dim3 block(kPipeNumWarps * 32), grid(N / kPipeBN, M / kPipeBM);
+    kernel_wmma_pipelined<<<grid, block>>>(A16.ptr, B16.ptr, C, M, K, N);
+}
+
+// Copy A and B to the device, run `launch` on device pointers, copy C back.
+// Every Matrix<T>-based entry point goes through this, so every one of them
+// is timed the same way: cudaMalloc + H2D + compute + D2H on each call.
+template <typename T, typename Launch>
+static void run_on_device(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C, Launch launch) {
     const int M = static_cast<int>(A.rows());
     const int K = static_cast<int>(A.cols());
     const int N = static_cast<int>(B.cols());
+    const std::size_t a_n = static_cast<std::size_t>(M) * K;
+    const std::size_t b_n = static_cast<std::size_t>(K) * N;
+    const std::size_t c_n = static_cast<std::size_t>(M) * N;
 
-    DeviceBuffer<T> dA(M * K), dB(K * N), dC(M * N);
-    CUDA_CHECK(cudaMemcpy(dA.ptr, A.data(), M * K * sizeof(T), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(dB.ptr, B.data(), K * N * sizeof(T), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemset(dC.ptr, 0, M * N * sizeof(T)));
+    DeviceBuffer<T> dA(a_n), dB(b_n), dC(c_n);
+    CUDA_CHECK(cudaMemcpy(dA.ptr, A.data(), a_n * sizeof(T), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(dB.ptr, B.data(), b_n * sizeof(T), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemset(dC.ptr, 0, c_n * sizeof(T)));
 
-    if (kind == GemmKind::Naive) {
-        const dim3 block(kTile, kTile);
-        const dim3 grid((N + kTile-1)/kTile, (M + kTile-1)/kTile);
-        kernel_naive<T><<<grid, block>>>(dA.ptr, dB.ptr, dC.ptr, M, K, N);
-
-    } else if (kind == GemmKind::Blocked) {
-        const dim3 block(kTile, kTile);
-        const dim3 grid((N + kTile-1)/kTile, (M + kTile-1)/kTile);
-        kernel_blocked<T><<<grid, block>>>(dA.ptr, dB.ptr, dC.ptr, M, K, N);
-
-    } else if (kind == GemmKind::RegTile) {
-        // 256 threads/block, grid sized in units of kBM x kBN.
-        const dim3 block(256);
-        const dim3 grid((N + kBN-1)/kBN, (M + kBM-1)/kBM);
-        kernel_reg_tile<T><<<grid, block>>>(dA.ptr, dB.ptr, dC.ptr, M, K, N);
-
-    } else if (kind == GemmKind::DoubleBuf) {
-        constexpr int LBM = kDBufBM<T>;
-        constexpr int LBN = kDBufBN<T>;
-        // One thread per kTM x kTN sub-tile: 256 threads for float
-        // (128x128 tile), 64 for double (64x64 tile -- see kDBufBM).
-        const dim3 block((LBM / kTM) * (LBN / kTN));
-        const dim3 grid((N + LBN-1)/LBN, (M + LBM-1)/LBM);
-        kernel_double_buf<T><<<grid, block>>>(dA.ptr, dB.ptr, dC.ptr, M, K, N);
-
-    } else if (kind == GemmKind::Wmma) {
-        // WMMA is fp32-only in this implementation (converts to fp16 internally).
-        if constexpr (!std::is_same_v<T, float>) {
-            throw std::runtime_error("gemm_cuda_wmma is only supported for float");
-        } else {
-            const dim3 block(kWarpM * kWarpN * 32);  // 4*4*32 = 512 threads
-            const dim3 grid((N + kBlockN-1)/kBlockN, (M + kBlockM-1)/kBlockM);
-            if (cuda_has_tensor_cores()) {
-                kernel_wmma<<<grid, block>>>(
-                    reinterpret_cast<const float*>(dA.ptr),
-                    reinterpret_cast<const float*>(dB.ptr),
-                    reinterpret_cast<float*>(dC.ptr), M, K, N);
-            } else {
-                // Fallback: use double-buf kernel (always correct).
-                constexpr int FLBM = kDBufBM<float>;
-                constexpr int FLBN = kDBufBN<float>;
-                const dim3 block2(256);
-                const dim3 grid2((N + FLBN-1)/FLBN, (M + FLBM-1)/FLBM);
-                kernel_double_buf<T><<<grid2, block2>>>(dA.ptr, dB.ptr, dC.ptr, M, K, N);
-            }
-        }
-
-    } else if (kind == GemmKind::Vectorized) {
-        // Vectorized loads require K and N to be multiples of the 128-bit
-        // vector width (4 elements for float, 2 for double) -- see
-        // kernel_vectorized's comment. Falls back to kernel_reg_tile
-        // otherwise, which handles any shape.
-        constexpr int kVecW = VecTraits<T>::kWidth;
-        if (K % kVecW == 0 && N % kVecW == 0) {
-            const dim3 block(256);
-            const dim3 grid((N + kBN-1)/kBN, (M + kBM-1)/kBM);
-            kernel_vectorized<T><<<grid, block>>>(dA.ptr, dB.ptr, dC.ptr, M, K, N);
-        } else {
-            const dim3 block(256);
-            const dim3 grid((N + kBN-1)/kBN, (M + kBM-1)/kBM);
-            kernel_reg_tile<T><<<grid, block>>>(dA.ptr, dB.ptr, dC.ptr, M, K, N);
-        }
-
-    } else if (kind == GemmKind::MmaLdmatrix) {
-        // Raw mma.sync + ldmatrix is fp32-only (like WMMA) and needs sm_80+
-        // for the f16 m16n8k16 shape used. Falls back to kernel_wmma
-        // (sm_70+) otherwise.
-        if constexpr (!std::is_same_v<T, float>) {
-            throw std::runtime_error("gemm_cuda_mma_ldmatrix is only supported for float");
-        } else {
-            if (cuda_has_ampere()) {
-                const dim3 block(kMmaWarpM * kMmaWarpN * 32);  // 512 threads
-                const dim3 grid((N + kMmaBlockN-1)/kMmaBlockN, (M + kMmaBlockM-1)/kMmaBlockM);
-                kernel_mma_ldmatrix<<<grid, block>>>(
-                    reinterpret_cast<const float*>(dA.ptr),
-                    reinterpret_cast<const float*>(dB.ptr),
-                    reinterpret_cast<float*>(dC.ptr), M, K, N);
-            } else if (cuda_has_tensor_cores()) {
-                const dim3 block(kWarpM * kWarpN * 32);
-                const dim3 grid((N + kBlockN-1)/kBlockN, (M + kBlockM-1)/kBlockM);
-                kernel_wmma<<<grid, block>>>(
-                    reinterpret_cast<const float*>(dA.ptr),
-                    reinterpret_cast<const float*>(dB.ptr),
-                    reinterpret_cast<float*>(dC.ptr), M, K, N);
-            } else {
-                constexpr int FLBM = kDBufBM<float>;
-                constexpr int FLBN = kDBufBN<float>;
-                const dim3 block2(256);
-                const dim3 grid2((N + FLBN-1)/FLBN, (M + FLBM-1)/FLBM);
-                kernel_double_buf<T><<<grid2, block2>>>(dA.ptr, dB.ptr, dC.ptr, M, K, N);
-            }
-        }
-
-    } else if (kind == GemmKind::WmmaPipelined) {
-        // fp32-only, sm_70+ (Tensor Cores; the cp.async overlap needs
-        // sm_80+, see HPC_HAVE_CP_ASYNC's #else fallback in
-        // kernel_wmma_pipelined). Requires M/N exact multiples of 128 and
-        // K an exact multiple of 32 (no tail handling); falls back to
-        // kernel_wmma otherwise.
-        if constexpr (!std::is_same_v<T, float>) {
-            throw std::runtime_error("gemm_cuda_wmma_pipelined is only supported for float");
-        } else {
-            const bool exactTiles = (M % kPipeBM == 0) && (N % kPipeBN == 0) && (K % kPipeBK == 0);
-            if (cuda_has_tensor_cores() && exactTiles) {
-                DeviceBuffer<__half> dA16(static_cast<std::size_t>(M) * K);
-                DeviceBuffer<__half> dB16(static_cast<std::size_t>(K) * N);
-                {
-                    const int threads = 256;
-                    const int blocksA = (M * K + threads - 1) / threads;
-                    const int blocksB = (K * N + threads - 1) / threads;
-                    kernel_f32_to_f16<<<blocksA, threads>>>(
-                        reinterpret_cast<const float*>(dA.ptr), dA16.ptr, M * K);
-                    kernel_f32_to_f16<<<blocksB, threads>>>(
-                        reinterpret_cast<const float*>(dB.ptr), dB16.ptr, K * N);
-                    CUDA_CHECK(cudaGetLastError());
-                }
-                const dim3 block(kPipeNumWarps * 32);
-                const dim3 grid(N / kPipeBN, M / kPipeBM);
-                kernel_wmma_pipelined<<<grid, block>>>(
-                    dA16.ptr, dB16.ptr, reinterpret_cast<float*>(dC.ptr), M, K, N);
-            } else if (cuda_has_tensor_cores()) {
-                const dim3 block(kWarpM * kWarpN * 32);
-                const dim3 grid((N + kBlockN-1)/kBlockN, (M + kBlockM-1)/kBlockM);
-                kernel_wmma<<<grid, block>>>(
-                    reinterpret_cast<const float*>(dA.ptr),
-                    reinterpret_cast<const float*>(dB.ptr),
-                    reinterpret_cast<float*>(dC.ptr), M, K, N);
-            } else {
-                constexpr int FLBM = kDBufBM<float>;
-                constexpr int FLBN = kDBufBN<float>;
-                const dim3 block2(256);
-                const dim3 grid2((N + FLBN-1)/FLBN, (M + FLBM-1)/FLBM);
-                kernel_double_buf<T><<<grid2, block2>>>(dA.ptr, dB.ptr, dC.ptr, M, K, N);
-            }
-        }
-    }
+    launch(dA.ptr, dB.ptr, dC.ptr, M, K, N);
 
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
-    CUDA_CHECK(cudaMemcpy(C.data(), dC.ptr, M * N * sizeof(T), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(C.data(), dC.ptr, c_n * sizeof(T), cudaMemcpyDeviceToHost));
 }
 
 // ============================================================================
@@ -1416,35 +1362,33 @@ static void launch(GemmKind kind, const Matrix<T>& A, const Matrix<T>& B, Matrix
 
 template <typename T>
 void gemm_cuda_naive(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
-    launch<T>(GemmKind::Naive, A, B, C);
+    run_on_device(A, B, C, launch_naive<T>);
 }
 template <typename T>
 void gemm_cuda_blocked(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
-    launch<T>(GemmKind::Blocked, A, B, C);
+    run_on_device(A, B, C, launch_blocked<T>);
 }
 template <typename T>
 void gemm_cuda_reg_tile(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
-    launch<T>(GemmKind::RegTile, A, B, C);
+    run_on_device(A, B, C, launch_reg_tile<T>);
 }
 template <typename T>
 void gemm_cuda_double_buf(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
-    launch<T>(GemmKind::DoubleBuf, A, B, C);
-}
-// WMMA is float-only.
-void gemm_cuda_wmma(const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C) {
-    launch<float>(GemmKind::Wmma, A, B, C);
+    run_on_device(A, B, C, launch_double_buf<T>);
 }
 template <typename T>
 void gemm_cuda_vectorized(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
-    launch<T>(GemmKind::Vectorized, A, B, C);
+    run_on_device(A, B, C, launch_vectorized<T>);
 }
-// Raw mma.sync + ldmatrix is float-only, like WMMA.
+// The Tensor Core levels are float-only: fp32 in/out, fp16 compute.
+void gemm_cuda_wmma(const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C) {
+    run_on_device(A, B, C, launch_wmma);
+}
 void gemm_cuda_mma_ldmatrix(const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C) {
-    launch<float>(GemmKind::MmaLdmatrix, A, B, C);
+    run_on_device(A, B, C, launch_mma_ldmatrix);
 }
-// Pipelined WMMA is float-only, like WMMA/mma_ldmatrix above.
 void gemm_cuda_wmma_pipelined(const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C) {
-    launch<float>(GemmKind::WmmaPipelined, A, B, C);
+    run_on_device(A, B, C, launch_wmma_pipelined);
 }
 
 // Raw-device-pointer, compute-only entry point -- same reasoning as the
@@ -1458,8 +1402,7 @@ void gemm_cuda_wmma_pipelined(const Matrix<float>& A, const Matrix<float>& B, Ma
 // there is no non-fp16 input to fall back from at this layer.
 void gemm_cuda_wmma_pipelined_device(const void* dA16, const void* dB16, float* dC,
                                      int M, int K, int N) {
-    const dim3 block(kPipeNumWarps * 32);
-    const dim3 grid(N / kPipeBN, M / kPipeBM);
+    const dim3 block(kPipeNumWarps * 32), grid(N / kPipeBN, M / kPipeBM);
     kernel_wmma_pipelined<<<grid, block>>>(
         static_cast<const __half*>(dA16), static_cast<const __half*>(dB16), dC, M, K, N);
     CUDA_CHECK(cudaGetLastError());
@@ -1477,10 +1420,16 @@ void gemm_cuda_wmma_pipelined_device(const void* dA16, const void* dB16, float* 
 //                              (naive/blocked/reg_tile/double_buf/vectorized).
 // gemm_cuda_cublas_tf32    -- fp32 in/out, TF32 Tensor Core compute
 //                              (10-bit mantissa, same precision class as
-//                              the fp16 kernels above).
-// gemm_cuda_cublas_fp16    -- fp16 in, fp32 accumulate (further below).
-//                              Ceiling for the Tensor Core kernels
-//                              (wmma/mma_ldmatrix/wmma_pipelined).
+//                              the fp16 kernels above). Requires sm_80+; on
+//                              older hardware cuBLAS falls back to plain fp32.
+// gemm_cuda_cublas_fp16    -- fp16 in, fp32 accumulate. Ceiling for the
+//                              Tensor Core kernels (wmma/mma_ldmatrix/
+//                              wmma_pipelined).
+//
+// hpc::Matrix is row-major; cuBLAS is column-major. Row-major C = A*B is
+// exactly column-major C^T = B^T*A^T over the SAME memory, so every call
+// below swaps A<->B (and M<->N) and asks for a plain no-transpose GEMM --
+// no data movement, no transpose flags.
 // ============================================================================
 
 // Lazily-created, process-lifetime handle. Not thread-safe, matching this
@@ -1496,72 +1445,55 @@ static cublasHandle_t cublas_handle() {
     return handle;
 }
 
-template <typename T>
-void gemm_cuda_cublas(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
-    const int M = static_cast<int>(A.rows());
-    const int K = static_cast<int>(A.cols());
-    const int N = static_cast<int>(B.cols());
-
-    DeviceBuffer<T> dA(static_cast<std::size_t>(M) * K);
-    DeviceBuffer<T> dB(static_cast<std::size_t>(K) * N);
-    DeviceBuffer<T> dC(static_cast<std::size_t>(M) * N);
-    CUDA_CHECK(cudaMemcpy(dA.ptr, A.data(), static_cast<std::size_t>(M) * K * sizeof(T), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(dB.ptr, B.data(), static_cast<std::size_t>(K) * N * sizeof(T), cudaMemcpyHostToDevice));
-
-    const T alpha = T{1}, beta = T{0};
-    // hpc::Matrix is row-major; cuBLAS is column-major. Row-major C = A*B
-    // is exactly column-major C^T = B^T*A^T over the SAME memory -- so
-    // swapping A<->B (and M<->N) and asking cuBLAS for an ordinary
-    // (no-transpose) column-major C^T=B^T*A^T reproduces our row-major
-    // C=A*B with no data movement and no transpose flags. Standard trick
-    // for using a column-major BLAS from row-major storage.
-    cublasStatus_t st;
-    if constexpr (std::is_same_v<T, float>) {
-        st = cublasSgemm(cublas_handle(), CUBLAS_OP_N, CUBLAS_OP_N,
-                          N, M, K, &alpha, dB.ptr, N, dA.ptr, K, &beta, dC.ptr, N);
-    } else {
-        st = cublasDgemm(cublas_handle(), CUBLAS_OP_N, CUBLAS_OP_N,
-                          N, M, K, &alpha, dB.ptr, N, dA.ptr, K, &beta, dC.ptr, N);
-    }
+static void check_cublas(cublasStatus_t st, const char* what) {
     if (st != CUBLAS_STATUS_SUCCESS)
-        throw std::runtime_error("cublasSgemm/cublasDgemm failed, status=" + std::to_string(static_cast<int>(st)));
-
-    CUDA_CHECK(cudaDeviceSynchronize());
-    CUDA_CHECK(cudaMemcpy(C.data(), dC.ptr, static_cast<std::size_t>(M) * N * sizeof(T), cudaMemcpyDeviceToHost));
+        throw std::runtime_error(std::string(what) + " failed, status=" +
+                                 std::to_string(static_cast<int>(st)));
 }
 
-// fp32-only, like WMMA/mma_ldmatrix above -- TF32 (10-bit mantissa, ~1e-3
-// relative error, same precision class as those fp16 kernels) via
-// cublasGemmEx's fast-TF32 compute type. Requires sm_80+ (Ampere+); on
-// older hardware cuBLAS itself transparently falls back to a plain fp32
-// SIMT path (no explicit fallback needed here, unlike the hand-written
-// kernels above).
-void gemm_cuda_cublas_tf32(const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C) {
-    const int M = static_cast<int>(A.rows());
-    const int K = static_cast<int>(A.cols());
-    const int N = static_cast<int>(B.cols());
-
-    DeviceBuffer<float> dA(static_cast<std::size_t>(M) * K);
-    DeviceBuffer<float> dB(static_cast<std::size_t>(K) * N);
-    DeviceBuffer<float> dC(static_cast<std::size_t>(M) * N);
-    CUDA_CHECK(cudaMemcpy(dA.ptr, A.data(), static_cast<std::size_t>(M) * K * sizeof(float), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(dB.ptr, B.data(), static_cast<std::size_t>(K) * N * sizeof(float), cudaMemcpyHostToDevice));
-
+// C = A*B via cublasGemmEx with the given storage and compute types.
+static void cublas_gemm_ex(const void* A, const void* B, void* C, cudaDataType in_type,
+                           cudaDataType out_type, cublasComputeType_t compute,
+                           int M, int K, int N, const char* what) {
     const float alpha = 1.0f, beta = 0.0f;
-    // Same row-major/column-major swap trick as gemm_cuda_cublas above.
-    const cublasStatus_t st = cublasGemmEx(
-        cublas_handle(), CUBLAS_OP_N, CUBLAS_OP_N,
-        N, M, K, &alpha,
-        dB.ptr, CUDA_R_32F, N,
-        dA.ptr, CUDA_R_32F, K,
-        &beta,
-        dC.ptr, CUDA_R_32F, N,
-        CUBLAS_COMPUTE_32F_FAST_TF32, CUBLAS_GEMM_DEFAULT);
-    if (st != CUBLAS_STATUS_SUCCESS)
-        throw std::runtime_error("cublasGemmEx (TF32) failed, status=" + std::to_string(static_cast<int>(st)));
+    check_cublas(cublasGemmEx(cublas_handle(), CUBLAS_OP_N, CUBLAS_OP_N, N, M, K, &alpha,
+                              B, in_type, N, A, in_type, K, &beta, C, out_type, N,
+                              compute, CUBLAS_GEMM_DEFAULT),
+                 what);
+}
 
-    CUDA_CHECK(cudaDeviceSynchronize());
-    CUDA_CHECK(cudaMemcpy(C.data(), dC.ptr, static_cast<std::size_t>(M) * N * sizeof(float), cudaMemcpyDeviceToHost));
+template <typename T>
+static void cublas_gemm(const T* A, const T* B, T* C, int M, int K, int N) {
+    const T alpha = T{1}, beta = T{0};
+    if constexpr (std::is_same_v<T, float>)
+        check_cublas(cublasSgemm(cublas_handle(), CUBLAS_OP_N, CUBLAS_OP_N,
+                                 N, M, K, &alpha, B, N, A, K, &beta, C, N), "cublasSgemm");
+    else
+        check_cublas(cublasDgemm(cublas_handle(), CUBLAS_OP_N, CUBLAS_OP_N,
+                                 N, M, K, &alpha, B, N, A, K, &beta, C, N), "cublasDgemm");
+}
+
+template <typename T>
+void gemm_cuda_cublas(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
+    run_on_device(A, B, C, cublas_gemm<T>);
+}
+
+void gemm_cuda_cublas_tf32(const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C) {
+    run_on_device(A, B, C, gemm_cuda_cublas_tf32_device);
+}
+
+// Matrix<float>-based wrapper (converts internally) -- for correctness
+// testing; the compute-only benchmark uses the raw-pointer entry points below
+// directly, converting once outside the timed region.
+void gemm_cuda_cublas_fp16(const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C) {
+    run_on_device(A, B, C, [](const float* dA, const float* dB, float* dC, int M, int K, int N) {
+        DeviceBuffer<__half> A16(static_cast<std::size_t>(M) * K);
+        DeviceBuffer<__half> B16(static_cast<std::size_t>(K) * N);
+        convert_f32_to_f16(dA, A16.ptr, M * K);
+        convert_f32_to_f16(dB, B16.ptr, K * N);
+        gemm_cuda_cublas_fp16_device(A16.ptr, B16.ptr, dC, M, K, N);
+        CUDA_CHECK(cudaDeviceSynchronize());  // before A16/B16 are freed
+    });
 }
 
 // ============================================================================
@@ -1591,26 +1523,13 @@ void gemm_cuda_cublas_tf32(const Matrix<float>& A, const Matrix<float>& B, Matri
 // ============================================================================
 void gemm_cuda_cublas_device_f32(const float* dA, const float* dB, float* dC,
                                  int M, int K, int N) {
-    const float alpha = 1.0f, beta = 0.0f;
-    const cublasStatus_t st = cublasSgemm(cublas_handle(), CUBLAS_OP_N, CUBLAS_OP_N,
-                                          N, M, K, &alpha, dB, N, dA, K, &beta, dC, N);
-    if (st != CUBLAS_STATUS_SUCCESS)
-        throw std::runtime_error("cublasSgemm (device) failed, status=" + std::to_string(static_cast<int>(st)));
+    cublas_gemm(dA, dB, dC, M, K, N);
 }
 
 void gemm_cuda_cublas_tf32_device(const float* dA, const float* dB, float* dC,
                                   int M, int K, int N) {
-    const float alpha = 1.0f, beta = 0.0f;
-    const cublasStatus_t st = cublasGemmEx(
-        cublas_handle(), CUBLAS_OP_N, CUBLAS_OP_N,
-        N, M, K, &alpha,
-        dB, CUDA_R_32F, N,
-        dA, CUDA_R_32F, K,
-        &beta,
-        dC, CUDA_R_32F, N,
-        CUBLAS_COMPUTE_32F_FAST_TF32, CUBLAS_GEMM_DEFAULT);
-    if (st != CUBLAS_STATUS_SUCCESS)
-        throw std::runtime_error("cublasGemmEx (TF32, device) failed, status=" + std::to_string(static_cast<int>(st)));
+    cublas_gemm_ex(dA, dB, dC, CUDA_R_32F, CUDA_R_32F, CUBLAS_COMPUTE_32F_FAST_TF32, M, K, N,
+                   "cublasGemmEx (TF32)");
 }
 
 // fp16-in/fp32-accumulate compute-only entry point. Dense FP16 Tensor Core
@@ -1629,50 +1548,13 @@ void gemm_cuda_cublas_tf32_device(const float* dA, const float* dB, float* dC,
 // that header exposes. float*/void*/int/size_t are all the public API
 // above and below may safely use.
 void gemm_cuda_convert_f32_to_f16_device(const float* src, void* dst, int count) {
-    const int threads = 256;
-    const int blocks = (count + threads - 1) / threads;
-    kernel_f32_to_f16<<<blocks, threads>>>(src, static_cast<__half*>(dst), count);
-    CUDA_CHECK(cudaGetLastError());
+    convert_f32_to_f16(src, static_cast<__half*>(dst), count);
 }
 
 void gemm_cuda_cublas_fp16_device(const void* dA16, const void* dB16, float* dC,
                                   int M, int K, int N) {
-    const float alpha = 1.0f, beta = 0.0f;
-    const cublasStatus_t st = cublasGemmEx(
-        cublas_handle(), CUBLAS_OP_N, CUBLAS_OP_N,
-        N, M, K, &alpha,
-        dB16, CUDA_R_16F, N,
-        dA16, CUDA_R_16F, K,
-        &beta,
-        dC, CUDA_R_32F, N,
-        CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
-    if (st != CUBLAS_STATUS_SUCCESS)
-        throw std::runtime_error("cublasGemmEx (FP16, device) failed, status=" + std::to_string(static_cast<int>(st)));
-}
-
-// Matrix<float>-based wrapper (converts internally) -- for correctness
-// testing only; the compute-only benchmark uses the raw-pointer entry
-// points above directly, converting once outside the timed region.
-void gemm_cuda_cublas_fp16(const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C) {
-    const int M = static_cast<int>(A.rows());
-    const int K = static_cast<int>(A.cols());
-    const int N = static_cast<int>(B.cols());
-
-    DeviceBuffer<float> dA(static_cast<std::size_t>(M) * K);
-    DeviceBuffer<float> dB(static_cast<std::size_t>(K) * N);
-    DeviceBuffer<float> dC(static_cast<std::size_t>(M) * N);
-    CUDA_CHECK(cudaMemcpy(dA.ptr, A.data(), static_cast<std::size_t>(M) * K * sizeof(float), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(dB.ptr, B.data(), static_cast<std::size_t>(K) * N * sizeof(float), cudaMemcpyHostToDevice));
-
-    DeviceBuffer<__half> dA16(static_cast<std::size_t>(M) * K);
-    DeviceBuffer<__half> dB16(static_cast<std::size_t>(K) * N);
-    gemm_cuda_convert_f32_to_f16_device(dA.ptr, dA16.ptr, M * K);
-    gemm_cuda_convert_f32_to_f16_device(dB.ptr, dB16.ptr, K * N);
-
-    gemm_cuda_cublas_fp16_device(dA16.ptr, dB16.ptr, dC.ptr, M, K, N);
-
-    CUDA_CHECK(cudaDeviceSynchronize());
-    CUDA_CHECK(cudaMemcpy(C.data(), dC.ptr, static_cast<std::size_t>(M) * N * sizeof(float), cudaMemcpyDeviceToHost));
+    cublas_gemm_ex(dA16, dB16, dC, CUDA_R_16F, CUDA_R_32F, CUBLAS_COMPUTE_32F, M, K, N,
+                   "cublasGemmEx (FP16)");
 }
 
 // ============================================================================

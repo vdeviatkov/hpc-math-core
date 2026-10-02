@@ -226,6 +226,26 @@ TEST_F(CudaWmmaFloat, N512) {
     expect_near(C_got, C_ref, "wmma/N=512", 1e-2, 1e-2);
 }
 
+// Sizes that are not multiples of 16: edge tiles must not be stored as full
+// 16x16 fragments (out-of-bounds / wrapped-row writes), and N % 8 != 0 rows
+// are not 32-byte aligned for a direct store_matrix_sync.
+TEST_F(CudaWmmaFloat, EdgeTiles) {
+    for (std::size_t n : {17, 50, 72, 100}) {
+        hpc::Matrix<float> A(n,n), B(n,n), C_ref(n,n), C_got(n,n);
+        fill_random(A, 11); fill_random(B, 12);
+        hpc::gemm::gemm_naive(A, B, C_ref);
+        hpc::gemm::gemm_cuda_wmma(A, B, C_got);
+        expect_near(C_got, C_ref, "wmma/edge tiles", 1e-2, 1e-2);
+    }
+}
+TEST_F(CudaWmmaFloat, NonSquare_40x56x24) {
+    hpc::Matrix<float> A(40,24), B(24,56), C_ref(40,56), C_got(40,56);
+    fill_random(A, 13); fill_random(B, 14);
+    hpc::gemm::gemm_naive(A, B, C_ref);
+    hpc::gemm::gemm_cuda_wmma(A, B, C_got);
+    expect_near(C_got, C_ref, "wmma/NonSquare_40x56x24", 1e-2, 1e-2);
+}
+
 // ===========================================================================
 // Level 5 -- Vectorized loads (float4/double2) + shared-memory XOR swizzle.
 // Full fp32/fp64 precision (no bf16/fp16 truncation) -- uses the same

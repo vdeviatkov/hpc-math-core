@@ -56,7 +56,7 @@ Requires CMake ≥ 3.25 and a C++20 compiler (GCC 12 / Clang 16 / Apple Clang 15
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release   # -O3 -march=native -ffast-math; CUDA auto-detected
 cmake --build build --parallel
-ctest --test-dir build --output-on-failure  # CPU suite (size depends on ISA) + 62 CUDA tests
+ctest --test-dir build --output-on-failure  # CPU suite (size depends on ISA) + 64 CUDA tests
 
 ./build/benchmarks/bench_gemm                 --benchmark_filter="f32"
 ./build/benchmarks/cuda/bench_gemm_cuda       --benchmark_filter="N=4096"
