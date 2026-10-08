@@ -1,10 +1,10 @@
 # GEMM Kernel Implementations
 
 This directory contains every GEMM implementation in the `hpc-math-core` benchmark suite — the CPU kernels and the host interface to the CUDA kernels (`cuda.hpp`; kernels in `src/cuda/`).
-All kernels compute **C = A × B** where A is M×K, B is K×N, C is M×N (row-major, `float` or `double`).
+All kernels compute C = A × B where A is M×K, B is K×N, C is M×N (row-major, `float` or `double`).
 
 Looking for a quick refresher rather than the full derivation below? See
-**[docs/gemm-approaches.md](../../docs/gemm-approaches.md)** — a one-page
+[docs/gemm-approaches.md](../../docs/gemm-approaches.md) — a one-page
 summary of every family's cache technique and key intrinsics side by side.
 
 ---
@@ -49,17 +49,17 @@ So `gemm_avx2_blocked(A, B, C)` on an ARM build is a compile-time error
 (`call to deleted function 'gemm_avx2_blocked'`), never a scalar kernel
 quietly timed under an AVX2 name. Consequences:
 
-- **Benchmarks** (`bench_gemm.cpp`) pass the flag as a template parameter
+- Benchmarks (`bench_gemm.cpp`) pass the flag as a template parameter
   to `run_gemm<N, T, kHaveAvx2>(…)`; when it is false the kernel lambda sits
   in a discarded `if constexpr` branch and is never instantiated, and the
   row is reported as `SKIPPED` — the full catalogue stays visible.
-- **Tests** (`test_gemm.cpp`) wrap each family in `#if HPC_HAS_*`; the test
+- Tests (`test_gemm.cpp`) wrap each family in `#if HPC_HAS_*`; the test
   count on a machine is exactly the set of kernels that ran on it.
 - **`gemm_cuda_*`** is the one runtime case: GPU presence is a property of
   the machine the binary runs on, not of the build, so the CPU-only stub
   reports `cuda_device_count() == 0` and callers `SKIP`. It never computes
   a CPU result under a CUDA name.
-- **`gemm_cuda_wmma_pipelined`** has a documented *shape* precondition
+- `gemm_cuda_wmma_pipelined` has a documented *shape* precondition
   (M, N multiples of 128, K of 32) and falls back to `gemm_cuda_wmma`
   otherwise — see Level 7 below.
 
@@ -94,7 +94,7 @@ C(i, j)   │ data[i*N + j]     │ 0 (invariant)        │ ✅ Register
 ```
 
 Reading `B(k, j)` steps through memory in strides of `N × sizeof(T)` bytes —
-for N=1024 f64 that is **8 KB per step**, 128× a 64-byte cache line.
+for N=1024 f64 that is 8 KB per step, 128× a 64-byte cache line.
 
 ```
 B memory (N=8, row-major):
@@ -130,7 +130,7 @@ C(i, j)   │ +1 element           │ ✅✅ Sequential
 ```
 
 Both B row k and C row i are accessed sequentially — 100% cache-line utilisation.
-The hardware prefetcher predicts the stride exactly and keeps the pipeline full.
+The hardware prefetcher follows the stride-1 stream.
 
 ### Why the hoist matters
 
@@ -167,7 +167,7 @@ which fits in L2 and is reused `TILE` times per load.
 B cache-line reuse factor:
   naive:     1 use / load   (column stride — always cold)
   reordered: 8 uses / load  (full row — large working set at big N)
-  blocked:  TILE uses / load (tile stays in L2 for all TILE i-rows)
+  blocked:   8×TILE uses / load (the B tile stays cached for all TILE i-rows)
 ```
 
 ---
@@ -178,8 +178,9 @@ Three kernels mirroring the scalar progression with 256-bit YMM registers (`__AV
 
 ### `gemm_avx2_naive` — i→j→k, SIMD on k-loop
 
-Gathers B column j via a stack buffer, FMAs with sequential A row load.
-**Pedagogical purpose:** SIMD width alone cannot overcome a cache-hostile access pattern.
+Gathers B column j into a stack buffer and FMAs it with a sequential A row
+load. Kept as a measurement point: SIMD width does not help a cache-hostile
+access pattern.
 
 ### `gemm_avx2_reordered` — i→k→j, SIMD on j-loop
 
@@ -247,8 +248,8 @@ Manual gather into Q-register buffer. Cache-hostile — identical lesson to AVX2
 
 ### `gemm_neon_blocked` — tiled, 4-row register tile
 
-C tile: 4 rows × 4 Q-registers = **4×16 f32**, or 4 rows × 2 Q-registers =
-**4×4 f64**. On Apple Silicon this is the fastest plain-FMA kernel (no SVE
+C tile: 4 rows × 4 Q-registers = 4×16 f32, or 4 rows × 2 Q-registers =
+4×4 f64. On Apple Silicon this is the fastest plain-FMA kernel (no SVE
 available); the matrix-engine paths (`gemm_sme`, Accelerate) are far faster.
 
 Declared `= delete` on targets without NEON.
@@ -257,7 +258,7 @@ Declared `= delete` on targets without NEON.
 
 ## Algorithm 7 — ARM SVE / SVE2 (`sve.hpp`)
 
-SVE is **vector-length agnostic (VLA)**: register width VL is implementation-defined
+SVE is vector-length agnostic (VLA): register width VL is implementation-defined
 (128–2048 bit) and queried at runtime — the same binary runs correctly on all implementations.
 
 ```
@@ -303,7 +304,7 @@ Tile width `kJStep = 2 × svcntw/d()` scales automatically with VL:
 Predicates `pg0` / `pg1` handle the j-tail inside the micro-kernel — no scalar tail loop.
 Declared `= delete` on targets without SVE.
 
-**Available on:** Graviton3/4, Neoverse V1/V2, A64FX. **Not on** Apple Silicon (M-series).
+Available on: Graviton3/4, Neoverse V1/V2, A64FX. Not on Apple Silicon (M-series).
 
 ---
 
@@ -315,9 +316,9 @@ ahead — single rows for the scalar kernel, `PfDist × kRegRows` rows for the
 SIMD kernels.
 
 Three streams per kernel:
-1. **A** — the row `PfDist` ahead, at the current k-tile: read, locality 2 (L2)
-2. **B** — the start of the *next* k-tile, issued once at each k-tile boundary: read, locality 2 (L2)
-3. **C** — the row `PfDist` ahead, at the current j-tile: write, locality 3 (L1)
+1. A — the row `PfDist` ahead, at the current k-tile: read, locality 2 (L2)
+2. B — the start of the *next* k-tile, issued once at each k-tile boundary: read, locality 2 (L2)
+3. C — the row `PfDist` ahead, at the current j-tile: write, locality 3 (L1)
 
 Benchmarks sweep `PfDist ∈ {2, 4, 8, 16}`. Measured, the hints are close to
 neutral: on Apple M4 Max the scalar kernel stays within ±1% and the NEON
@@ -354,7 +355,7 @@ sm_120, CUDA 13.2); measured throughput is in
 
 ¹ End-to-end (`cudaMalloc` + H2D + kernel + D2H every call), RTX 5080,
 Linux. `gemm_cuda_wmma` was measured before its edge-tile store fix; it
-has run at ~6.0 TFLOP/s since. Compute-only, Level 7 reaches **100.5 TFLOP/s** at N=16384 against
+has run at ~6.0 TFLOP/s since. Compute-only, Level 7 reaches 100.5 TFLOP/s at N=16384 against
 cuBLAS FP16's 120.5 (83%).
 
 ---
@@ -370,10 +371,10 @@ Thread (ty, tx): acc = 0
 C[i][j] = acc
 ```
 
-**Bottleneck:** global-memory bandwidth. Adjacent threads in a warp read
+Bottleneck: global-memory bandwidth. Adjacent threads in a warp read
 adjacent `B[k][j]`, so B loads coalesce and L1/L2 absorb much of the reuse —
 which is why this baseline is harder to beat than it looks.
-**Measured:** 2.6 TFLOP/s (f32, N=4096).
+Measured: 2.6 TFLOP/s (f32, N=4096).
 
 ---
 
@@ -390,11 +391,11 @@ For each k-tile (step TILE=16):
 C[i][j] = acc
 ```
 
-**+1 column padding** eliminates 16-way shared-memory bank conflicts.
-**Global memory reduction:** 16x fewer global loads than naive.
-**Bottleneck:** each thread still owns only 1 output, so two
++1 column padding eliminates 16-way shared-memory bank conflicts.
+Global memory reduction: 16x fewer global loads than naive.
+Bottleneck: each thread still owns only 1 output, so two
 `__syncthreads()` per k-tile are amortised over just 16 FMAs.
-**Measured:** 2.4 TFLOP/s f32 — slightly *below* naive: the sync overhead
+Measured: 2.4 TFLOP/s f32 — slightly *below* naive: the sync overhead
 isn't paid back with one output per thread. In f64 it is the fastest kernel
 at N ≥ 512: the
 reduced FP64 pipe of a consumer GPU is the bottleneck there, so the extra
@@ -404,8 +405,8 @@ staging of the higher levels buys nothing.
 
 ### Level 2 — `gemm_cuda_reg_tile` — 128x128 thread block, 8x8 register tile
 
-**Key insight:** each thread should own many output elements, not just one.
-This amortises `__syncthreads` and shared-memory bandwidth over many FMAs.
+Each thread owns many output elements instead of one, amortising
+`__syncthreads` and shared-memory bandwidth over many FMAs.
 
 ```
 Thread block: 256 threads -> 128x128 output tile of C
@@ -428,8 +429,8 @@ Per k-step (BK=16):
   __syncthreads()
 ```
 
-**Arithmetic intensity:** ~32 FLOP/byte (vs ~2 for Level 1).
-**Measured:** 6.6 TFLOP/s f32 — the biggest single step on the ladder
+Arithmetic intensity: ~32 FLOP/byte (vs ~2 for Level 1).
+Measured: 6.6 TFLOP/s f32 — the biggest single step on the ladder
 (2.7× Level 1).
 
 ---
@@ -447,19 +448,19 @@ While computing tile k from buffer[cur]:
 Swap buffers, repeat.
 ```
 
-**On Ampere+ (sm_80+):** `__pipeline_memcpy_async` / `cp.async` copies
+On Ampere+ (sm_80+): `__pipeline_memcpy_async` / `cp.async` copies
 global → shared asynchronously, overlapping the copy with FMA compute. The
 source must be a real global address; out-of-bounds elements use the
 zfill form (copy 0 bytes, zero the destination).
 
-**On older GPUs (sm_70..79):** falls back to synchronous loads with
+On older GPUs (sm_70..79): falls back to synchronous loads with
 `__syncthreads`; the double-buffer structure is preserved but the overlap
 needs hardware async copy.
 
 For `double` the block tile shrinks to 64×64 to stay within 48 KB of shared
 memory, so the launch uses `(BM/8)·(BN/8)` threads: 256 for `float`, 64 for
 `double`.
-**Measured:** 6.7 TFLOP/s f32 — the fastest plain-FMA kernel.
+Measured: 6.7 TFLOP/s f32 — the fastest plain-FMA kernel.
 
 ---
 
@@ -483,25 +484,25 @@ for each k-tile:
 wmma::store_matrix_sync(C_ptr, c_frag, N, wmma::mem_row_major);
 ```
 
-**Thread block:** 4x4 warps = 512 threads, 64x64 output tile.
-**fp16 conversion:** introduces ~1e-3 relative error (test uses relaxed tolerance).
-**Two layout rules** the code depends on:
-- **No +1 padding** on `As`/`Bs`: `load_matrix_sync` needs the leading
+Thread block: 4x4 warps = 512 threads, 64x64 output tile.
+fp16 conversion: introduces ~1e-3 relative error (test uses relaxed tolerance).
+Two layout rules the code depends on:
+- No +1 padding on `As`/`Bs`: `load_matrix_sync` needs the leading
   dimension to be a multiple of 8 `__half` elements (64 is; 65 would fail
   with `cudaErrorMisalignedAddress`).
-- **Fragment tags must match the physical layout.** `As` is stored
+- Fragment tags must match the physical layout. `As` is stored
   transposed (`As[k][m]`), so `a_frag` is `col_major`; `Bs` is stored
   naturally (`Bs[k][n]`), so `b_frag` is `row_major`. A mismatch silently
   transposes the operand — wrong values, no error.
-- **Edge tiles are staged.** `store_matrix_sync` always writes a full 16×16
+- Edge tiles are staged. `store_matrix_sync` always writes a full 16×16
   tile and needs a 32-byte-aligned destination. Tiles wholly inside C with
   `N % 8 == 0` store directly; any other tile is stored to a per-warp
   shared-memory tile and copied out with bounds checks. Without this, sizes
   that aren't multiples of 16 write past the end of C or wrap into the next
   row (`compute-sanitizer` flags it; covered by `CudaWmmaFloat.EdgeTiles`).
 
-**Falls back** to `gemm_cuda_double_buf` on pre-Volta hardware at runtime.
-**Measured:** 5.3 TFLOP/s in the recorded run, ~6.0 after the edge-tile
+Falls back to `gemm_cuda_double_buf` on pre-Volta hardware at runtime.
+Measured: 5.3 TFLOP/s in the recorded run, ~6.0 after the edge-tile
 fix — still below the FMA kernels at this size: with 64×64
 tiles, one fragment per warp and a single buffer, there is too little work
 per synchronization to keep the Tensor Cores busy. Level 7 addresses that.
@@ -528,13 +529,13 @@ vectorized, scatter-store scalar:
 swizzle_slot(row, slot, slots) = slot ^ (row & (slots-1))   // self-inverse XOR
 ```
 
-**Correctness does not depend on bank-conflict elimination**: the same
+Correctness does not depend on bank-conflict elimination: the same
 `swizzle_slot()` call is used at every write site and every read site, so
 whatever permutation it computes is applied and undone consistently.
-**Requires K and N to be multiples of the vector width** (4 for float, 2 for
+Requires K and N to be multiples of the vector width (4 for float, 2 for
 double) for the vectorized loads to stay 16-byte aligned; the host dispatch
 falls back to `gemm_cuda_reg_tile` otherwise.
-**Measured:** 5.7 TFLOP/s f32 — *slower* than Level 2 (6.6). Not profiled;
+Measured: 5.7 TFLOP/s f32 — *slower* than Level 2 (6.6). Not profiled;
 the likely cost is the swizzle's index arithmetic on every shared-memory
 read in the k-loop, while A's transposed scatter-store still stays scalar.
 
@@ -563,11 +564,11 @@ aM = warpRow*16 + quadRow + (quadIdx % 2) * 8;   // M offset
 aK =              (quadIdx / 2) * 8;              // K offset
 ```
 
-Native tile is **16x8x16** (not WMMA's 16x16x16 — mma.sync's f16 shape is
+Native tile is 16x8x16 (not WMMA's 16x16x16 — mma.sync's f16 shape is
 narrower in N), so each warp issues two side-by-side MMAs to cover the
 same 16x16 area WMMA computes in one call. Falls back to `gemm_cuda_wmma`
 on sm_70-75 (Volta/Turing, which lack the m16n8k16 shape).
-**Measured:** 5.7 TFLOP/s — 8% above Level 4, but the same order: same tile
+Measured: 5.7 TFLOP/s — 8% above Level 4, but the same order: same tile
 sizes and single buffering, so dropping to PTX alone doesn't remove the
 bottleneck.
 
@@ -601,7 +602,7 @@ As stored TRANSPOSED (As[k][m])       As stored NATURAL (As[m][k]) --
                                          below)
 ```
 
-**1. Bigger thread-block tile (128x128, BK=32 vs 64x64, BK=16).** More
+1. Bigger thread-block tile (128x128, BK=32 vs 64x64, BK=16). More
 work per shared-memory round trip and `__syncthreads()` pair.
 
 **2. Bigger per-warp tile (32x64 = 8 fragments/warp vs 16x16 = 1
@@ -624,7 +625,7 @@ for fm in 0..1:
         wmma::mma_sync(c_frag[fm][fn], a_frag, b_frag[fn], c_frag[fm][fn]);
 ```
 
-**3. cp.async double-buffered shared memory (Ampere+).** The next
+3. cp.async double-buffered shared memory (Ampere+). The next
 k-tile's global->shared copy overlaps the current tile's Tensor Core
 compute, with the same control flow as `gemm_cuda_double_buf` (prefetch
 tile 0, then each iteration issues the next tile's load before computing on
@@ -632,7 +633,7 @@ the current one, and waits for it after). On pre-Ampere Tensor-Core
 hardware (sm_70-75) it compiles to a synchronous `float4`-sized copy, still
 double-buffered, via the same `#ifdef HPC_HAVE_CP_ASYNC` pattern.
 
-**4. Padded shared-memory leading dimensions (+8 halves).** Unpadded, `As`
+4. Padded shared-memory leading dimensions (+8 halves). Unpadded, `As`
 (ld = 32 halves = 64 B/row) gives only 2 distinct bank-starts across a
 fragment's 16 rows and `Bs` (ld = 128 halves = 256 B/row, exactly two
 32-bank cycles) gives 1 — an 8-way and a 16-way conflict. Padding both by 8
@@ -645,7 +646,7 @@ interface. Nsight Compute: shared-load conflicts drop from 85% to 1.0% of
 wavefronts, and throughput rises from 80.8 to 100.5 TFLOP/s (details in
 [§ Removing the bank conflicts](../../docs/benchmarks.md#removing-the-bank-conflicts)).
 
-**Why `As` is untransposed here (unlike Level 4).** cp.async can only copy
+Why `As` is untransposed here (unlike Level 4). cp.async can only copy
 a *contiguous* run of bytes to a *contiguous* destination — it cannot
 transpose during the copy the way Level 4's per-element scalar load can.
 A16 (the pre-converted fp16 copy of A) is row-major (K-contiguous), so `As`
@@ -655,8 +656,8 @@ tag from Level 4's `col_major` for the same mathematical operand — the tag
 follows the physical layout. `Bs`/`b_frag` are unchanged from Level 4
 (`Bs[k][n]`, `row_major`).
 
-**No boundary/zfill logic, by design.** This kernel requires M, N to be
-**exact multiples of 128** and K an **exact multiple of 32** (no tail
+No boundary/zfill logic, by design. This kernel requires M, N to be
+exact multiples of 128 and K an exact multiple of 32 (no tail
 handling); the host dispatch falls back to `gemm_cuda_wmma` otherwise.
 Every cp.async transfer moves a full 16-byte (8 x `__half`) chunk — the
 largest `__pipeline_memcpy_async` supports — and the exact-multiple
@@ -722,66 +723,46 @@ state.counters["ampere_async"] = hpc::gemm::cuda_has_ampere() ? 1.0 : 0.0;
 
 ## Algorithm 10 — ARM SME2 (Scalable Matrix Extension)
 
-**Verified end-to-end on Apple M4 Max** — see [docs/benchmarks.md](../../docs/benchmarks.md) for
-measured GFLOP/s. Opt-in via `-DHPC_ENABLE_SME=ON` (see
+Measured on Apple M4 Max ([docs/benchmarks.md](../../docs/benchmarks.md)).
+Opt-in via `-DHPC_ENABLE_SME=ON` (see
 [§ SME and AMX build flags](../../docs/build.md#sme-and-amx-build-flags)).
 
-### Why this is a different primitive, not "wider NEON/SVE"
+### Outer products instead of FMA
 
-Every kernel above — AVX2, AVX-512, NEON, SVE — computes GEMM with vector
-**FMA**: broadcast one scalar, multiply against a vector, accumulate into
-another vector. Adding lanes makes the vector wider; the operation stays
-the same shape.
-
-SME instead computes GEMM with a hardware **outer product**. A single
-`FMOPA` instruction takes a column vector `a` (SVL elements) and a row
-vector `b` (SVL elements) and accumulates the full SVL×SVL outer product
-into a dedicated 2-D accumulator register array called **ZA** — not a
-vector register, a whole tile of them:
+The AVX2, AVX-512, NEON and SVE kernels compute GEMM with vector FMA:
+broadcast one scalar, multiply it against a vector, accumulate into a
+vector. SME's `FMOPA` instead takes a column vector `a` and a row vector `b`
+(SVL elements each) and adds their whole outer product into ZA, a 2-D
+accumulator array:
 
 ```
 ZA[r][c] += a[r] * b[c]     for r, c in [0, SVL)
 ```
 
-Looping this over `k = 0..K-1` with `a[k] = A(i0+r, k)` and
-`b[k] = B(k, j0+c)` computes an entire SVL×SVL tile of `C` in `K`
-instructions instead of `K × SVL` FMAs. This is the same class of
-primitive as NVIDIA Tensor Cores (`gemm_cuda_wmma`, Algorithm 9 above) and
-Apple's own AMX coprocessor (Algorithm 11, below) — trade a wider, more
-specialised instruction for dramatically higher FLOPs/instruction.
+With `a[k] = A(i0+r, k)` and `b[k] = B(k, j0+c)`, `K` of these instructions
+produce an SVL×SVL tile of `C`, against `K × SVL` vector FMAs — the same
+kind of primitive as GPU Tensor Cores (Algorithm 9) and Apple's AMX
+coprocessor (Algorithm 11).
 
-### Hardware finding: gather-loads are illegal in SME streaming mode
+### Streaming mode forbids gather loads
 
-SME instructions only execute in "Streaming SVE mode" (entered via
-`SMSTART`, exited via `SMSTOP` — Clang generates both automatically for a
-function marked `__arm_locally_streaming`). The obvious way to build the
-`a` column vector — `svld1_gather_index` with a stride-`lda` index vector,
-since `A` is row-major and a column is strided — is **not legal** there:
-Clang rejects it with *"builtin can only be called from a non-streaming
-function"*. Gather/scatter addressing modes are excluded from the
-Streaming SVE instruction subset by the architecture itself, not a
-NEON/SVE-style limitation. The column vector must instead be assembled
-with ordinary scalar loads into a buffer, then loaded contiguously with
-`svld1`. In practice that means packing A (see below).
+SME instructions only execute in streaming SVE mode (SMSTART / SMSTOP,
+which Clang emits for functions marked `__arm_locally_streaming`). The
+natural way to build the `a` column — `svld1_gather_index` with a stride of
+`lda` — is not available there: Clang rejects it with *"builtin can only be
+called from a non-streaming function"*, because gather/scatter addressing is
+excluded from streaming SVE. So A has to be packed (see below).
 
-### Hardware finding: `-march=native` silently disables SME on Apple Silicon
+### Build flags on Apple Silicon
 
-`-march=armv9-a+sme2` compiles cleanly on Apple Silicon but the resulting
-binary `SIGILL`s at runtime on the very first instruction inside the
-streaming region. Clang emits a `CNTD` instruction *outside* streaming
-mode to size the ZA-save prologue buffer; `CNTD` is an ordinary
-(non-streaming) SVE instruction, and Apple Silicon implements **no
-non-streaming SVE unit at all** — only Streaming SVE via SME.
-`-mcpu=apple-m4` avoids this by generating a prologue that doesn't need an
-outside-streaming SVE instruction. Worse: combining `-march=native` with
-`-mcpu=apple-m4` — the repo's default Release flag plus the SME flag —
-silently drops the SME/SVE target features altogether rather than
-erroring, so `HPC_ENABLE_SME=ON` clears `HPC_MARCH` in CMakeLists.txt in
-favour of the verified `-mcpu=` flag. Because these are *runtime* SIGILL
-failure modes that a compile-only check cannot catch, this repo's CMake
-SME detection actually **compiles and runs** a probe program at configure
-time (`check_cxx_source_runs`, not `check_cxx_compiler_flag`) — see
-CMakeLists.txt's `HPC_ENABLE_SME` block.
+`-march=armv9-a+sme2` compiles, but the binary `SIGILL`s at the first
+streaming function: Clang sizes the ZA save buffer with `CNTD`, a
+non-streaming SVE instruction, and Apple Silicon has no non-streaming SVE.
+`-mcpu=apple-m4` avoids it. Combining `-march=native` (the default Release
+flag) with `-mcpu=apple-m4` silently drops the SME features, so
+`HPC_ENABLE_SME=ON` clears `HPC_MARCH`. Both failures only show at run time,
+so the CMake SME check compiles and runs a probe program
+(`check_cxx_source_runs`).
 
 ### The kernel: `gemm_sme`
 
@@ -790,7 +771,7 @@ in place — peaks at 386 GFLOP/s f32 / 116 GFLOP/s f64 on one M4 Max core
 and falls to 180 GFLOP/s f32 at N=4096. Accelerate runs at ~1,650 / ~410 on
 the same core. `gemm_sme` closes most of that gap with four design choices:
 
-**1. All ZA tiles in use.** ZA holds 4 f32 tiles (16×16 each at 512-bit SVL)
+1. All ZA tiles in use. ZA holds 4 f32 tiles (16×16 each at 512-bit SVL)
 or 8 f64 tiles (8×8). With one tile, every `FMOPA` has to wait for the
 previous one to finish updating the same accumulator, so the loop runs at
 FMOPA *latency*. The micro-kernel keeps every tile busy with independent
@@ -806,7 +787,7 @@ per k:  a0,a1 = A column (2 vectors)  per k:  a0,a1 = A column (2 vectors)
 
 Each loaded vector now feeds 2 (f32) or 2–4 (f64) FMOPAs instead of one.
 
-**2. A and B both packed, with GotoBLAS cache blocking.**
+2. A and B both packed, with GotoBLAS cache blocking.
 `jc (Nc) → pc (Kc) → pack B panel → ic (Mc) → pack A block → jr (nr) → ir (mr) → k`.
 Inside the k loop both operands are now unit-stride streams. Before, each k
 read one B row `ldb` elements away from the last, which is why the old
@@ -817,7 +798,7 @@ sweep on M4 Max. Large Kc and Nc won because they amortise both the C
 reloads and the A repacking. On M4 the SME unit is shared by a P-core
 cluster and reads from L2, so blocks are sized for L2, not L1.
 
-**3. Packing outside streaming mode.** Scalar and NEON code is slow in
+3. Packing outside streaming mode. Scalar and NEON code is slow in
 streaming mode, so packing runs in the ordinary (non-streaming) driver. A
 is transposed into column strips with NEON 4×4 (f32) / 2×2 (f64)
 in-register transposes, which doubled packing bandwidth over a scalar loop
@@ -826,12 +807,12 @@ in-register transposes, which doubled packing bandwidth over a scalar loop
 `RDSVL`, an SME instruction that is legal outside streaming mode, so the
 driver can size buffers with them.
 
-**4. SME2 multi-vector loads.** `svld1_x2` fetches two vectors in one
+4. SME2 multi-vector loads. `svld1_x2` fetches two vectors in one
 `LD1W {z0.s-z1.s}` / `LD1D {z0.d-z1.d}`. The f32 inner loop is 2 loads +
 4 FMOPAs; f64 is 3 loads + 8 FMOPAs. SME2 is required: `HPC_HAS_SME` checks
 `__ARM_FEATURE_SME2` as well as `__ARM_FEATURE_SME`.
 
-**One template for both precisions.** `macro_kernel<T>` covers f32 and
+One template for both precisions. `macro_kernel<T>` covers f32 and
 f64. The only shape difference is `kCols<T>` (2 or 4 tile columns); one
 `if constexpr` adds f64's extra four FMOPAs. Small `__arm_inout("za")`
 helpers (`mopa`, `move_tile`, `move_column`, `move_c`) hide the
@@ -841,14 +822,14 @@ would remove even that branch, but measured 9% slower at N=4096.
 Edges: packing zero-pads partial strips, so FMOPAs always run with an
 all-true predicate. Only the C transfers into and out of ZA are predicated.
 
-**Pitfall: every streaming helper needs a ZA attribute.** A
+Pitfall: every streaming helper needs a ZA attribute. A
 `__arm_streaming` helper without `__arm_preserves("za")` /
 `__arm_inout("za")` is "private-ZA". Clang refuses to inline it into a
 ZA-owning caller and instead wraps every call in a lazy ZA save
 (`TPIDR2_EL0` + `smstart za`). With the load helper in the k loop, that
 cuts throughput from ~1,290 to ~270 GFLOP/s f32.
 
-**Measured (single core, M4 Max):** 1,450 GFLOP/s f32 / 410 GFLOP/s f64 at
+Measured (single core, M4 Max): 1,450 GFLOP/s f32 / 410 GFLOP/s f64 at
 N=1024 (84–88% of single-threaded Accelerate f32 and on par in f64 for
 N ≥ 512), holding 1,345 / 404 at N=4096. Comparison against Accelerate,
 and KleidiAI:
@@ -856,76 +837,43 @@ and KleidiAI:
 
 ### Hardware availability
 
-Apple M4 / M4 Pro / M4 Max (SME2, 512-bit SVL) is, as of this writing,
-essentially the only shipping SME2 hardware widely available to individual
-developers. Not on Apple M1/M2/M3, AWS Graviton3/4, Fujitsu A64FX, or
-x86 — there `gemm_sme` is declared `= delete` (`HPC_HAS_SME == 0`).
+SME2 is available on Apple M4 / M4 Pro / M4 Max (512-bit SVL); not on Apple
+M1–M3, AWS Graviton3/4, Fujitsu A64FX or x86, where `gemm_sme` is declared
+`= delete` (`HPC_HAS_SME == 0`).
 
 ---
 
 ## Algorithm 11 — Apple AMX (via Accelerate.framework)
 
-**Verified on Apple M4 Max** — see [docs/benchmarks.md](../../docs/benchmarks.md) for measured
-GFLOP/s (up to 3.3 TFLOP/s f32). On by default on Apple platforms
-(`HPC_ENABLE_AMX`, see
+Measured on Apple M4 Max (up to 3.3 TFLOP/s f32,
+[docs/benchmarks.md](../../docs/benchmarks.md)). On by default on Apple
+platforms (`HPC_ENABLE_AMX`, see
 [§ SME and AMX build flags](../../docs/build.md#sme-and-amx-build-flags)).
 
-### Which "AMX" this is
+"AMX" names two unrelated accelerators. Intel AMX is a public x86 ISA
+extension (tile registers + TMUL, Sapphire Rapids+). Apple AMX is a matrix
+coprocessor in every Apple Silicon SoC since M1, with no public instruction
+set or intrinsics — its encodings are known only from reverse engineering.
+The supported way to use it is Accelerate.framework's BLAS
+(`cblas_sgemm`/`cblas_dgemm`), which Apple recommends for matrix math and
+which is understood to dispatch to the coprocessor.
 
-"AMX" names two, architecturally unrelated, matrix-multiply accelerators
-that happen to share an acronym. Intel AMX is a public x86 ISA extension
-(tile registers + TMUL, programmed via `<immintrin.h>` intrinsics,
-Sapphire Rapids+ only). **Apple AMX** — the Apple Matrix coprocessor
-present in every Apple Silicon SoC since the M1 — is what this family
-targets, and it works completely differently from a build/programming
-perspective: Apple has never published instruction-level documentation or
-an ACLE-style intrinsic header for it (unlike ARM SME, which is a public,
-documented ISA — see Algorithm 10 above). The instruction encodings are
-known only through third-party reverse engineering and are not something
-this repository emits directly. The one Apple-sanctioned, stable way to
-benefit from the AMX coprocessor's throughput is **Accelerate.framework**
-— its BLAS (`cblas_sgemm`/`cblas_dgemm`) is Apple's own implementation,
-and Apple's own performance guidance points to Accelerate for matrix math
-on Apple Silicon; the reverse-engineering community has identified that it
-dispatches to AMX blocks internally. `gemm_amx` in this file is
-therefore a thin, verified wrapper around Accelerate's BLAS — not a
-hand-written tile-multiply kernel — and it answers a different question
-than every other family in this repo: not "how fast can a hand-written
-GEMM in this style go", but "what does Apple's own vendor-tuned
-implementation achieve, as a ceiling to compare everything else against".
+So `gemm_amx` is a thin wrapper around a vendor library, not a hand-written
+kernel: it shows what Apple's own implementation achieves, as a ceiling for
+the other kernels. It is a single function rather than a naive → reordered →
+blocked progression, because Accelerate has no tiling or blocking knob to
+stage from the caller's side.
 
-### No precision trade-off, and no algorithm-staging knob
-
-Unlike Intel AMX (bf16-in/fp32-accumulate only) and `gemm_cuda_wmma`
-(fp16-in/fp32-accumulate), Accelerate's BLAS computes at full fp32/fp64
-precision throughout, so `gemm_amx` supports both `float` and `double`
-with no reduced-precision caveat. It also exposes no algorithm-staging
-knob: there is no tile size, blocking factor, or packing strategy for a
-caller to select, so the family is a single function, `gemm_amx`, rather
-than a naive → reordered → blocked progression.
-
-### Threading
-
-Accelerate's BLAS may use multiple CPU cores internally for large
-matrices (an undocumented, size-dependent heuristic) — unlike every other
-CPU kernel in this repo, which is strictly single-threaded by design.
-Measured on M4 Max: limited to one thread (`VECLIB_MAXIMUM_THREADS=1`) it
-reaches ~1.7 TFLOP/s f32 from N=256 up; with default threading it reaches
-~3.2 TFLOP/s from N≈1024 — roughly double, consistent with the second
-performance cluster's matrix unit joining in (see
-[benchmarks.md § Matrix engines, single core](../../docs/benchmarks.md#matrix-engines-single-core)).
-Treat the default-threading numbers as
-"the fastest way to multiply matrices on this machine" rather than an
-apples-to-apples comparison against the single-threaded `gemm_sme`,
-`gemm_avx512_*`, or `gemm_neon_*` results elsewhere in this document.
-
-### Hardware / platform availability
-
-Accelerate.framework: macOS and iOS only. On Apple Silicon (M1 and later)
-it is understood to dispatch to the AMX coprocessor; on Intel Macs it
-dispatches to AVX/AVX-512 instead — still a fast, correct BLAS, just not
-exercising the AMX coprocessor this file is about. Not on Linux or
-Windows — there `gemm_amx` is declared `= delete` (`HPC_HAS_AMX == 0`).
+- Precision: full fp32/fp64 — no reduced-precision inputs, unlike Intel
+  AMX (bf16) or `gemm_cuda_wmma` (fp16).
+- Threading: Accelerate may use several cores for large matrices. Measured
+  on M4 Max: with one thread (`VECLIB_MAXIMUM_THREADS=1`) it reaches
+  ~1.7 TFLOP/s f32 from N=256 up; with default threading ~3.2 TFLOP/s from
+  N≈1024 — roughly double, consistent with the second performance
+  cluster's matrix unit joining in
+  ([benchmarks.md § Matrix engines, single core](../../docs/benchmarks.md#matrix-engines-single-core)).
+- Availability: macOS and iOS (on Intel Macs Accelerate uses AVX/AVX-512
+  instead). Elsewhere `gemm_amx` is declared `= delete` (`HPC_HAS_AMX == 0`).
 
 ---
 

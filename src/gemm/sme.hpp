@@ -5,51 +5,33 @@
  * @brief ARM SME (Scalable Matrix Extension) GEMM — one packed, multi-tile kernel.
  *
  * ============================================================
- *  Why SME is fundamentally different from SVE/NEON/AVX
+ *  Outer products instead of FMA
  * ============================================================
  *
- * Every other kernel family in this repo (AVX2, AVX-512, NEON, SVE) computes
- * a C(i,j) accumulator with vector *FMA*: broadcast one scalar, multiply it
- * against a vector, add into another vector. The vector register holds one
- * row (or part of one row) of C.
- *
- * SME instead computes GEMM with a hardware **outer product**: given a
- * column vector `a` (SVL elements) and a row vector `b` (SVL elements), a
- * single FMOPA instruction computes the full SVL×SVL outer product
- * `a ⊗ b` and accumulates it into a dedicated 2-D accumulator register
- * called ZA — not a normal vector register, a whole tile of them.
+ * The AVX2, AVX-512, NEON and SVE kernels compute C with vector FMA:
+ * broadcast one scalar, multiply it against a vector, add into a vector that
+ * holds part of a row of C. SME's FMOPA instead takes a column vector `a` and
+ * a row vector `b` (SVL elements each) and adds their whole SVL×SVL outer
+ * product into ZA, a 2-D accumulator array:
  *
  *   ZA[r][c] += a[r] * b[c]     for r, c in [0, SVL)
  *
- * Looping this over k = 0..K-1 with a[k] = A(i0+r, k) and b[k] = B(k, j0+c)
- * computes exactly C(i0+r, j0+c) = sum_k A(i0+r,k)*B(k,j0+c) — a full
- * SVL×SVL tile of C — in K instructions instead of K×SVL FMAs. This is the
- * same computational primitive NVIDIA tensor cores (WMMA, already used in
- * gemm_cuda_wmma) use, just for CPU SIMD.
- *
- * SME reuses SVE's vector-length-agnostic model: SVL is implementation
- * defined and queried at runtime via svcntsw() (f32) / svcntsd() (f64) —
- * the *streaming* vector length, which can differ from the non-streaming
- * SVE length (and on Apple Silicon, there IS no non-streaming SVE — see
- * "Apple Silicon note" below).
+ * With a[k] = A(i0+r, k) and b[k] = B(k, j0+c), K of these instructions
+ * produce an SVL×SVL tile of C — the same primitive as GPU Tensor Cores.
+ * SVL (the streaming vector length) is read at runtime with svcntsw() /
+ * svcntsd(): 16 f32 / 8 f64 on Apple M4.
  *
  *
  * ============================================================
  *  Streaming mode
  * ============================================================
  *
- * SME instructions (FMOPA, LD1/ST1 into ZA, ZERO {za}, …) are only legal
- * while the CPU is in "Streaming SVE mode". A function enters this mode via
- * the `SMSTART` instruction and must leave it via `SMSTOP` before returning
- * to normal code — Clang generates both automatically for a function marked
- * `__arm_locally_streaming`. The ZA accumulator array must additionally be
- * declared as "owned" by the function via `__arm_new("za")`, which emits a
- * `zero {za}`-safe prologue/epilogue (saving/restoring any caller ZA state).
+ * FMOPA, loads/stores of ZA and `zero {za}` are only legal in streaming SVE
+ * mode. `__arm_locally_streaming` makes Clang wrap a function in SMSTART /
+ * SMSTOP; `__arm_new("za")` gives it its own ZA state (any live caller ZA
+ * state is saved, and ZA starts zeroed).
  *
- *   __arm_locally_streaming __arm_new("za")
- *   void my_sme_kernel(...) { ... }
- *
- * Gather loads are NOT legal in streaming mode (Clang: "builtin can only be
+ * Gather loads are not legal in streaming mode (Clang: "builtin can only be
  * called from a non-streaming function"), so the strided A column the outer
  * product needs cannot be loaded directly — A has to be packed.
  *
@@ -63,90 +45,70 @@
  * Accelerate on the same core. gemm_sme (one template for f32 and f64)
  * closes most of that gap with four design choices:
  *
- *  1. All ZA tiles in use. A single tile serialises every FMOPA on the
- *     previous one's accumulator, so the loop runs at FMOPA *latency*, not
- *     throughput. ZA holds 4 f32 tiles (SVL×SVL each) or 8 f64 tiles; the
- *     micro-kernel keeps all of them busy with independent outer products:
+ *  1. All ZA tiles in use. With one tile, every FMOPA waits for the previous
+ *     one's accumulator, so the loop runs at FMOPA latency, not throughput.
+ *     ZA holds 4 f32 tiles (SVL×SVL each) or 8 f64 tiles; the micro-kernel
+ *     keeps all of them busy with independent outer products:
  *
  *       f32: 2×2 tiles → (2·SVL)×(2·SVL) = 32×32 C block on a 512-bit SVL
  *            per k: 2 A vectors + 2 B vectors → 4 FMOPA
  *       f64: 2×4 tiles → (2·SVL)×(4·SVL) = 16×32 C block
  *            per k: 2 A vectors + 4 B vectors → 8 FMOPA
  *
- *     Each loaded vector now feeds 2 (or 4) FMOPAs instead of 1. One template
- *     serves both types; kCols<T> (2 or 4) is the only shape difference.
- *     Using just 2×2 for f64 too (4 of 8 tiles) measured 9% slower at N=4096.
+ *     Each loaded vector feeds 2 (or 4) FMOPAs instead of 1. kCols<T> (2 or
+ *     4) is the only shape difference between the types. A 2×2 layout for
+ *     f64 too (4 of 8 tiles) measured 9% slower at N=4096.
  *
- *  2. A *and* B packed, GotoBLAS-style cache blocking. Loop nest
+ *  2. A and B packed, GotoBLAS-style cache blocking. Loop nest
  *       jc (kSmeNc) → pc (kSmeKc) → pack B panel → ic (kSmeMc) → pack A block
  *       → macro-kernel: jr (nr) → ir (mr) → k
- *     The packed B strip is kc×nr and the packed A strip kc×mr, both read
- *     with unit stride, so the k loop touches two contiguous streams instead
- *     of one B row per k spaced ldb apart (which falls off sharply at
- *     N ≥ 2048). Partial C sums across pc blocks are carried by
- *     loading C into ZA before the k loop.
+ *     The packed B strip (kc×nr) and A strip (kc×mr) are both read with unit
+ *     stride; without packing B, each k reads a row ldb elements from the
+ *     last, which falls off sharply at N ≥ 2048. Partial C sums across pc
+ *     blocks are carried by loading C into ZA before the k loop.
  *
  *  3. Packing outside streaming mode. Scalar/NEON code is slow in streaming
- *     mode on M4, so packing is ordinary C++ in the non-streaming driver; only
- *     the macro-kernel (pure ZA/vector work) runs streaming. One SMSTART/
- *     SMSTOP per Mc×Nc×Kc block is negligible. A is transposed with NEON
- *     4×4 / 2×2 in-register transposes — ~10% faster overall than a scalar
- *     packing loop.
+ *     mode on M4, so packing runs in the ordinary (non-streaming) driver and
+ *     only the macro-kernel runs streaming — one SMSTART/SMSTOP per
+ *     Mc×Nc×Kc block. A is transposed with NEON 4×4 / 2×2 in-register
+ *     transposes, ~10% faster overall than a scalar packing loop.
+ *
+ *  4. SME2 multi-vector loads. The A and B operands of one k step are each
+ *     fetched with LD1W/LD1D {z0-z1} (svld1_x2), halving the load
+ *     instruction count. SME2 is therefore required (HPC_HAS_SME checks
+ *     __ARM_FEATURE_SME2 too).
+ *
+ * Edges: packing zero-pads partial strips to full mr/nr, so FMOPAs always
+ * run with an all-true predicate; only the C transfers into and out of ZA
+ * are predicated (columns) and bounded (rows).
  *
  * Pitfall: every streaming helper called from the ZA-owning macro-kernel
  * needs a ZA attribute (__arm_inout("za") etc.). Without one it is
  * "private-ZA": Clang won't inline it and wraps each call in a lazy ZA save
  * (TPIDR2 + smstart za) — inside the k loop that cuts throughput ~5×.
  *
- *  4. SME2 multi-vector loads. The A and B operands of one k step are each
- *     fetched with LD1W/LD1D {z0-z1} (svld1_x2) — one instruction per 2
- *     vectors, halving the load instruction count. SME2 is therefore required (HPC_HAS_SME checks
- *     __ARM_FEATURE_SME2 too).
- *
- * Edges: packing zero-pads partial strips to full mr/nr, so FMOPAs always
- * run with an all-true predicate; only the C load/store into/out of ZA is
- * predicated (columns) and bounded (rows).
- *
  * Single-threaded. Compare against Accelerate with VECLIB_MAXIMUM_THREADS=1.
  *
  *
  * ============================================================
- *  Apple Silicon note
+ *  Build notes and availability
  * ============================================================
  *
- * Apple M4 (and M4 Pro/Max) is, as of 2026, essentially the only shipping
- * SME2 hardware widely available to individual developers.
- * Apple Silicon does *not* implement general (non-streaming) SVE — only
- * Streaming SVE via SME. This has a concrete build implication:
- * `-march=armv9-a+sme2` compiles correctly but the resulting binary SIGILLs
- * at runtime on the very first `cntd`/`cntw`-family instruction Clang emits
- * in the function prologue (used to size the ZA-save spill buffer) — those
- * are ordinary (non-streaming) SVE instructions, and Apple hardware has no
- * non-streaming SVE unit to execute them on. `-mcpu=apple-m4` (or any Apple
- * CPU name that implies SME2) avoids this by making the compiler size the
- * prologue buffer without an outside-streaming SVE instruction. This repo's
- * CMake SME probe (see CMakeLists.txt / HPC_ENABLE_SME) actually COMPILES
- * AND RUNS a tiny SME snippet at configure time for exactly this reason —
- * a compile-only check is not sufficient to prove SME works on a given
- * (compiler, flags, hardware) triple.
+ * Apple Silicon implements streaming SVE (via SME) but no non-streaming SVE.
+ * `-march=armv9-a+sme2` compiles, but the binary SIGILLs on the first
+ * cntd/cntw Clang emits in a function prologue to size the ZA save buffer:
+ * those are non-streaming SVE instructions. `-mcpu=apple-m4` avoids them.
+ * Because a compile-only check cannot catch this, the CMake SME probe
+ * (HPC_ENABLE_SME) compiles and runs a small SME program at configure time.
  *
- * svcntsw()/svcntsd() compile to RDSVL, an SME (not SVE) instruction that is
- * legal outside streaming mode, so the non-streaming driver can size its
- * packing buffers with them.
+ * svcntsw()/svcntsd() compile to RDSVL, an SME instruction that is legal
+ * outside streaming mode, so the non-streaming driver can size its packing
+ * buffers with them.
  *
- *
- * ============================================================
- *  Hardware availability
- * ============================================================
- *
- * SME is available on:
- *   Apple M4 / M4 Pro / M4 Max (SME2, 512-bit SVL, f32/f64/bf16/f16/int8/int16)
- *   Future Armv9.2+ server/mobile SoCs implementing FEAT_SME
- *   NOT on: Apple M1/M2/M3, AWS Graviton3/4, Fujitsu A64FX, x86 (Intel/AMD)
- *
- * The header detects __ARM_FEATURE_SME at compile time (HPC_HAS_SME in hpc/isa.hpp).
- * If the ISA is absent gemm_sme is declared `= delete`: calling it is a
- * compile-time error, never a silent substitution of a slower kernel.
+ * SME2 is available on Apple M4 / M4 Pro / M4 Max (512-bit SVL); not on
+ * Apple M1–M3, AWS Graviton3/4, Fujitsu A64FX or x86. HPC_HAS_SME
+ * (hpc/isa.hpp) follows __ARM_FEATURE_SME && __ARM_FEATURE_SME2; where it is
+ * 0, gemm_sme is declared `= delete`.
  */
 
 #include "hpc/isa.hpp"

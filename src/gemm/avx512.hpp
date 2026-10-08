@@ -2,97 +2,33 @@
 
 /**
  * @file avx512.hpp
- * @brief Three progressive AVX-512 + FMA GEMM kernels.
+ * @brief AVX-512 counterparts of the three AVX2 kernels (avx2.hpp).
  *
- * ============================================================
- *  Design philosophy: mirrors avx2.hpp exactly, one technique per kernel
- * ============================================================
+ * Same loop structures, 512-bit ZMM registers (16 f32 / 8 f64 per FMA)
+ * instead of 256-bit YMM, so the numbers show what doubling the vector width
+ * buys at each optimisation level:
  *
- * The three kernels are direct AVX-512 counterparts of the AVX2 family,
- * so the benchmark numbers answer precisely: "how much does doubling the
- * SIMD register width (256-bit → 512-bit) contribute at each optimisation
- * level?"
+ *  gemm_avx512_naive      i → j → k. B is still a stride-N gather, so it
+ *                         runs at about scalar-naive speed.
+ *  gemm_avx512_reordered  i → k → j. Measured within a few percent of
+ *                         AVX2/scalar reordered on Zen 5: the loop streams B
+ *                         and C, so it is limited by memory traffic, not FMA
+ *                         width.
+ *  gemm_avx512_blocked    tiled i → k → j with a 4×32 f32 / 4×16 f64 register
+ *                         tile (4 rows × 2 ZMM). The fastest of the three.
  *
- *  Kernel 1 — gemm_avx512_naive
- *    Loop order: i → j → k  (same as scalar/AVX2 naive)
- *    New vs AVX2 naive: ZMM register holds 16 f32 / 8 f64 instead of 8/4.
- *    Remaining bottleneck: column-stride B access is still a stride-N gather.
- *    SIMD width is irrelevant when every load is a cache miss.
- *    Expected: GFLOP/s ≈ scalar naive — proves wider SIMD still cannot fix
- *    cache-hostile access.
+ * Peak (2 FMA ports): 2 × 16 lanes × 2 FLOP = 64 FLOP/cycle f32, 32 f64.
+ * The 32 ZMM registers leave room for the 8 accumulators, 4 broadcasts and
+ * 2 B vectors of the micro-kernel without spilling.
  *
- *  Kernel 2 — gemm_avx512_reordered
- *    Loop order: i → k → j  (same as scalar/AVX2 reordered)
- *    New vs AVX2 reordered: 16 f32 / 8 f64 per FMA instead of 8/4.
- *    B and C accessed stride-1 → every cache line fully consumed.
- *    Theoretical peak vs AVX2: 2× FLOP/cycle for same frequency, but
- *    measured within a few percent of AVX2/scalar reordered on Zen 5: the
- *    loop is limited by memory traffic, not FMA width.
+ * Available on Intel Skylake-SP/X and later server/workstation parts
+ * (Cascade Lake, Ice Lake, Sapphire Rapids, Rocket Lake) and AMD Zen 4+.
+ * Not on Apple Silicon, Alder Lake/Raptor Lake (disabled by Intel), or AMD
+ * before Zen 4.
  *
- *  Kernel 3 — gemm_avx512_blocked
- *    Loop order: tiled i → k → j  (same as scalar/AVX2 blocked)
- *    New vs AVX2 blocked: micro-kernel register tile is 4×32 f32 / 4×16 f64
- *    instead of 4×16 / 4×8.  4 rows × 2 ZMM per row = 8 accumulators.
- *    Outer L2 tiling unchanged.
- *    Expected: highest GFLOP/s — combines L2-resident tiles with 512-bit FMA.
- *
- *
- * ============================================================
- *  AVX-512 register file and FMA throughput
- * ============================================================
- *
- * AVX-512: 32 × 512-bit ZMM registers.
- *   f32: 16 floats  per ZMM  (64 B — exactly one cache line)
- *   f64:  8 doubles per ZMM  (64 B)
- *
- * FMA: vfmadd231ps / vfmadd231pd  (zmm variants, EVEX prefix)
- *   acc = acc + a * b   (2 FLOP, latency 4 cyc, throughput 0.5 cyc on ICL)
- *
- * Theoretical peak (single core, 3 GHz, Ice Lake):
- *   f32: 2 ports × 16 lanes × 2 FLOP = 64 FLOP/cycle → 192 GFLOP/s
- *   f64: 2 ports ×  8 lanes × 2 FLOP = 32 FLOP/cycle →  96 GFLOP/s
- *
- * Key AVX-512 advantages over AVX2:
- *   • 2× SIMD width → 2× FLOP/cycle (when compute-bound)
- *   • 32 ZMM registers vs 16 YMM → room for larger register tiles without
- *     spilling accumulators to the stack
- *   • Embedded broadcast (vfmadd231ps zmm, zmm, mem{1to16}) can fold a
- *     broadcast into the FMA — though this kernel doesn't need it (see the
- *     micro-kernel note below)
- *   • One ZMM load covers a full 64-byte cache line exactly
- *
- * Micro-kernel register tile (f32, 4×32):
- *   f32: 4 rows × 2 ZMM per row = 8 accumulator registers (zmm0..zmm7)
- *        4 broadcasts = zmm8..zmm11
- *        2 B loads    = zmm12..zmm13
- *        Total: 14 of 32 ZMM — leaves 18 free for prefetch / software pipeline
- *
- * Micro-kernel register tile (f64, 4×16):
- *   f64: 4 rows × 2 ZMM per row = 8 accumulator registers (zmm0..zmm7)
- *        same broadcast/load structure
- *        Total: 14 of 32 ZMM
- *
- *
- * ============================================================
- *  Portability guard
- * ============================================================
- *
- * AVX-512F + AVX-512DQ is available on:
- *   Intel: Skylake-SP/X (2017), Cascade Lake, Ice Lake, Rocket Lake,
- *          Alder Lake P-cores (AVX-512 disabled by Intel), Sapphire Rapids
- *   AMD:   Zen 4 (2022) and later
- *   NOT:   Apple Silicon (ARM), pre-Skylake Intel, AMD pre-Zen 4,
- *          Alder Lake (E-cores have no AVX-512; Intel disabled it)
- *
- * The header detects __AVX512F__ at compile time (HPC_HAS_AVX512 in hpc/isa.hpp).
- * If the ISA is absent this header declares all three kernels `= delete`
- * (see hpc/isa.hpp): calling them is a compile-time error, never a silent
- * substitution of a slower kernel under the same name.
- *
- * To enable on x86 without -march=native:
- *   cmake -DCMAKE_CXX_FLAGS="-mavx512f -mavx512dq -mfma" ...
- * or use the CMake option:
- *   cmake -DHPC_ENABLE_AVX512=ON ...
+ * HPC_HAS_AVX512 (hpc/isa.hpp) follows __AVX512F__; where it is 0 the
+ * kernels are declared `= delete`. -march=native enables AVX-512 on a
+ * capable CPU; HPC_ENABLE_AVX512=ON forces the flags otherwise.
  */
 
 #include "hpc/isa.hpp"
@@ -134,10 +70,8 @@ inline constexpr std::size_t kAvx512F64RegCols = 2;  // 2 ZMM → 16 f64
 /**
  * @brief AVX-512 f32 micro-kernel: C[i..i+3][j..j+31] += A[i..i+3][k_blk..k_end) × B[..][j..)
  *
- * Register allocation (14 of 32 ZMM used — AVX-512 has 32 registers):
- *   zmm0..zmm7   — 4 rows × 2 ZMM = 8 C accumulators (C(i+r, j..j+31))
- *   zmm8..zmm11  — broadcast(A(i+r, k)) for rows r=0..3
- *   zmm12..zmm13 — B(k, j..j+15) and B(k, j+16..j+31)
+ * Live vectors per k step: 8 C accumulators (4 rows × 2 ZMM), 4 broadcasts
+ * of A(i+r, k), 2 B vectors — 14 of 32 ZMM.
  *
  * Note on embedded broadcast:
  *   AVX-512 supports a memory-source broadcast operand in FMA:
@@ -202,10 +136,7 @@ inline void avx512_micro_f32_4x32(const float* __restrict__ a, const float* __re
 /**
  * @brief AVX-512 f64 micro-kernel: C[i..i+3][j..j+15] += A[i..i+3][k_blk..k_end) × B[..][j..)
  *
- * Register allocation (14 of 32 ZMM):
- *   zmm0..zmm7   — 8 C accumulators  (4 rows × 2 ZMM, each ZMM = 8 f64)
- *   zmm8..zmm11  — broadcast(A(i+r, k))
- *   zmm12..zmm13 — B(k, j..j+7) and B(k, j+8..j+15)
+ * Same structure as the f32 kernel, with 8 f64 per ZMM.
  */
 inline void avx512_micro_f64_4x16(const double* __restrict__ a, const double* __restrict__ b,
                                   double* __restrict__ c0, double* __restrict__ c1,
@@ -254,18 +185,9 @@ inline void avx512_micro_f64_4x16(const double* __restrict__ a, const double* __
 /**
  * @brief AVX-512 GEMM with naive i-j-k loop order.
  *
- * Direct counterpart of gemm_avx2_naive with ZMM (512-bit) registers.
- *
- * Loop structure:  for i: for j: for k:  C(i,j) += A(i,k) * B(k,j)
- *
- * AVX-512 change vs AVX2 naive:
- *   16 f32 / 8 f64 elements per FMA instead of 8/4.
- *   B column access pattern is identical — stride-N gather.
- *
- * Expected result: GFLOP/s ≈ scalar naive, ≈ AVX2 naive.
- * The gather overhead and cache-miss rate dominate; wider registers help nothing.
- * This is the control measurement: "does the instruction width matter when
- * you're memory-bandwidth bound on random-stride accesses?"  Answer: No.
+ * Counterpart of gemm_avx2_naive with 16 f32 / 8 f64 per FMA. The B column
+ * is still a stride-N gather, so it runs at about scalar-naive speed: vector
+ * width doesn't help a cache-miss-bound loop.
  */
 #if !HPC_HAS_AVX512
 template <typename T>
@@ -347,14 +269,8 @@ void gemm_avx512_naive(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
 /**
  * @brief AVX-512 GEMM with cache-friendly i-k-j loop order.
  *
- * Direct counterpart of gemm_avx2_reordered with ZMM registers.
- *
- * Loop structure:  for i: for k: a_broad = A(i,k);  for j: C(i,j) += a_broad * B(k,j)
- *
- * AVX-512 change vs AVX2 reordered:
- *   _mm512_set1_ps broadcasts A scalar to 16 lanes (vs 8 in AVX2).
- *   Inner j-loop processes 16 f32 / 8 f64 per FMA instead of 8/4.
- *   B and C accessed stride-1 — every cache line fully consumed.
+ * Counterpart of gemm_avx2_reordered: A(i,k) is broadcast to 16 lanes and the
+ * j-loop processes 16 f32 / 8 f64 per FMA, with B and C read stride-1.
  *
  * Measured: within a few percent of AVX2/scalar reordered on Zen 5 — not
  * the 2× the wider FMA would suggest, since the loop streams B and C rather
@@ -425,29 +341,14 @@ void gemm_avx512_reordered(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C)
 /**
  * @brief AVX-512 GEMM with cache-blocking and 512-bit register-tiled micro-kernel.
  *
- * Direct counterpart of gemm_avx2_blocked with ZMM registers.
+ * Counterpart of gemm_avx2_blocked: i-k-j order, 3-level tiling
+ * (kAvx512TileM × kAvx512TileK × kAvx512TileN = 64 × 256 × 512), and a
+ * 4×32 f32 / 4×16 f64 C tile held in ZMM registers for a whole k-tile, so C
+ * is stored once per kAvx512TileK steps instead of every step.
  *
- * Combines all three techniques:
- *   1. i-k-j loop order      (stride-1 access to B and C)
- *   2. 3-level L2 cache tiling (outer tile, same structure as scalar blocked)
- *   3. Register tile: 4 rows × 2 ZMM per row = 4×32 f32 / 4×16 f64 of C
- *      held in registers for the entire k-tile — no C store-reload during k.
- *
- * Working set of the micro-kernel (f32, tile=64×256×512):
- *   A tile: 64 × 256 × 4 B =  64 KB  (fits in L2)
- *   B tile: 256 × 512 × 4 B = 512 KB  (fits in L2 on the benchmark machine)
- *   C tile: 64 × 512 × 4 B = 128 KB  (registers + L2)
- *
- * Register allocation (14 of 32 ZMM):
- *   zmm0..zmm7   — 8 C accumulators (4 rows × 2 ZMM = 4×32 f32)
- *   zmm8..zmm11  — broadcast(A(i+r, k)) for r=0..3
- *   zmm12..zmm13 — B(k, j..j+31) split into two 16-wide ZMM loads
- *   zmm14..zmm31 — free: ideal for software pipelining / prefetch in next step
- *
- * vs gemm_avx512_reordered:
- *   At large N the reordered kernel evicts C row i from L1 between k-iterations.
- *   The register tile retains C(i+0..3, j..j+31) in ZMM for kAvx512TileK steps,
- *   then stores once — reducing L1 store traffic by a factor of kAvx512TileK.
+ * Tile footprints (f32): A 64 KB, B 512 KB, C 128 KB. The f64 B panel is
+ * 1 MiB — exactly Zen 5's per-core L2, which matches the f64 drop between
+ * N=256 and N=512 in docs/benchmarks.md.
  */
 #if !HPC_HAS_AVX512
 template <typename T>
@@ -533,13 +434,5 @@ void gemm_avx512_blocked(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
     }
 }
 #endif  // HPC_HAS_AVX512
-
-// ---------------------------------------------------------------------------
-// Convenience alias: gemm_avx512 → gemm_avx512_blocked
-// ---------------------------------------------------------------------------
-template <typename T>
-inline void gemm_avx512(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
-    gemm_avx512_blocked(A, B, C);
-}
 
 }  // namespace hpc::gemm

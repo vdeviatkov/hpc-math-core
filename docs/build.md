@@ -4,7 +4,7 @@ Everything needed to configure, build, test and benchmark the suite on
 Linux, macOS and Windows, plus the details behind the ISA-specific build
 options and what runs (or is skipped) on each class of machine.
 
-**Contents**
+Contents
 
 - [Prerequisites](#prerequisites)
 - [Build & run](#build--run)
@@ -97,15 +97,15 @@ ctest --test-dir build --build-config Release --output-on-failure
 
 The default is `native` — the GPU in the build machine. Two cases need care:
 
-**The GPU is newer than the CUDA toolkit.** nvcc refuses any architecture newer than itself, so `native` fails outright (e.g. CUDA 12.0, which predates Blackwell, on an RTX 50-series card: `Unsupported gpu architecture 'compute_120'`). The configure step probes for this and falls back to the newest *virtual* architecture the toolkit can emit, which the driver JIT-compiles forward onto the actual GPU. The kernels then run correctly, at the cost of a JIT pause on first launch — but **do not benchmark in this configuration**; install a toolkit new enough to target the card.
+The GPU is newer than the CUDA toolkit. nvcc refuses any architecture newer than itself, so `native` fails outright (e.g. CUDA 12.0, which predates Blackwell, on an RTX 50-series card: `Unsupported gpu architecture 'compute_120'`). The configure step probes for this and falls back to the newest *virtual* architecture the toolkit can emit, which the driver JIT-compiles forward onto the actual GPU. The kernels then run correctly, at the cost of a JIT pause on first launch — but do not benchmark in this configuration; install a toolkit new enough to target the card.
 
-The reason is mostly the bundled math libraries rather than the JIT itself. Measured on an RTX 5080, CUDA 12.0 (`90-virtual` PTX) against CUDA 13.2 (native `sm_120`), compute-only at N=4096: cuBLAS dense-FP16 ran at **21.7 vs 114.0 TFLOP/s** — a 5.2× difference, because CUDA 12.0's cuBLAS has no Blackwell kernels to dispatch to. Hand-written kernel codegen moved far less, and not always in the same direction: `gemm_cuda_reg_tile` gained 18% from native compilation, while `gemm_cuda_wmma_pipelined` was 4.7% *faster* under the JIT (80.6 vs 76.6 TFLOP/s, σ = 0.003 ms over 5 repetitions; measured before its shared-memory padding, which brought it to ~100 TFLOP/s). So the toolkit version matters enormously for anything touching cuBLAS, and is roughly a wash for this project's own kernels. The configure step prints a warning when this happens, and always reports the final choice:
+The reason is mostly the bundled math libraries rather than the JIT itself. Measured on an RTX 5080, CUDA 12.0 (`90-virtual` PTX) against CUDA 13.2 (native `sm_120`), compute-only at N=4096: cuBLAS dense-FP16 ran at 21.7 vs 114.0 TFLOP/s — a 5.2× difference, because CUDA 12.0's cuBLAS has no Blackwell kernels to dispatch to. Hand-written kernel codegen moved far less, and not always in the same direction: `gemm_cuda_reg_tile` gained 18% from native compilation, while `gemm_cuda_wmma_pipelined` was 4.7% *faster* under the JIT (80.6 vs 76.6 TFLOP/s, σ = 0.003 ms over 5 repetitions; measured before its shared-memory padding, which brought it to ~100 TFLOP/s). So the toolkit version matters enormously for anything touching cuBLAS, and is roughly a wash for this project's own kernels. The configure step prints a warning when this happens, and always reports the final choice:
 
 ```
 -- CUDA architectures: 90-virtual
 ```
 
-**Re-configuring an existing build directory.** `CMAKE_CUDA_ARCHITECTURES` is a cache variable, so a value from an earlier configure persists and overrides the default. Use a fresh build directory (or `-DCMAKE_CUDA_ARCHITECTURES=native`) when changing toolkits or GPUs.
+Re-configuring an existing build directory. `CMAKE_CUDA_ARCHITECTURES` is a cache variable, so a value from an earlier configure persists and overrides the default. Use a fresh build directory (or `-DCMAKE_CUDA_ARCHITECTURES=native`) when changing toolkits or GPUs.
 
 ### Optimisation flags (applied automatically in Release mode)
 
@@ -121,77 +121,59 @@ The reason is mostly the bundled math libraries rather than the JIT itself. Meas
 
 ## SME and AMX build flags
 
-`gemm_sme` and `gemm_amx` are both **matrix-engine** kernels (whole-tile
+`gemm_sme` and `gemm_amx` are both matrix-engine kernels (whole-tile
 outer-product / vendor-BLAS-dispatched compute, not wider SIMD FMA — see
 [src/gemm/README.md](../src/gemm/README.md) for the architectural explanation),
 but they need very different build handling:
 
 ```bash
-# ARM SME2 (Apple M4 / M4 Pro / M4 Max only, as of this writing) — opt-in,
-# because a wrong flag combination here is a genuine SIGILL risk.
+# ARM SME2 (Apple M4-class) — opt-in,
+# because a wrong flag combination SIGILLs at run time.
 cmake -B build -DCMAKE_BUILD_TYPE=Release -DHPC_ENABLE_SME=ON
 cmake --build build --parallel
 ./build/benchmarks/bench_gemm --benchmark_filter="Sme"
 
 # Apple AMX via Accelerate.framework — ON by default on Apple platforms,
-# since it only links a standard system framework (no SIGILL risk at all).
+# since it only links a standard system framework.
 cmake -B build -DCMAKE_BUILD_TYPE=Release   # HPC_ENABLE_AMX defaults to ON here
 cmake --build build --parallel
 ./build/benchmarks/bench_gemm --benchmark_filter="Amx"
 ```
 
-**`HPC_ENABLE_SME`** (default OFF) runs a *compile-and-execute* probe at
-configure time (not just a compile check) because a compile-only check is
-provably insufficient here: `-march=armv9-a+sme2` compiles cleanly on Apple
-Silicon but the resulting binary `SIGILL`s at runtime on the very first
-non-streaming-SVE instruction Clang emits in the function prologue — Apple
-Silicon has no non-streaming SVE unit at all, only Streaming SVE via SME
-(`-mcpu=apple-m4` avoids this). The probe also discovered that combining
-the default `-march=native` with `-mcpu=apple-m4` silently drops the SME
-target features altogether, so `HPC_ENABLE_SME=ON` clears `HPC_MARCH` in
-favour of the verified `-mcpu=` flag. **Verified end-to-end** on an Apple
-M4 Max — see [benchmarks.md](benchmarks.md). Full writeup:
+`HPC_ENABLE_SME` (default OFF) compiles *and runs* a probe at configure
+time, because a compile check is not enough: `-march=armv9-a+sme2` builds on
+Apple Silicon, but the binary `SIGILL`s on the first non-streaming SVE
+instruction Clang puts in a function prologue — Apple Silicon has no
+non-streaming SVE, only streaming SVE via SME. `-mcpu=apple-m4` avoids it.
+Combining the default `-march=native` with `-mcpu=apple-m4` drops the SME
+features, so `HPC_ENABLE_SME=ON` clears `HPC_MARCH`. Details:
 [src/gemm/sme.hpp](../src/gemm/sme.hpp).
 
-**`HPC_ENABLE_AMX`** (default ON on Apple platforms) targets Apple's own
-AMX coprocessor — architecturally unrelated to Intel's AMX despite sharing
-an acronym, and not something Apple exposes as a public instruction set the
-way ARM SME is. The only Apple-sanctioned way to reach it is
-**Accelerate.framework**'s BLAS (`cblas_sgemm`/`cblas_dgemm`), which Apple's
-own performance guidance points to for matrix math and which is understood
-to dispatch to AMX blocks internally. Because this only requires linking a
-standard framework shipped in every macOS SDK — no special compiler flags,
-no CPUID probing, no OS permission handshake, no SIGILL risk — it carries
-none of the fragility that keeps `HPC_ENABLE_SME` opt-in, so it defaults ON
-wherever `APPLE` is true. **Verified end-to-end** on an Apple M4 Max: up to
-**3.3 TFLOP/s f32** — see [benchmarks.md](benchmarks.md). Full writeup:
+`HPC_ENABLE_AMX` (default ON on Apple platforms) builds `gemm_amx`, which
+calls Accelerate.framework's BLAS (`cblas_sgemm`/`cblas_dgemm`) — the
+supported route to Apple's AMX coprocessor, which has no public instruction
+set (and is unrelated to Intel AMX). It only links a framework that ships in
+every macOS SDK — no special flags, no SIGILL risk — so it is on by default.
+Accelerate may use several cores, so its numbers are not a single-core
+comparison against the hand-written kernels. Details:
 [src/gemm/amx.hpp](../src/gemm/amx.hpp).
-
-Unlike every other family in this repo, AMX has a single entry point,
-`gemm_amx`: the vendor BLAS exposes no algorithm-staging knob to reorder or
-block from the caller's side, so there is no naive → reordered → blocked
-progression to show. Accelerate's BLAS may also use multiple CPU cores internally
-for large matrices — unlike every other, strictly single-threaded, CPU
-kernel in this repo — so treat its numbers as "best vendor-library
-throughput on this machine", not an apples-to-apples single-core
-comparison against `gemm_sme`/`gemm_avx512_*`/`gemm_neon_*`.
 
 ---
 
 ## ISA availability & skipping
 
-Which kernel families exist in a build is decided once, at compile time, by the `HPC_HAS_*` macros in [`include/hpc/isa.hpp`](../include/hpc/isa.hpp) (each always defined to 0 or 1). Where an ISA is absent that family's `gemm_*` functions are declared `= delete`, so calling one is a compile-time error — **there is no silent fallback** to a slower kernel under the same name.
+Which kernel families exist in a build is decided once, at compile time, by the `HPC_HAS_*` macros in [`include/hpc/isa.hpp`](../include/hpc/isa.hpp) (each always defined to 0 or 1). Where an ISA is absent that family's `gemm_*` functions are declared `= delete`, so calling one is a compile-time error — there is no silent fallback to a slower kernel under the same name.
 
-- **Benchmarks** report the family as `SKIPPED` without instantiating it:
+- Benchmarks report the family as `SKIPPED` without instantiating it:
 
   ```cpp
   run_gemm<N, T, kHaveNeon>(state, kNoNeon,
       [](auto& A, auto& B, auto& C) { hpc::gemm::gemm_neon_blocked(A, B, C); });
   ```
 
-  The name still appears in the output, so you always see the full kernel catalogue and know exactly which paths ran.
-- **Tests** for the family are not compiled (`#if HPC_HAS_NEON … #endif`), so the test count reported on a machine is exactly the set of kernels that ran there.
-- **CUDA** is the one runtime check — GPU presence is a property of the machine, not the build:
+  The name still appears in the output, so the full kernel list is visible and it is clear which kernels ran.
+- Tests for the family are not compiled (`#if HPC_HAS_NEON … #endif`), so the test count reported on a machine is exactly the set of kernels that ran there.
+- CUDA is the one runtime check — GPU presence is a property of the machine, not the build:
 
   ```cpp
   if (hpc::gemm::cuda_device_count() == 0) {
@@ -211,7 +193,7 @@ Which kernel families exist in a build is decided once, at compile time, by the 
 | AWS Graviton3 / Neoverse V1 | Scalar · NEON · SVE (256-bit) · all Pf variants | AVX2 · AVX-512 · SME · AMX · CUDA |
 | Fujitsu A64FX | Scalar · NEON · SVE (512-bit) · all Pf variants | AVX2 · AVX-512 · SME · AMX · CUDA |
 
-\* Not run — no Intel Mac was available to this project; Accelerate.framework itself is a normal part of every macOS SDK regardless of CPU vendor, so this is expected to work, just unverified here. Everything on Apple Silicon (both rows above it) **is** verified — see [§ SME and AMX build flags](#sme-and-amx-build-flags).
+\* Not run — no Intel Mac was available to this project; Accelerate.framework itself is a normal part of every macOS SDK regardless of CPU vendor, so this is expected to work, just unverified here. Everything on Apple Silicon (both rows above it) is verified — see [§ SME and AMX build flags](#sme-and-amx-build-flags).
 
 ---
 
@@ -238,8 +220,8 @@ Which kernel families exist in a build is decided once, at compile time, by the 
 
 None of the CI runners above pass `-DHPC_ENABLE_SME=ON` — GitHub-hosted runners have no Apple M4-class hardware, so it stays at its default OFF and `gemm_sme` (and KleidiAI, which needs it) is not compiled there. `build-macos` DOES exercise real `gemm_amx` (Accelerate.framework ships in the `macos-14` runner's SDK, and `HPC_ENABLE_AMX` defaults ON there), so the AMX dispatch — though not the specific numbers in [benchmarks.md](benchmarks.md), which come from a local M4 Max run — is continuously verified. The SME and AMX benchmark numbers in [benchmarks.md](benchmarks.md) both come from a manual local run on Apple M4 Max hardware.
 
-Each job restores **ccache** and the **FetchContent cache** (`build/_deps`), configures with `cmake -G Ninja -DCMAKE_BUILD_TYPE=Release`, builds in parallel, and uploads JUnit XML from `ctest --output-junit`.
+Each job restores ccache and the FetchContent cache (`build/_deps`), configures with `cmake -G Ninja -DCMAKE_BUILD_TYPE=Release`, builds in parallel, and uploads JUnit XML from `ctest --output-junit`.
 
-The **`build-cuda-stub`** job has no CUDA toolkit installed — `check_language(CUDA)` falls back to `gemm_kernels_stub.cpp`. The CUDA binaries build and link cleanly; every entry prints `SKIPPED: 'No CUDA device available'` at runtime.
+The `build-cuda-stub` job has no CUDA toolkit installed — `check_language(CUDA)` falls back to `gemm_kernels_stub.cpp`. The CUDA binaries build and link cleanly; every entry prints `SKIPPED: 'No CUDA device available'` at runtime.
 
 ---

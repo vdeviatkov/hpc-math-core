@@ -4,29 +4,13 @@
  * @file matrix.hpp
  * @brief Row-major, 64-byte aligned Matrix<T> class template.
  *
- * Design rationale
- * ================
- * Modern CPUs fetch memory in cache lines of exactly 64 bytes. A 64-byte
- * aligned base address guarantees that the first element of every row lands at
- * a cache-line boundary, eliminating "split loads" where a single scalar value
- * spans two cache lines and halves effective memory bandwidth.
+ * Elements are stored in row-major order, element (i, j) at
+ * data_[i * cols_ + j], so consecutive elements of a row are adjacent and an
+ * inner loop over j walks memory sequentially.
  *
- * AVX-512 SIMD registers are 512 bits = 64 bytes wide. Using vmovaps
- * (aligned store) vs vmovups (unaligned store) on Skylake-SP / Ice Lake costs
- * an identical number of cycles *when the data is actually aligned*, but
- * aligned loads enable the compiler and micro-architecture to make stronger
- * assumptions that unlock additional optimisations (e.g. loop vectorisation
- * without a peel prologue, better prefetch distance calculations).
- *
- * Memory layout
- * =============
- * Elements are stored in row-major (C) order:
- *
- *   element (i, j)  →  data_[i * cols_ + j]
- *
- * This means consecutive elements within a row are adjacent in memory. The
- * innermost loop should therefore iterate over columns (j) to walk through
- * memory sequentially and maximise spatial locality.
+ * The buffer starts on a 64-byte boundary — one cache line on x86 and one
+ * AVX-512 register — so the first row can be loaded with aligned SIMD loads.
+ * Later rows are aligned only when cols * sizeof(T) is a multiple of 64.
  */
 
 #include <cassert>
@@ -39,8 +23,7 @@
 
 namespace hpc {
 
-/// Alignment boundary in bytes (matches a single AVX-512 register and one
-/// cache line).
+/// Alignment of the data buffer in bytes (one AVX-512 register; one x86 cache line).
 inline constexpr std::size_t kCacheLineBytes = 64;
 
 // ---------------------------------------------------------------------------
@@ -70,9 +53,8 @@ struct AlignedDeleter {
 /**
  * @brief A heap-allocated, row-major, cache-line-aligned 2-D matrix.
  *
- * @tparam T  Element type. Must be a trivially-copyable scalar (float, double,
- *            int32_t, …) so that we can use std::memcpy for copies and avoid
- *            constructor/destructor overhead in tight loops.
+ * @tparam T  Trivially-copyable element type (float, double, int32_t, …), so
+ *            copies can use std::memcpy.
  *
  * Thread safety
  * -------------
@@ -162,9 +144,8 @@ class Matrix {
     /**
      * @brief Raw pointer to the first element.
      *
-     * Guaranteed to be aligned to kCacheLineBytes (64) bytes. Safe to pass
-     * directly to SIMD intrinsics that require aligned loads (e.g.
-     * _mm512_load_pd).
+     * Aligned to kCacheLineBytes (64) bytes. Row i is aligned only when
+     * cols() * sizeof(T) is a multiple of 64.
      */
     [[nodiscard]] T* data() noexcept { return data_.get(); }
     [[nodiscard]] const T* data() const noexcept { return data_.get(); }

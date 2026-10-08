@@ -1,24 +1,17 @@
 /**
  * @file test_gemm.cpp
- * @brief Google Test correctness suite for GEMM kernels.
+ * @brief Google Test correctness suite for the CPU GEMM kernels.
  *
- * Test strategy
- * =============
- * 1. Identity test      — A × I = A for all kernels.
- * 2. Zero test          — A × 0 = 0 for all kernels.
- * 3. Small known result — hand-computable 2×2 and 3×3 cases.
- * 4. Cross-validation   — for larger random matrices, assert that
- *                         gemm_reordered produces the same result as
- *                         gemm_naive (which itself is validated above).
+ * gemm_naive is checked against hand-computed results (2×2 and 3×3 cases,
+ * identity, zero); every other kernel is cross-validated against gemm_naive
+ * on random matrices, including sizes and shapes that hit tile and vector
+ * edges. Comparisons use EXPECT_NEAR with tolerances scaled to the element
+ * type and the size of the result.
  *
- * All floating-point comparisons use EXPECT_NEAR with an epsilon that
- * accounts for double-precision rounding in the accumulation.
- *
- * ISA / library families (AVX2, AVX-512, NEON, SVE, SME, AMX, KleidiAI) are compiled only where
- * the ISA is available (HPC_HAS_* from hpc/isa.hpp) — their kernels are
- * declared `= delete` elsewhere, so there is nothing to test and no
- * fallback that could pass in their place. The test count reported on a
- * machine is therefore exactly the set of kernels that ran on it.
+ * ISA / library families (AVX2, AVX-512, NEON, SVE, SME, AMX, KleidiAI) are
+ * tested only where they are compiled (HPC_HAS_* from hpc/isa.hpp);
+ * elsewhere their kernels are deleted, so a machine's test count is exactly
+ * the set of kernels that ran on it.
  */
 
 #include "gemm/amx.hpp"
@@ -359,7 +352,6 @@ INSTANTIATE_TEST_SUITE_P(Sizes, GemmBlockedCrossValidation,
 
 // ===========================================================================
 // 7. AVX2 Naive  (i-j-k order, SIMD on k-loop)
-//    Demonstrates that SIMD alone cannot fix cache-hostile access patterns.
 // ===========================================================================
 
 TEST(GemmAvx2Naive, KnownResult2x2) {
@@ -609,7 +601,6 @@ INSTANTIATE_TEST_SUITE_P(Sizes, GemmAvx2BlockedCrossValidation,
 
 // ===========================================================================
 // 10. AVX-512 Naive  (i-j-k order, 512-bit SIMD on k-loop)
-//     Proves that wider SIMD still cannot fix stride-N gather from B column.
 // ===========================================================================
 
 TEST(GemmAvx512Naive, KnownResult2x2) {
@@ -861,7 +852,6 @@ INSTANTIATE_TEST_SUITE_P(Sizes, GemmAvx512BlockedCrossValidation,
 
 // ===========================================================================
 // 13. NEON Naive  (i-j-k order, 128-bit SIMD on k-loop)
-//     Proves gather still saturates memory bandwidth regardless of SIMD width.
 // ===========================================================================
 
 TEST(GemmNeonNaive, KnownResult2x2) {
@@ -1117,8 +1107,6 @@ INSTANTIATE_TEST_SUITE_P(Sizes, GemmNeonBlockedCrossValidation,
 
 // ===========================================================================
 // 16. SVE Naive  (i-j-k order, VLA SIMD on k-loop)
-//     Key insight: VL is runtime-determined (svcntw/svcntd).
-//     Confirms that wider/scalable SIMD still cannot fix gather bottleneck.
 // ===========================================================================
 
 TEST(GemmSveNaive, KnownResult2x2) {
@@ -1174,8 +1162,7 @@ INSTANTIATE_TEST_SUITE_P(Sizes, GemmSveNaiveCrossValidation,
 
 // ===========================================================================
 // 17. SVE Reordered  (i-k-j, VLA j-loop with predicated tail)
-//     Key SVE property: NO scalar j-tail — svwhilelt handles remainder lanes.
-//     Demonstrates "vector-length agnostic" loop: correct on 128..2048-bit SVE.
+//     No scalar j-tail: svwhilelt predicates handle the remainder lanes.
 // ===========================================================================
 
 TEST(GemmSveReordered, KnownResult2x2) {

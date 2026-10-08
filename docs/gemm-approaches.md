@@ -44,7 +44,7 @@ three techniques, layered on top of each other:
 | 2 | **Cache blocking / tiling** | Working set of `B`+`C` no longer fits L1/L2 at large N, causing repeated cache misses | `blocked.hpp` (`TILE=64`), and the `*_blocked` variant of every family |
 | 3 | **Register tiling** | Even a blocked kernel reloads `C` from L1 every k-iteration; holding a small `C` tile in registers across the whole k-loop eliminates that traffic | The register-tile micro-kernels inside every `*_blocked` SIMD kernel |
 
-A fourth, orthogonal technique — **software prefetch** (`prefetch.hpp`,
+A fourth, orthogonal technique — software prefetch (`prefetch.hpp`,
 `__builtin_prefetch`) — issues an explicit load hint some distance `D`
 ahead of where the loop currently is, to hide memory latency the hardware
 prefetcher doesn't predict on its own. It wraps the `*_blocked` kernel of
@@ -63,38 +63,38 @@ when it does (and doesn't) help.
 | **AVX-512** | `avx512.hpp` | 512-bit ZMM: 16×f32 / 8×f64 | `_mm512_fmadd_ps/pd`, `_mm512_set1_ps/pd`, `_mm512_reduce_add_ps/pd` | reorder, block, register-tile |
 | **NEON** | `neon.hpp` | 128-bit Q: 4×f32 / 2×f64 | `vfmaq_f32/f64`, `vdupq_n_f32/f64` (broadcast; Clang folds it into by-element FMLA), `vld1q_f32/f64`, `vaddvq_f32` (horizontal reduce) | reorder, block, register-tile |
 | **SVE / SVE2** | `sve.hpp` | Scalable (VLA), 128–2048-bit, width read at runtime | `svld1_f32/f64`, `svmla_f32/f64_x`, `svdup_n_f32/f64`, `svwhilelt_b32/b64` (predicated tail — no scalar remainder loop), `svcntw()/svcntd()` | reorder, block, register-tile, predication |
-| **SME2** (ARM) | `sme.hpp` | All ZA tiles: 2×2 × 16×16 f32 = 32×32 C block / 2×4 × 8×8 f64 = 16×32 (Apple M4) | `svmopa_za32_m`/`svmopa_za64_m` (outer-product-accumulate, **not** FMA), `svld1_x2` (SME2 multi-vector), `svzero_za`, `svld1_hor_za32/64`, `svst1_hor_za32/64`, `svcntsw()/svcntsd()` | GotoBLAS: pack A+B (outside streaming mode), Mc/Kc/Nc cache blocking, multi-tile micro-kernel — see note below |
+| **SME2** (ARM) | `sme.hpp` | All ZA tiles: 2×2 × 16×16 f32 = 32×32 C block / 2×4 × 8×8 f64 = 16×32 (Apple M4) | `svmopa_za32_m`/`svmopa_za64_m` (outer-product accumulate, not FMA), `svld1_x2` (SME2 multi-vector), `svzero_za`, `svld1_hor_za32/64`, `svst1_hor_za32/64`, `svcntsw()/svcntsd()` | GotoBLAS: pack A+B (outside streaming mode), Mc/Kc/Nc cache blocking, multi-tile micro-kernel — see note below |
 | **Apple AMX** (via Accelerate) | `amx.hpp` | Opaque — vendor-controlled | `cblas_sgemm`, `cblas_dgemm` (standard BLAS call, `<Accelerate/Accelerate.h>`) | none exposed — Apple's implementation, not ours (see note below) |
 | **KleidiAI** (reference, f32) | `kleidiai.hpp` | 2VL×2VL (all 4 f32 ZA tiles) | `kai_run_lhs_pack_*`, `kai_run_rhs_pack_*`, `kai_run_matmul_clamp_f32_f32p2vlx1_f32p2vlx1biasf32_sme2_mopa` | Arm's hand-written SME2 assembly micro-kernel; pack, no cache blocking |
-| **CUDA (GPU)** | `cuda.hpp` + `src/cuda/gemm_kernels.cu` | Thread → 1 elem (naive) up to 8×8 register tile/thread (`reg_tile`); 8 warps × 8 WMMA fragments/block (`wmma_pipelined`) | `__shared__` tile buffers, `__syncthreads()`, `__pipeline_memcpy_async`/`cp.async` (double-buffer), `wmma::fragment`/`wmma::mma_sync` (Tensor Cores), `float4`/`double2` vectorized loads + XOR smem swizzle, `ldmatrix.sync`+`mma.sync` PTX (raw Tensor Cores), 128×128-tile `wmma::` + `cp.async` double buffering (`wmma_pipelined`) | shared-memory tiling, register tiling, double buffering, vectorized loads, Tensor Core tile-multiply (3 abstraction levels + a 4th, bigger-tile/pipelined level) |
+| **CUDA (GPU)** | `cuda.hpp` + `src/cuda/gemm_kernels.cu` | Thread → 1 elem (naive) up to 8×8 register tile/thread (`reg_tile`); 8 warps × 8 WMMA fragments/block (`wmma_pipelined`) | `__shared__` tile buffers, `__syncthreads()`, `__pipeline_memcpy_async`/`cp.async` (double-buffer), `wmma::fragment`/`wmma::mma_sync` (Tensor Cores), `float4`/`double2` vectorized loads + XOR smem swizzle, `ldmatrix.sync`+`mma.sync` PTX (raw Tensor Cores), 128×128-tile `wmma::` + `cp.async` double buffering (`wmma_pipelined`) | shared-memory tiling, register tiling, double buffering, vectorized loads, Tensor Core MMA at three API levels (WMMA, raw PTX, pipelined WMMA) |
 
 ---
 
-## Implementation notes worth remembering
+## Implementation notes
 
-**AVX2/AVX-512 broadcast+FMA pattern.** The `*_reordered` kernels broadcast
+On AVX2/AVX-512, the `*_reordered` kernels broadcast
 one scalar `A(i,k)` to a full vector (`_mm256_broadcast_ss`) and FMA it
 against a contiguous `B` row (`_mm256_fmadd_ps`). The `*_blocked` kernels
 additionally keep a small grid of `C` accumulators (e.g. 4 rows × 2
 vectors) resident in registers for the entire k-tile — that's the
 "register tiling" layer.
 
-**NEON's by-element FMA.** The NEON kernels broadcast each `A(i,k)` with
+The NEON kernels broadcast each `A(i,k)` with
 `vdupq_n_f32` and call plain `vfmaq_f32`, but Clang folds most of those
 broadcasts into the by-element form `fmla v.4s, v.4s, v.s[lane]` (what
 `vfmaq_laneq_f32` spells explicitly), so the blocked micro-kernel issues
 no separate broadcast instruction for 12 of its 16 FMAs per k step.
 
-**SVE has no fixed width.** `svcntw()`/`svcntd()` query the hardware vector
+SVE has no fixed width. `svcntw()`/`svcntd()` query the hardware vector
 length *at runtime*; the same compiled binary adapts its tile width to
 128-bit, 256-bit (Graviton3), or 512-bit (A64FX) hardware. The predicated
 tail (`svwhilelt_b32(j, N)` — active only where `j+lane < N`) means SVE
 kernels never need a separate scalar remainder loop, unlike AVX2/NEON.
 
-**SME is not "wider SVE" — it's a different primitive.** Every family above
-computes `C(i,j)` with vector **FMA**: one scalar broadcast, one vector
+SME is a different primitive, not wider SVE. Every family above
+computes `C(i,j)` with vector FMA: one scalar broadcast, one vector
 multiply-add. SME's `svmopa_za32_m` instead computes a whole SVL×SVL
-**outer product** in one instruction (`ZA[r][c] += a[r]*b[c]`), the same
+outer product in one instruction (`ZA[r][c] += a[r]*b[c]`), the same
 class of operation as CUDA's `wmma::mma_sync` or Apple AMX below. One
 hardware constraint shapes the kernel: gather-load intrinsics are illegal
 inside SME's required "streaming mode," so the `A` column vector must be
@@ -102,7 +102,7 @@ packed rather than gathered. `gemm_sme` packs both A and B outside
 streaming mode and keeps all ZA tiles busy (2×2 f32 / 2×4 f64). Full
 writeup in `sme.hpp`'s file header.
 
-**Apple AMX has no public intrinsics at all.** Unlike every other family
+Apple AMX has no public intrinsics at all. Unlike every other family
 here, there's no ACLE-style header to include — Apple's AMX coprocessor is
 reached only by calling into `Accelerate.framework`'s BLAS
 (`cblas_sgemm`/`cblas_dgemm`), Apple's own vendor-tuned implementation.
@@ -140,9 +140,9 @@ for the full writeups.
 All CPU families above compute at native `float`/`double` precision except
 where noted:
 
-- **`gemm_cuda_wmma`, `gemm_cuda_mma_ldmatrix`, `gemm_cuda_wmma_pipelined`**:
+- `gemm_cuda_wmma`, `gemm_cuda_mma_ldmatrix`, `gemm_cuda_wmma_pipelined`:
   convert inputs to fp16, accumulate in fp32 (~1e-3 relative error) —
   Tensor Cores require reduced-precision input.
-- **Apple AMX (`amx.hpp`)**: full fp32/fp64 throughout — Accelerate's BLAS
+- Apple AMX (`amx.hpp`): full fp32/fp64 throughout — Accelerate's BLAS
   does *not* force a reduced-precision format, unlike the GPU Tensor Core
   kernels above.

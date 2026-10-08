@@ -16,11 +16,9 @@
  *   CudaCublas        -- Reference: cuBLAS SGEMM/DGEMM, ceiling for the FMA kernels above
  *   CudaCublasTf32    -- Reference: cuBLAS TF32 Tensor Cores (fp32 only, sm_80+)
  *   *ComputeOnly      -- cuBLAS SGEMM / TF32 / FP16 and CudaWmmaPipelined, timing
- *                        ONLY the GEMM call against pre-staged device buffers (no
- *                        per-iteration cudaMalloc/H2D/D2H) -- see
- *                        gemm_kernels.cu's "raw-device-pointer entry
- *                        points" comment for why the end-to-end rows
- *                        understate achievable throughput at large N.
+ *                        only the GEMM call against pre-staged device buffers.
+ *                        The other rows include cudaMalloc and PCIe copies,
+ *                        which dominate at large N (see gemm/cuda.hpp).
  *                        cuBLAS FP16 compute-only is the ceiling for the
  *                        Tensor Core kernels.
  *
@@ -37,11 +35,9 @@
 
 #include <benchmark/benchmark.h>
 
-// Deliberately NOT <cuda_runtime.h> -- this file must still compile on a
-// genuinely CPU-only machine with no CUDA toolkit at all (build-cuda-stub
-// CI), so it only ever touches device memory through gemm_cuda_malloc/
-// _free/_memcpy_h2d/_device_synchronize (declared in gemm/cuda.hpp,
-// toolkit-type-free by design -- see that header's comment).
+// No <cuda_runtime.h>: this file must compile without a CUDA toolkit
+// (build-cuda-stub CI), so device memory goes through the gemm_cuda_malloc /
+// _free / _memcpy_h2d / _device_synchronize helpers in gemm/cuda.hpp.
 #include <cstddef>
 #include <random>
 #include <type_traits>
@@ -137,8 +133,8 @@ static void BM_CudaWmma(benchmark::State& state) {
 
 // ---------------------------------------------------------------------------
 // Level 5 -- Vectorized loads (float4/double2) + shared-memory XOR swizzle.
-// Falls back to RegTile internally when K or N isn't a multiple of the
-// vector width -- always correct, always runs (given a CUDA device).
+// Runs kernel_reg_tile instead when K or N isn't a multiple of the vector
+// width.
 // ---------------------------------------------------------------------------
 template <std::size_t N, typename T = double>
 static void BM_CudaVectorized(benchmark::State& state) {
@@ -219,16 +215,10 @@ static void BM_CudaCublasTf32(benchmark::State& state) {
 }
 
 // ---------------------------------------------------------------------------
-// Reference -- cuBLAS, compute-only (device-resident buffers, allocated
-// and filled ONCE outside the timed loop -- no per-iteration cudaMalloc/
-// H2D/D2H). See gemm_kernels.cu's "raw-device-pointer entry points"
-// comment: BM_CudaCublas/BM_CudaCublasTf32 above time a full round trip
-// every iteration, which for large N is dominated by ~GB-scale data
-// movement and allocation, not the matmul itself -- these measure ONLY
-// the GEMM call, to answer "what can this GPU's Tensor Cores actually do".
-// Uses only the toolkit-type-free gemm_cuda_malloc/_free/_memcpy_h2d/
-// _device_synchronize wrappers (see gemm/cuda.hpp) so this file needs no
-// <cuda_runtime.h> include.
+// Reference -- cuBLAS, compute-only: device buffers are allocated and filled
+// once outside the timed loop, so only the GEMM call is timed.
+// BM_CudaCublas/BM_CudaCublasTf32 above include allocation and transfers,
+// which dominate at large N.
 // ---------------------------------------------------------------------------
 template <std::size_t N>
 static void BM_CudaCublasComputeOnly(benchmark::State& state) {
@@ -312,12 +302,9 @@ static void BM_CudaCublasFp16ComputeOnly(benchmark::State& state) {
     state.counters["tensor_cores"] = 1;
 }
 
-// Level 7's compute-only counterpart -- same pre-staging as
-// BM_CudaCublasFp16ComputeOnly above, so the two numbers are directly
-// comparable: how close the hand-written kernel gets to cuBLAS's
-// dense-FP16 ceiling once transfer/conversion overhead is excluded from
-// both. Requires exact-tile N (multiple of
-// 128) -- gemm_cuda_wmma_pipelined_device has no fallback at this layer.
+// Level 7's compute-only counterpart, staged exactly like
+// BM_CudaCublasFp16ComputeOnly so the two are directly comparable. N must be
+// a multiple of 128: gemm_cuda_wmma_pipelined_device has no fallback.
 template <std::size_t N>
 static void BM_CudaWmmaPipelinedComputeOnly(benchmark::State& state) {
     static_assert(N % 128 == 0, "BM_CudaWmmaPipelinedComputeOnly requires N a multiple of 128");

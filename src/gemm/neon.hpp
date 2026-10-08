@@ -2,107 +2,31 @@
 
 /**
  * @file neon.hpp
- * @brief Three progressive ARM NEON + FMA GEMM kernels.
+ * @brief ARM NEON counterparts of the three AVX2 kernels (avx2.hpp).
  *
- * ============================================================
- *  Design philosophy: ARM NEON counterpart of avx2.hpp
- * ============================================================
+ *  gemm_neon_naive      i → j → k, 4 f32 / 2 f64 per FMA on the k-loop. B is
+ *                       still a stride-N gather, so it runs at about
+ *                       scalar-naive speed.
+ *  gemm_neon_reordered  i → k → j: broadcast A(i,k), FMA against stride-1 B
+ *                       and C rows. Measured on M4 Max: no faster than scalar
+ *                       gemm_reordered, which the compiler auto-vectorises.
+ *  gemm_neon_blocked    tiled i → k → j with a C tile held in Q registers for
+ *                       a whole k-tile: 4×16 f32 (4 rows × 4 Q) or 4×4 f64
+ *                       (4 rows × 2 Q). The fastest of the three.
  *
- * Each kernel adds exactly one new technique, providing a direct
- * comparison with the x86 AVX2 family on Apple Silicon and other
- * ARM targets.  The benchmark numbers answer: "at each optimisation
- * level, how does 128-bit NEON compare to 256-bit AVX2?"
+ * AArch64 has 32 × 128-bit Q registers (4 f32 / 2 f64). The f32 micro-kernel
+ * keeps 16 accumulators, 4 broadcasts of A and 4 B vectors live (24 of 32);
+ * the f64 one 8 + 4 + 2 (14 of 32).
  *
- *  Kernel 1 — gemm_neon_naive
- *    Loop order: i → j → k  (same as all other naive variants)
- *    New technique: widen the inner k-loop to process 4 f32 / 2 f64
- *                   elements per VMLA using a single q-register accumulator.
- *    Remaining bottleneck: column-stride B access is still a stride-N
- *    gather — identical cache penalty to scalar naive and AVX2 naive.
- *    Expected: GFLOP/s ≈ scalar naive.
+ * Apple M4 P-core peak (~4.5 GHz, 4 FP/SIMD pipes vs 2 FMA ports on x86):
+ *   f32: 4 pipes × 4 lanes × 2 FLOP = 32 FLOP/cycle → ~144 GFLOP/s
+ *   f64: 4 pipes × 2 lanes × 2 FLOP = 16 FLOP/cycle →  ~72 GFLOP/s
+ * gemm_neon_blocked reaches ~97 / ~36 GFLOP/s (≈67% / 50% of peak). NEON is
+ * half the width of AVX2, but twice the FMA pipes give the same FLOP/cycle.
  *
- *  Kernel 2 — gemm_neon_reordered
- *    Loop order: i → k → j
- *    New technique: vdupq_n_f32/f64 broadcasts A(i,k) to all lanes;
- *                   vfmaq_f32/f64 fused multiply-adds
- *                   against stride-1 B row and C row.
- *    Measured on M4 Max: no faster than scalar gemm_reordered, which the
- *    compiler auto-vectorises at -O3 -ffast-math.
- *
- *  Kernel 3 — gemm_neon_blocked
- *    Loop order: tiled i → k → j
- *    New technique: 3-level L2 cache tiling + register tile that keeps
- *                   4×16 f32 / 4×8 f64 elements of C in q-registers for
- *                   the full k-tile, eliminating C reload traffic.
- *    Expected: highest GFLOP/s on ARM.
- *
- *
- * ============================================================
- *  ARM NEON / AdvSIMD register file
- * ============================================================
- *
- * NEON (AArch64 / Apple Silicon):
- *   32 × 128-bit Q (V) registers.
- *   f32: 4 floats  per Q register  (16 B)
- *   f64: 2 doubles per Q register  (16 B)
- *
- * Key instructions:
- *   vdupq_n_f32(s)    — broadcast scalar s to all 4 lanes  (float32x4_t)
- *   vdupq_n_f64(s)    — broadcast scalar s to both lanes   (float64x2_t)
- *   vfmaq_f32(acc,a,b)— acc = acc + a * b, 4-wide f32 FMA  (AArch64)
- *   vfmaq_f64(acc,a,b)— acc = acc + a * b, 2-wide f64 FMA
- *   vfmaq_lane_f32    — FMA with scalar from a specific lane (no extra broadcast register)
- *   vaddvq_f32(v)     — horizontal add of all 4 f32 lanes → scalar
- *
- * Apple M4 P-core peak (~4.5 GHz, 4 FP/SIMD units vs 2 on x86 Skylake):
- *   f32: 4 NEON units × 4 lanes × 2 FLOP = 32 FLOP/cycle → ~144 GFLOP/s/core
- *   f64: 4 NEON units × 2 lanes × 2 FLOP = 16 FLOP/cycle →  ~72 GFLOP/s/core
- *   gemm_neon_blocked reaches ~97 / ~36 GFLOP/s (≈67% / 50% of peak).
- *
- * NEON vs AVX2 (register width):
- *   NEON Q: 128-bit = 4 f32 / 2 f64
- *   AVX2 YMM: 256-bit = 8 f32 / 4 f64
- *   AVX2 is 2× wider, but Apple M-series has 4 FP units vs 2 on Skylake,
- *   so peak GFLOP/s is the same at the same frequency.
- *
- *
- * ============================================================
- *  Micro-kernel register tile (f32, 4 rows × 4 vectors = 4×16)
- * ============================================================
- *
- *   C tile in Q registers (8 accumulators):
- *
- *         j+0..3    j+4..7    j+8..11  j+12..15
- *   i+0: [c00 q]  [c01 q]  [c02 q]  [c03 q]
- *   i+1: [c10 q]  [c11 q]  [c12 q]  [c13 q]
- *   i+2: [c20 q]  [c21 q]  [c22 q]  [c23 q]
- *   i+3: [c30 q]  [c31 q]  [c32 q]  [c33 q]
- *
- *   16 accumulator registers (4 rows × 4 Q-vectors)
- *    + 4 broadcast A registers
- *    + 4 B load registers
- *   = 24 of 32 Q registers used.
- *
- * f64, 4 rows × 2 vectors = 4×4:
- *   8 accumulators + 4 broadcasts + 2 B loads = 14 of 32 Q registers.
- *
- *
- * ============================================================
- *  Portability guard
- * ============================================================
- *
- * NEON is available on:
- *   All AArch64 targets: Apple Silicon M1/M2/M3/M4,
- *   AWS Graviton, Ampere Altra, Raspberry Pi 4/5, etc.
- *   NOT available on: x86 (Intel/AMD) — no NEON instructions exist there.
- *
- * The header detects __ARM_NEON at compile time (HPC_HAS_NEON in hpc/isa.hpp).
- * If the ISA is absent this header declares all three kernels `= delete`
- * (see hpc/isa.hpp): calling them is a compile-time error, never a silent
- * substitution of a slower kernel under the same name.
- *
- * vfmaq_f32 / vfmaq_f64 require AArch64 (ARM64). 32-bit ARMv7 NEON has no
- * f64 lanes, so HPC_HAS_NEON is 0 there and these kernels are deleted.
+ * HPC_HAS_NEON (hpc/isa.hpp) requires AArch64: the kernels use f64 lanes
+ * and vfmaq_f64, which 32-bit ARMv7 NEON lacks. Where it is 0 the kernels
+ * are declared `= delete`.
  */
 
 #include "hpc/isa.hpp"
@@ -143,9 +67,6 @@ inline constexpr std::size_t kNeonF64RegCols = 2;  // 2 Q-vectors → 4 f64
 
 /**
  * @brief NEON f32 micro-kernel: C[i..i+3][j..j+15] += A[i..i+3][k_blk..k_end) × B[..][j..)
- *
- * Register tile: 4 rows × 4 Q-vectors = 4×16 f32.
- * Uses 16 accumulators + 4 broadcast + 4 B-load = 24 of 32 Q registers.
  *
  * The source broadcasts each A(i+r, k) with vdupq_n_f32 and uses plain
  * vfmaq_f32. Clang folds most of those broadcasts into the by-element form
@@ -227,7 +148,6 @@ inline void neon_micro_f32_4x16(const float* __restrict__ a, const float* __rest
  * @brief NEON f64 micro-kernel: C[i..i+3][j..j+3] += A[i..i+3][k_blk..k_end) × B[..][j..)
  *
  * Register tile: 4 rows × 2 Q-vectors = 4×4 f64.
- * Uses 8 accumulators + 4 broadcast + 2 B-load = 14 of 32 Q registers.
  */
 inline void neon_micro_f64_4x4(const double* __restrict__ a, const double* __restrict__ b,
                                double* __restrict__ c0, double* __restrict__ c1,
@@ -276,19 +196,9 @@ inline void neon_micro_f64_4x4(const double* __restrict__ a, const double* __res
 /**
  * @brief NEON GEMM with naive i-j-k loop order.
  *
- * Direct ARM counterpart of gemm_avx2_naive.
- *
- * Loop structure:  for i: for j: for k:  C(i,j) += A(i,k) * B(k,j)
- *
- * NEON change vs scalar naive:
- *   Inner k-loop processes 4 f32 / 2 f64 elements per VMLA using
- *   a Q-register accumulator. B column j is accessed stride-ldb —
- *   a gather, not a sequential load.
- *
- * Expected result: GFLOP/s ≈ scalar naive.
- * The column gather from B causes a cache miss for every k-step at large N,
- * saturating memory bandwidth. This benchmark proves that SIMD width is
- * irrelevant when the access pattern is hostile — same lesson as AVX2 naive.
+ * Counterpart of gemm_avx2_naive: the k-loop processes 4 f32 / 2 f64 per FMA,
+ * but column j of B is gathered with stride ldb, so each k step can miss
+ * and it runs at about scalar-naive speed.
  */
 #if !HPC_HAS_NEON
 template <typename T>
@@ -365,15 +275,8 @@ void gemm_neon_naive(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
 /**
  * @brief NEON GEMM with cache-friendly i-k-j loop order.
  *
- * Direct ARM counterpart of gemm_avx2_reordered.
- *
- * Loop structure:  for i: for k: a_broad = A(i,k);  for j: C(i,j) += a_broad * B(k,j)
- *
- * NEON change vs scalar reordered:
- *   vdupq_n_f32/f64 broadcasts A(i,k) to all lanes.
- *   Inner j-loop processes 4 f32 / 2 f64 per vfmaq instruction.
- *   B row k and C row i are accessed stride-1 across j — every byte loaded
- *   from cache is used.
+ * Counterpart of gemm_avx2_reordered: vdupq_n broadcasts A(i,k), and the
+ * j-loop processes 4 f32 / 2 f64 per vfmaq against stride-1 B and C rows.
  *
  * Measured on M4 Max: no faster than scalar gemm_reordered — the compiler
  * auto-vectorises that loop too (f32 N=256: 29.6 vs 32.3 GFLOP/s).
@@ -444,31 +347,11 @@ void gemm_neon_reordered(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
 /**
  * @brief NEON GEMM with cache-blocking and register-tiled micro-kernel.
  *
- * Direct ARM counterpart of gemm_avx2_blocked.
- *
- * Combines all three techniques:
- *   1. i-k-j loop order      (stride-1 B and C access)
- *   2. 3-level L2 cache tiling (kNeonTileM × kNeonTileK × kNeonTileN)
- *   3. Register tile: 4×16 f32 / 4×4 f64 of C held in Q registers for
- *      the full k-tile — no C load/store during k-iteration.
- *
- * f32 micro-kernel register allocation (24 of 32 Q registers):
- *   q0..q15  — 4 rows × 4 Q-vectors = 16 C accumulators
- *   q16..q19 — broadcast(A(i+r, k)) for rows r=0..3
- *   q20..q23 — 4 × B(k, j..j+3) vectors
- *   q24..q31 — free for software prefetch / future loop unrolling
- *
- * Why better than gemm_neon_reordered at large N:
- *   The reordered kernel reloads C row i on every k-iteration once N exceeds
- *   L1 capacity. The register tile holds 4 rows × 16 f32 = 256 B entirely
- *   in Q registers for kNeonTileK=256 iterations, then stores once.
- *   This matches the AVX2 blocked strategy and achieves the same cache
- *   reuse ratio — the only difference is 128-bit Q vs 256-bit YMM.
- *
- * Apple M-series note:
- *   M1/M2/M3/M4 have 4 independent NEON/FP execution units per P-core.
- *   The 16-FMA micro-kernel (4 rows × 4 B-vectors) can keep all 4 units
- *   busy simultaneously, approaching peak throughput.
+ * Counterpart of gemm_avx2_blocked: i-k-j order, 3-level tiling
+ * (kNeonTileM × kNeonTileK × kNeonTileN), and a 4×16 f32 / 4×4 f64 C tile
+ * held in Q registers for a whole k-tile, so C is stored once per
+ * kNeonTileK steps instead of being reloaded every k-iteration as in
+ * gemm_neon_reordered at large N.
  */
 #if !HPC_HAS_NEON
 template <typename T>
@@ -553,13 +436,5 @@ void gemm_neon_blocked(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
     }
 }
 #endif  // HPC_HAS_NEON
-
-// ---------------------------------------------------------------------------
-// Convenience alias: gemm_neon → gemm_neon_blocked
-// ---------------------------------------------------------------------------
-template <typename T>
-inline void gemm_neon(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
-    gemm_neon_blocked(A, B, C);
-}
 
 }  // namespace hpc::gemm

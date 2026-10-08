@@ -1,6 +1,6 @@
 # Cache Behaviour of Matrix Multiplication
 
-This document is the theoretical companion to the kernel implementations in `src/gemm/`. It explains **why** loop order matters for performance, building up from first principles.
+This document is the theoretical companion to the kernel implementations in `src/gemm/`. It explains why loop order matters for performance, building up from first principles.
 
 ---
 
@@ -9,24 +9,24 @@ This document is the theoretical companion to the kernel implementations in `src
 Modern CPUs do not read from DRAM directly. Data travels through a hierarchy of ever-faster, ever-smaller caches:
 
 ```
-Registers     ~0 cycles    handful of values
+Registers     ~0 cycles    a few hundred bytes to a few KB
    ↕
-L1 cache      ~4 cycles    32 KB   (per core, typically)
+L1 cache      ~4 cycles    32–128 KB per core  (Zen 5: 48 KB, M4 P-core: 128 KB)
    ↕
-L2 cache     ~12 cycles   256 KB  (per core, typically)
+L2 cache     ~12–20 cycles 1–16 MB            (Zen 5: 1 MB/core, M4: 16 MB per P-cluster)
    ↕
-L3 cache     ~40 cycles     8–64 MB (shared across cores)
+L3 cache     ~40–50 cycles tens of MB, shared  (Zen 5: 32 MB per CCD; M4: none)
    ↕
-DRAM        ~80 ns       GB–TB
+DRAM         ~80–120 ns    GBs
 ```
 
-An algorithm is **compute-bound** when the CPU's arithmetic units are the bottleneck. It is **memory-bound** when the CPU stalls waiting for data from a lower level of the hierarchy. Naïve GEMM is almost always severely memory-bound.
+An algorithm is compute-bound when the CPU's arithmetic units are the bottleneck. It is memory-bound when the CPU stalls waiting for data from a lower level of the hierarchy. Naïve GEMM is memory-bound at all but the smallest sizes.
 
 ---
 
 ## 2. Cache Lines
 
-The unit of transfer between any two adjacent levels of the hierarchy is the **cache line** — 64 bytes on x86 and most ARM cores, 128 bytes on Apple M-series (`sysctl hw.cachelinesize`). The examples below use 64-byte lines: when you read a single `double` (8 bytes), the CPU loads the surrounding 64 bytes — 8 doubles — into the cache.
+The unit of transfer between any two adjacent levels of the hierarchy is the cache line — 64 bytes on x86 and most ARM cores, 128 bytes on Apple M-series (`sysctl hw.cachelinesize`). The examples below use 64-byte lines: when you read a single `double` (8 bytes), the CPU loads the surrounding 64 bytes — 8 doubles — into the cache.
 
 ```
 DRAM layout:
@@ -34,10 +34,10 @@ offset  0  8 16 24 32 40 48 56 64 72 80 …
        [d0 d1 d2 d3 d4 d5 d6 d7|d8 d9 …]
         ←── 1 cache line (64 B) ──→
 
-Accessing d0 loads {d0…d7} into L1. Accessing d1…d7 immediately is FREE.
+Accessing d0 loads {d0…d7} into L1; d1…d7 then hit in L1.
 ```
 
-This is **spatial locality**: data near a recently-used address is likely to be reused soon. Algorithms that exploit spatial locality use every byte of every loaded cache line.
+This is spatial locality: data near a recently-used address is likely to be reused soon. Algorithms that exploit spatial locality use every byte of every loaded cache line.
 
 ---
 
@@ -49,9 +49,9 @@ This is **spatial locality**: data near a recently-used address is likely to be 
 element (i, j)  →  data[ i * cols + j ]
 ```
 
-**Consecutive elements in the same row** have adjacent memory addresses (stride 1). A full row fits in `cols * sizeof(T)` bytes = `cols * 8` bytes for `double`.
+Consecutive elements in the same row have adjacent memory addresses (stride 1). A full row fits in `cols * sizeof(T)` bytes = `cols * 8` bytes for `double`.
 
-**Consecutive elements in the same column** are separated by `cols * sizeof(T)` bytes — for N=1024 that is **8 KB**, spanning 128 cache lines.
+Consecutive elements in the same column are separated by `cols * sizeof(T)` bytes — for N=1024 that is 8 KB, spanning 128 cache lines.
 
 This asymmetry is the root cause of naive GEMM's poor performance.
 
@@ -59,30 +59,31 @@ This asymmetry is the root cause of naive GEMM's poor performance.
 
 ## 4. Reuse Distance
 
-**Reuse distance** is the number of distinct memory addresses accessed between two accesses to the same address. If the reuse distance exceeds the number of cache lines in a cache level, that level will not hold the data from the first access when the second access occurs — a **cache miss**.
+Reuse distance is the number of distinct memory addresses accessed between two accesses to the same address. If the reuse distance exceeds the number of cache lines in a cache level, that level will not hold the data from the first access when the second access occurs — a cache miss.
 
 ### Naive GEMM (i-j-k): reuse distance of B
 
-For a fixed `j`, the inner k-loop accesses `B(0,j), B(1,j), …, B(K-1,j)`. Between `B(0,j)` and `B(1,j)` the loop also touches:
-- `A(i, 0)` through `A(i, K-1)` → K addresses in A
+For a fixed `j`, the inner k-loop reads `B(0,j), B(1,j), …, B(K-1,j)`. These
+are `N` elements apart, so each one is on a different cache line, and only
+one of that line's 8 doubles is used.
 
-Between `B(k,j)` and `B(k+1,j)`:
-- distance = N (because `B(k,j)` is at `data[k*N+j]` and `B(k+1,j)` is at `data[(k+1)*N+j]`)
-- In terms of cache lines: reuse distance = N/8 cache lines of B row k
-
-For N=1024: after loading one element of column j of B, the next access to the same cache line will not occur until `j` advances past 7 — but by then the outer loop has moved on. Effectively **every access to B is a cache miss**.
+The other 7 are used for `B(k,j+1)`, `B(k,j+2)`, … — but only in the next
+iterations of the j-loop, after the k-loop has touched about `K` other lines
+of B. That is the reuse distance: ~`K` cache lines. At K=1024 with 64-byte
+lines that is 64 KB, more than a typical 32–48 KB L1, so the line has been
+evicted from L1 by the time it is reused and every B access misses L1.
 
 ### Reordered GEMM (i-k-j): reuse distance of B
 
 The inner j-loop accesses `B(k,0), B(k,1), …, B(k,N-1)` — a sequential walk across row k.
 
-Between `B(k, j)` and `B(k, j+1)`: stride = 1 element = 8 bytes. The hardware prefetcher trivially predicts this and issues prefetch requests speculatively. Reuse distance within a single cache line = 0 additional accesses between the 8 elements of that line.
+Consecutive iterations read `B(k, j)` and `B(k, j+1)`, 8 bytes apart: all 8 doubles of a line are used back to back (reuse distance 0), and the hardware prefetcher can run ahead of the stream.
 
 ---
 
 ## 5. Working Set Analysis
 
-The **working set** of a loop nest is the set of cache lines touched in one execution of the inner loop.
+The working set of a loop nest is the set of cache lines touched in one execution of the inner loop.
 
 ### Naive inner loop (fixed i, fixed j)
 
@@ -104,23 +105,21 @@ For K=1024: ~1152 cache lines = ~72 KB > L1 (32 KB). B constantly thrashes L1.
 | C row i | N elements | N/8 |
 | **Total per j-tile of 8 elements** | | **2** |
 
-The inner loop processes 8 j-elements per iteration (one cache line of B, one of C). Working set during any 8-element tile = **2 cache lines = 128 bytes**, trivially in L1.
+The inner loop processes 8 j-elements per iteration (one cache line of B, one of C). Working set during any 8-element tile = 2 cache lines = 128 bytes, well within L1.
 
 ---
 
 ## 6. Hardware Prefetching
 
-Modern CPUs include **hardware stream prefetchers** that detect sequential (stride-1) access patterns and automatically issue load requests before the data is needed. This hides the DRAM latency entirely — when the CPU needs a cache line, it is already in L1.
+Hardware prefetchers detect sequential and constant-stride access patterns and fetch lines before they are needed, hiding much of the memory latency.
 
-The naïve kernel's column-stride access to B **defeats** the hardware prefetcher: the stride of 8 KB (N=1024) looks like random access, so no prefetch is issued.
-
-The reordered kernel's stride-1 access to B row k **activates** the prefetcher on every row. On a typical 4-wide prefetcher, the effective DRAM latency is reduced from ~80 ns to ~5–10 ns.
+The reordered kernel's stride-1 walk over B row k is the easiest case. The naïve kernel's column walk has a constant stride too (8 KB at N=1024), which stride prefetchers can follow, but it still needs a new cache line for every element and uses only 8 of its 64 bytes — prefetching cannot fix the wasted bandwidth.
 
 ---
 
 ## 7. What Comes Next: Loop Tiling
 
-Even the reordered kernel has an issue for very large matrices: the outer k-loop causes row `i` of C to be evicted from L1 between k-iterations if N is large. **Loop tiling** (blocking) addresses this by processing a small tile (e.g. 64×64 elements) that stays cache-resident before moving on. This is Level 1, `gemm_blocked`.
+Even the reordered kernel has an issue for very large matrices: the outer k-loop causes row `i` of C to be evicted from L1 between k-iterations if N is large. Loop tiling (blocking) addresses this by processing a small tile (e.g. 64×64 elements) that stays cache-resident before moving on. This is Level 1, `gemm_blocked`.
 
 ```
 Tiled access pattern (tile size T_r × T_c):
@@ -148,13 +147,13 @@ Peak GFLOP/s ≤ (DRAM bandwidth GB/s) × (Arithmetic intensity FLOP/byte)
 ```
 
 For naïve GEMM in the worst case, where every access to B misses all the way to DRAM:
-- Each multiply-add (2 FLOPs) pulls a 64-byte line to use one 8-byte double → arithmetic intensity ≈ 2 / 64 ≈ **0.03 FLOP/byte**
+- Each multiply-add (2 FLOPs) pulls a 64-byte line to use one 8-byte double → arithmetic intensity ≈ 2 / 64 ≈ 0.03 FLOP/byte
 - DRAM bandwidth ≈ 50 GB/s (dual-channel DDR4-3200; 25.6 GB/s per channel)
-- Peak ≈ 50 × 0.03 = **~1.6 GFLOP/s**
+- Peak ≈ 50 × 0.03 = ~1.6 GFLOP/s
 
 Caches soften this at moderate N (part of B stays resident), but the trend shows in the measurements: naïve f64 on M4 Max falls from 9.5 GFLOP/s at N=64 to 0.66 at N=4096 ([benchmarks.md](benchmarks.md#apple-m4-max)).
 
-For the reordered kernel, effective bandwidth is much higher (from caches), but tiling is needed to reach the **compute roofline** of:
+For the reordered kernel, effective bandwidth is much higher (from caches), but tiling is needed to reach the compute roofline of:
 ```
 Peak compute = cores × SIMD width × FMA throughput × frequency
 ```
@@ -189,4 +188,4 @@ The same latency ladder exists on a GPU, with one extra tier — per-SM shared m
 [benchmarks.md](benchmarks.md#nvidia-rtx-5080--cuda). Shared memory and L1
 share one on-chip array per SM; up to 100 KB of it can be shared memory.)
 
-**Warp coalescence:** 32 threads in a warp issue memory loads together. If consecutive threads access consecutive addresses, the hardware merges them into a single 128-byte transaction. In our kernels, thread `(ty, tx)` computes `C(i, j)` where `j = blockCol*TILE + tx` — so consecutive threads in a warp differ only in `tx`, giving coalesced access to B rows and C rows.
+Warp coalescence: 32 threads in a warp issue memory loads together. If consecutive threads access consecutive addresses, the hardware merges them into a single 128-byte transaction. In our kernels, thread `(ty, tx)` computes `C(i, j)` where `j = blockCol*TILE + tx` — so consecutive threads in a warp differ only in `tx`, giving coalesced access to B rows and C rows.

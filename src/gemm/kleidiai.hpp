@@ -5,12 +5,9 @@
  * @brief Reference f32 GEMM via Arm KleidiAI's SME2 micro-kernels.
  *
  * KleidiAI (github.com/ARM-software/kleidiai) is Arm's open-source library
- * of hand-written matmul micro-kernels; XNNPACK, llama.cpp, ONNX Runtime
- * and PyTorch use it on SME hardware. It is the closest open reference for
- * gemm_sme (sme.hpp): same hardware, same FMOPA/ZA primitive, but written in
- * assembly by Arm. A gap between the two is the headroom left in
- * gemm_sme's micro-kernel, while a gap to Accelerate also includes Apple's
- * private tuning.
+ * of hand-written matmul micro-kernels. It is the closest open reference for
+ * gemm_sme (sme.hpp): same hardware and FMOPA/ZA primitive, written in
+ * assembly by Arm.
  *
  * Kernel used: kai_matmul_clamp_f32_f32p2vlx1_f32p2vlx1biasf32_sme2_mopa
  *   - 2VL×2VL output block per step: all four f32 ZA tiles (2×2), the same

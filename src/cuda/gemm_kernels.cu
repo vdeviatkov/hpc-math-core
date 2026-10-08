@@ -12,75 +12,9 @@
  * Level 7: kernel_wmma_pipelined -- WMMA with 128x128 tiles + cp.async double buffering
  * Reference: cuBLAS (SGEMM/DGEMM, TF32, FP16) -- vendor ceiling, not part of the ladder
  *
- * ============================================================
- *  GPU memory hierarchy reminder
- * ============================================================
- *
- *  Global memory   : off-chip DRAM, ~400-600 GB/s (A100), ~1 TB/s (H100).
- *                    High latency (~200-800 cycles).
- *
- *  Shared memory   : on-chip SRAM, ~10-20 TB/s, ~4-32 cycles.
- *                    32 banks (4-byte interleaved) -- parallel access required.
- *
- *  Registers       : per-thread, ~1 cycle.  Spill to local memory if overused.
- *
- *  Tensor Cores    : dedicated MMA units (Volta+).
- *                    Operate on 16x16x16 matrix fragments.
- *                    ~8x throughput vs SIMT FP32 on the same SM.
- *
- * ============================================================
- *  Level 2 -- Register tile: why each thread should own many outputs
- * ============================================================
- *
- *  In kernel_blocked (Level 1), each thread owns 1 output element.
- *  Per k-step: 2 __syncthreads + 16 shared loads + 16 FMAs = low ratio.
- *
- *  In kernel_reg_tile (Level 2), each thread owns TMxTN = 8x8 = 64 outputs.
- *  Thread block: BMxBN = 128x128 outputs, BK=16 k-step.
- *  Threads per block: (BM/TM) x (BN/TN) = 16 x 16 = 256.
- *
- *  Per k-step:
- *    - Load BMxBK = 128x16 A sub-tile into shared memory
- *    - Load BKxBN = 16x128 B sub-tile into shared memory
- *    - Each thread: TMxTN outer product = 8x8 = 64 FMAs from registers
- *    - 2 __syncthreads + ~2x128x16/256 = 16 global loads per thread + 64 FMAs
- *
- *  Arithmetic intensity = (2 x 128 x 128 x K) / ((128xK + 128xK) x 4B)
- *                       ~= 128/4 = 32 FLOP/byte   (vs ~2 for Level 1)
- *
- * ============================================================
- *  Level 3 -- Double buffering: hiding __syncthreads latency
- * ============================================================
- *
- *  __syncthreads creates a global barrier -- all threads idle while the
- *  next tile loads.  Double buffering uses two ping-pong shared buffers:
- *    - While computing tile k from buffer A, prefetch tile k+1 into buffer B.
- *    - Swap buffers, repeat.
- *
- *  On Ampere+ (SM80+) `__pipeline_memcpy_async` / cp.async moves data
- *  from global to shared memory asynchronously -- completely hidden behind
- *  compute.  Falls back to synchronous load on older GPUs.
- *
- * ============================================================
- *  Level 4 -- Tensor Cores (WMMA)
- * ============================================================
- *
- *  NVIDIA Tensor Cores (Volta+, SM70+) perform a 16x16x16 matrix-multiply
- *  in a single warp-synchronous instruction:
- *    D[16x16] += A[16x16] * B[16x16]
- *
- *  WMMA (Warp Matrix Multiply Accumulate) API fragments the tile across
- *  all 32 threads in a warp using an opaque layout.
- *
- *  This kernel:
- *    - Loads A and B sub-tiles as fp16 into shared memory (even when host
- *      matrices are fp32 -- we convert on the fly)
- *    - Uses wmma::mma_sync to run the 16x16x16 Tensor Core MMA
- *    - Accumulates into fp32 wmma fragment
- *    - Stores result back to host fp32 matrix
- *
- *  Available only when __CUDA_ARCH__ >= 700 (Volta+).
- *  Falls back to gemm_cuda_double_buf on older GPUs / non-WMMA builds.
+ * Each level's comment below explains what it adds. The GPU memory
+ * hierarchy these kernels work against is described in
+ * docs/cache-behavior.md, section 9.
  */
 
 #include "gemm/cuda.hpp"
@@ -91,13 +25,7 @@
 #include <mma.h>
 using namespace nvcuda;
 
-// cuBLAS -- backs the vendor-tuned reference kernels (gemm_cuda_cublas /
-// gemm_cuda_cublas_tf32) near the bottom of this file. Unlike every kernel
-// above, these call into NVIDIA's own production GEMM implementation
-// instead of hand-written PTX/intrinsics, to answer "what does this GPU
-// actually achieve at its realistic peak" as a ceiling for the hand-written
-// kernels to be measured against.
-#include <cublas_v2.h>
+#include <cublas_v2.h>  // the reference entry points at the end of the file
 
 // cp.async requires sm_80+ (Ampere)
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
@@ -234,7 +162,10 @@ __device__ __forceinline__ void store_tile(T* C, const T (&c)[kTM][kTN], int row
 //   As[kBK][kBM] = 16 x 128 -- A sub-tile transposed for column access
 //   Bs[kBK][kBN] = 16 x 128 -- B sub-tile in row-major
 //
-// Inner loop: outer product of As column and Bs row -> 8x8 FMAs per k step.
+// Inner loop: outer product of As column and Bs row -> 8x8 FMAs per k step,
+// all from registers. Arithmetic intensity per block is
+// 2·128·128·K FLOP / ((128 + 128)·K·4 B) ≈ 32 FLOP/byte, against ~2 for
+// Level 1, where each thread owns one output.
 // Bank conflict avoidance: +1 padding on the inner dimension.
 // Shared-memory tiles are filled with a strided loop: 256 threads x 8
 // iterations = the 2048 elements of each 16x128 tile.
@@ -320,21 +251,15 @@ kernel_reg_tile(const T* __restrict__ A,
 // Same register-tiling as Level 2, but uses two ping-pong shared-memory
 // buffers to overlap loading of tile k+1 with computation of tile k.
 //
-// On Ampere+ (sm_80+):
-//   Uses __pipeline_memcpy_async / __pipeline_commit / __pipeline_wait_prior
-//   for truly asynchronous global->shared DMA (cp.async instruction).
-//   This hides memory latency completely behind FMA execution.
-//
-// On older GPUs (sm_70..79):
-//   Falls back to synchronous loads with __syncthreads barriers.
-//   The double-buffer structure is preserved for code clarity, but the
-//   overlap benefit requires the hardware async copy support.
+// On sm_80+ the loads use cp.async (__pipeline_memcpy_async / _commit /
+// _wait_prior), which copies global -> shared without blocking the threads,
+// so the copy overlaps the FMAs. On older GPUs the loads are synchronous:
+// the structure is the same, without the overlap.
 // ============================================================================
-// For double, halve BM to stay within 48 KB shared memory limit.
-// f32: 2 * 16 * (128+1+128+1) * 4 = 33,024 B ✓
-// f64: 2 * 16 * (128+1+128+1) * 8 = 66,048 B ✗  →  use BM=64:
-//      2 * 16 * (64+1+128+1) * 8   = 49,664 B ✗  →  use BM=64,BN=64:
-//      2 * 16 * (64+1+64+1) * 8    = 33,280 B ✓
+// Static shared memory is limited to 48 KB, so double uses a 64x64 tile:
+//   f32, 128x128: 2 * 16 * (128+1 + 128+1) * 4 = 33,024 B
+//   f64, 128x128: 2 * 16 * (128+1 + 128+1) * 8 = 66,048 B  (too large)
+//   f64,   64x64: 2 * 16 * ( 64+1 +  64+1) * 8 = 33,280 B
 template <typename T>
 static constexpr int kDBufBM = (sizeof(T) == 8) ? 64 : kBM;
 template <typename T>
@@ -369,7 +294,7 @@ kernel_double_buf(const T* __restrict__ A,
 
     // -------------------------------------------------------------------
     // Helper lambda: load tile tileK into shared-memory buffer buf.
-    // On Ampere+: issues async copy and does NOT synchronise.
+    // On Ampere+: issues an async copy and does not synchronise.
     // On older:   copies synchronously and issues __syncthreads.
     //
     // cp.async copies global -> shared only, so its source must be a real
@@ -456,38 +381,26 @@ kernel_double_buf(const T* __restrict__ A,
 // ============================================================================
 // Level 5: Vectorized loads (float4/double2) + shared-memory XOR swizzle
 //
-// Same register-tile shape as kernel_reg_tile (kBM x kBN = 128x128,
-// kBK=16, kTM x kTN = 8x8 per thread), with two changes:
+// Same register-tile shape as kernel_reg_tile (128x128 block, BK=16, 8x8 per
+// thread), with two changes:
 //
-//  1. Global -> shared loads use 128-bit vector instructions (float4 for
-//     float, double2 for double) instead of one scalar per thread per
-//     element, cutting the instruction count for the load phase by 4x/2x.
+//  1. Global -> shared loads use 128-bit vectors (float4 / double2), cutting
+//     load instructions by 4x / 2x. B's contiguous dimension (N) is also Bs's,
+//     so B is loaded and stored as vectors. A is contiguous along K but As is
+//     stored transposed (As[k][m]), so A is loaded as a vector and then
+//     scattered with scalar stores into kVecW rows of As.
 //
-//     - B's fast (contiguous) dimension in global memory is N, which is
-//       ALSO Bs's fast dimension in shared memory -- so B's load is a
-//       straight vectorized load *and* a vectorized store.
-//     - A's fast (contiguous) dimension in global memory is K, but As is
-//       stored TRANSPOSED (As[k][m], to give the compute loop column
-//       access) -- so A's load is a vectorized LOAD (4/2 consecutive K
-//       values for one fixed row) followed by a SCALAR scatter-store (each
-//       of those K values lands in a different As row, same column).
+//     Vector loads need 16-byte-aligned addresses. cudaMalloc aligns the base
+//     pointers, and every offset here is a multiple of the vector width as
+//     long as K and N are too; launch_vectorized checks that and otherwise
+//     runs kernel_reg_tile.
 //
-//     Vectorized loads require the source address to be 16-byte aligned.
-//     cudaMalloc guarantees the base pointer is (well) aligned, and every
-//     offset used here (`aColBase`, `bColBase`) is constructed to be a
-//     multiple of the vector width -- but only if K (for A) and N (for B)
-//     are ALSO multiples of the vector width. The host-side launcher
-//     therefore only dispatches to this kernel when that holds; otherwise
-//     it falls back to kernel_reg_tile (see `launch()` below).
-//
-//  2. Shared memory uses an XOR "swizzle" instead of the +1-padding trick
-//     used everywhere else in this file, to spread accesses across banks
-//     without wasting a column. `swizzle_slot(row, slot, slots_per_row)`
-//     permutes which physical vector-slot a logical (row, slot) pair maps
-//     to. Correctness does not depend on the permutation being
-//     bank-conflict-free: the same function is used at every write site (A's
-//     scalar scatter-store, B's vectorized store) and every read site (the
-//     k-loop below), so the permutation is always applied consistently.
+//  2. Shared memory uses an XOR swizzle instead of +1 padding to spread
+//     accesses across banks without a wasted column (padding would also
+//     break the alignment the vector stores need). swizzle_slot() permutes
+//     which physical vector slot a logical (row, slot) maps to; the same
+//     function is used at every write and read, so correctness does not
+//     depend on the permutation itself.
 // ============================================================================
 
 // 128-bit vector type selector: float4 for float, double2 for double.
@@ -550,10 +463,8 @@ kernel_vectorized(const T* __restrict__ A,
             const int aColBase = tileK * kBK + kvec * kVecW;
 
             Vec v{};
-            // K % kVecW == 0 is guaranteed by the host-side dispatch check
-            // (see launch() below), so `aColBase < K` alone is sufficient
-            // to guarantee the whole vector [aColBase, aColBase+kVecW) is
-            // in-bounds -- see the file's kernel_vectorized dispatch note.
+            // K % kVecW == 0 (checked by launch_vectorized), so aColBase < K
+            // means the whole vector is in bounds.
             if (aRow < M && aColBase < K) {
                 v = *reinterpret_cast<const Vec*>(&A[aRow * K + aColBase]);
             }
@@ -576,7 +487,7 @@ kernel_vectorized(const T* __restrict__ A,
             const int bColBase = blockCol * kBN + nvec * kVecW;
 
             Vec v{};
-            // N % kVecW == 0 is likewise guaranteed by the host dispatch.
+            // Likewise N % kVecW == 0.
             if (bRow < K && bColBase < N) {
                 v = *reinterpret_cast<const Vec*>(&B[bRow * N + bColBase]);
             }
@@ -630,8 +541,8 @@ kernel_vectorized(const T* __restrict__ A,
 //   wmma::mma_sync  -- 16x16x16 Tensor Core MMA.
 //   wmma::store_matrix_sync -- cooperative warp store to global memory.
 //
-// The fp16 conversion introduces ~1e-3 relative error vs fp32 GEMM --
-// acceptable for training but not exact.  The test uses a relaxed tolerance.
+// The fp16 conversion introduces ~1e-3 relative error vs fp32 GEMM; the
+// tests use a relaxed tolerance.
 //
 // Falls back to gemm_cuda_double_buf on non-WMMA targets.
 // ============================================================================
@@ -760,71 +671,36 @@ kernel_wmma(const float* __restrict__ A,
 // Level 7: Pipelined Tensor Cores via WMMA -- bigger tiles + cp.async
 // double buffering.
 //
-// kernel_wmma above (64x64 block tile, single-buffered, one wmma::mma_sync
-// per warp per k-step) measures ~5 TFLOP/s on RTX 5080, while cuBLAS's dense
-// FP16 Tensor Core path (gemm_cuda_cublas_fp16, compute-only) reaches
-// ~120 TFLOP/s on the same GPU. Both use fp16 Tensor Cores; the gap is
-// pipelining and tile size.
+// kernel_wmma (64x64 block tile, single-buffered, one mma_sync per warp per
+// k-step) reaches ~5–6 TFLOP/s on RTX 5080; cuBLAS FP16 (compute-only)
+// reaches ~120 on the same Tensor Cores. This kernel closes most of that
+// gap the way CUTLASS-style kernels do, still on the wmma:: C++ API:
 //
-// This kernel closes most of that gap the way CUTLASS-style kernels do,
-// while staying on the documented wmma:: C++ API, where the compiler
-// manages the fragment register mapping (kernel_mma_ldmatrix below does
-// that mapping by hand):
+//   1. Bigger block tile: 128x128 with BK=32 (vs 64x64, BK=16), so more work
+//      per shared-memory round trip and per __syncthreads() pair.
+//   2. Bigger warp tile: each of 8 warps owns 32x64 = 2x4 fragments and issues
+//      8 mma_sync per k-sub-step. Each b_frag is loaded once and reused for
+//      both fm, each a_frag once for all 4 fn — the register blocking of
+//      kernel_reg_tile, at fragment granularity.
+//   3. Double buffering with cp.async (sm_80+): the next k-tile's copy
+//      overlaps the current tile's MMAs, with kernel_double_buf's control
+//      flow. Pre-Ampere it falls back to a synchronous float4 copy.
+//   4. Padded shared-memory leading dimensions (kPipeAsLd / kPipeBsLd below).
 //
-//   1. Bigger thread-block tile: 128x128 (vs 64x64) with BK=32 (vs 16),
-//      so more work is done per shared-memory round trip and per
-//      __syncthreads() pair.
-//   2. Bigger per-warp tile: each of 8 warps (256 threads/block) owns a
-//      32x64 output region == 2x4 = 8 WMMA 16x16x16 fragments, issuing
-//      8 wmma::mma_sync calls per k-sub-step instead of kernel_wmma's 1,
-//      amortizing load/sync overhead across more compute. A/B fragments
-//      are each loaded once per k-sub-step and reused across the other
-//      dimension (a_frag reused across all fn, b_frag[] reused across
-//      all fm) -- the same register-blocking structure kernel_reg_tile/
-//      kernel_double_buf already use for their scalar FMA micro-kernel.
-//   3. Double-buffered shared memory loaded via cp.async (Ampere+; see
-//      HPC_HAVE_CP_ASYNC above), so the NEXT k-tile's global->shared
-//      copy overlaps the CURRENT k-tile's Tensor Core compute -- the same
-//      control flow as kernel_double_buf, applied to fp16 Tensor Core
-//      input. Falls back to a synchronous vectorized copy (still
-//      double-buffered, without the async overlap) on pre-Ampere targets,
-//      using the same #ifdef HPC_HAVE_CP_ASYNC / #else pattern.
+// Constraints that follow from cp.async:
 //
-// Design choices:
-//
-//   - A and B are pre-converted to fp16 in GLOBAL memory once (via the
-//     existing kernel_f32_to_f16, the same staging step gemm_cuda_cublas_
-//     fp16 already uses) before this kernel
-//     launches. cp.async is a same-dtype byte copy, not a converting
-//     load -- it cannot do the fp32->fp16 narrowing kernel_wmma's
-//     synchronous load does on the fly, so the conversion has to happen
-//     as a separate step whenever cp.async is used at all.
-//   - Unlike kernel_wmma, As is stored NATURALLY as As[m][k] (matching
-//     A16's own row-major layout exactly, K contiguous) rather than
-//     transposed as As[k][m]. This is a deliberate departure from
-//     kernel_wmma's layout: cp.async can only copy a CONTIGUOUS run of
-//     bytes to a CONTIGUOUS destination, and A16's natural per-row K
-//     contiguity only lines up with a per-row-in-K destination too (i.e.
-//     no transpose) -- so a_frag below is `row_major`, the opposite of
-//     kernel_wmma's `col_major` a_frag: the tag follows the physical
-//     layout (see kernel_wmma's fragment comment). Bs stays natural
-//     (Bs[k][n]), so b_frag stays `row_major`, same as kernel_wmma.
-//   - Every cp.async transfer moves a full 16-byte (8 x __half) chunk,
-//     the largest size __pipeline_memcpy_async supports, chosen so a
-//     single instruction per thread per chunk both maximizes throughput
-//     and keeps every source/destination address provably 16-byte
-//     aligned by construction (see the alignment argument below) --
-//     no zfill/boundary-tile logic is needed at all because...
-//   - ...this kernel deliberately requires M, N to be exact multiples of
-//     128 and K an exact multiple of 32 (no tail handling) -- the host
-//     dispatch below falls back to the always-
-//     correct kernel_wmma otherwise. Every alignment argument above
-//     depends on this: cudaMalloc'd buffers are >=256-byte aligned, and
-//     with K/N multiples of 32/128 (hence of 8), every row of A16/B16
-//     this kernel reads a 16-byte chunk from starts at a byte offset
-//     that is itself a multiple of 16 (offset-in-elements is always a
-//     multiple of 8 given those divisibility constraints, so offset-in-
-//     bytes = that * 2 is always a multiple of 16).
+//   - It copies bytes without converting, so A and B are converted to fp16
+//     in global memory first (kernel_f32_to_f16, as gemm_cuda_cublas_fp16
+//     does).
+//   - It copies contiguous runs only, so As keeps A16's row-major layout
+//     (As[m][k], K contiguous) instead of kernel_wmma's transposed As[k][m],
+//     and a_frag is therefore row_major — the tag follows the layout.
+//     Bs[k][n] and b_frag (row_major) are as in kernel_wmma.
+//   - Every transfer is a full 16-byte chunk (8 halves). M and N must be
+//     multiples of 128 and K of 32 (launch_wmma_pipelined falls back to
+//     kernel_wmma otherwise): then every chunk starts at an element offset
+//     that is a multiple of 8, i.e. 16-byte aligned, and no bounds checks or
+//     zfill are needed.
 // ============================================================================
 
 static constexpr int kPipeBM = 128;   // thread-block output rows
@@ -841,31 +717,22 @@ static constexpr int kPipeKSteps = kPipeBK / kWMMA_K;               // 2
 
 // Shared-memory leading dimensions, padded by 8 halves (16 bytes).
 //
-// Unpadded, both tiles are pathological for shared-memory banking. A
-// wmma::load_matrix_sync fragment reads 16 rows of 16 halves; the bank a row
-// starts in is (row * ld * 2 / 4) % 32. With ld = kPipeBK = 32 (64 B/row)
-// only 2 distinct bank-starts exist across those 16 rows -> 8-way conflict.
-// With ld = kPipeBN = 128 (256 B/row, exactly 2 bank cycles) every row starts
-// in the SAME bank -> 16-way conflict. Without the pad, Nsight Compute on
-// RTX 5080 counts 85% of shared-load wavefronts as conflicts (6.7x the
-// necessary shared traffic) and 80.8 vs 100.5 TFLOP/s with it.
+// A load_matrix_sync fragment reads 16 rows of 16 halves; a row starts in bank
+// (row * ld * 2 / 4) % 32. Unpadded, ld = kPipeBK = 32 (64 B/row) gives only
+// 2 distinct starting banks over 16 rows (8-way conflict), and
+// ld = kPipeBN = 128 (256 B/row, two full bank cycles) puts every row in the
+// same bank (16-way). Padding by 8 (ld = 40 / 136) gives 8 distinct starts:
+// a 2-way conflict. Measured with Nsight Compute on RTX 5080: shared-load
+// conflicts fall from 85% to 1% of wavefronts, 80.8 → 100.5 TFLOP/s.
 //
-// Padding by 8 gives ld = 40 / 136 halves -> 8 distinct bank-starts each,
-// cutting both to a 2-way conflict.
+// The pad is 8, not the usual 1: load_matrix_sync needs ld to be a multiple
+// of 8 halves and cp.async needs a 16-byte-aligned destination. An XOR
+// swizzle (no memory cost, as in kernel_vectorized) is not possible here —
+// load_matrix_sync takes a plain (pointer, ld) pair.
 //
-// Why 8 and not the usual 1: wmma::load_matrix_sync requires the leading
-// dimension to be a multiple of 8 __half elements, and cp.async requires its
-// destination 16-byte aligned. A +1 pad violates both (see kernel_wmma's
-// shared-memory comment). 8 halves = 16 bytes satisfies both.
-// Why not XOR swizzling, the usual alternative that costs no memory:
-// load_matrix_sync takes a plain (pointer, ld) pair and cannot express a
-// permuted layout -- swizzling requires hand-mapped mma.sync/ldmatrix
-// addressing, which is kernel_mma_ldmatrix's job, not this kernel's.
-//
-// Cost: 32 KB -> 37 KB of shared memory per block, which drops the
-// shared-memory occupancy limit from 3 blocks/SM to 2. That is free here:
-// this kernel already uses 126 registers/thread, capping it at 2 blocks/SM
-// regardless (verified with Nsight Compute).
+// Cost: 32 → 37 KB of shared memory per block, lowering the shared-memory
+// occupancy limit from 3 to 2 blocks/SM. The kernel's 126 registers/thread
+// already cap it at 2, so occupancy is unchanged.
 static constexpr int kPipeAsLd = kPipeBK + 8;   // 40 halves =  80 B
 static constexpr int kPipeBsLd = kPipeBN + 8;   // 136 halves = 272 B
 
@@ -986,70 +853,37 @@ kernel_wmma_pipelined(const __half* __restrict__ A16,   // MxK, row-major, fp16
 
 // ============================================================================
 // Level 6: Raw Tensor Core MMA via mma.sync + ldmatrix
-// A separate kernel from kernel_wmma, not a refactor of it -- the point is
-// to compare the two abstraction levels. Here the per-lane register mapping
-// is hand-written, so a mistake produces wrong values rather than a build
-// or launch error; the WMMA kernels leave that mapping to the compiler.
 //
-// What this kernel does, one level below WMMA:
-//   WMMA (kernel_wmma):  wmma::load_matrix_sync / wmma::mma_sync -- the
-//                        compiler manages which register holds which matrix
-//                        element; native tile is 16x16x16.
-//   Here:                ldmatrix.sync.aligned.m8n8.x{2,4}.shared.b16 loads
-//                        raw shared-memory addresses into the *exact*
-//                        per-thread registers mma.sync.m16n8k16 expects --
-//                        the hardware does the 32-thread distribution, but
-//                        WHICH address each thread supplies, and whether the
-//                        load needs `.trans`, is this kernel's responsibility
-//                        by hand. Native tile is 16x8x16 (note: 8 wide, not
-//                        16 -- mma.sync's f16 m16n8k16 shape has a narrower
-//                        N than WMMA's 16x16x16, so each warp here issues
-//                        TWO side-by-side MMAs to cover the same 16x16 area
-//                        kernel_wmma computes with one wmma::mma_sync call).
+// The same computation as kernel_wmma, one level lower. WMMA's
+// load_matrix_sync / mma_sync leave the per-lane register mapping to the
+// compiler; here ldmatrix.sync loads shared memory straight into the
+// registers mma.sync.m16n8k16 expects, and the kernel chooses which address
+// each lane supplies and whether the load is transposed. A mistake in that
+// mapping produces wrong values, not a build or launch error. The native
+// tile is 16x8x16, so each warp issues two MMAs side by side to cover the
+// 16x16 area kernel_wmma covers with one.
 //
-// Operand layout requirement (fixed by the instruction: only ".row.col" is
-// defined for this shape/type combination -- there is no ".row.row" f16
-// m16n8k16 variant):
-//   A operand must be `.row`  (M x K, K the fast/contiguous axis)
-//   B operand must be `.col`  (K x N, K the fast/contiguous axis)
+// Operand layouts (the only f16 m16n8k16 variant is .row.col):
+//   A `.row` (K contiguous): As is stored [m][k], A's own layout, so no
+//     transpose — unlike the FMA kernels, which store As as [k][m].
+//   B `.col` (K contiguous): Bs is stored [k][n] (N contiguous), so B's
+//     ldmatrix uses `.trans`. `.trans` only changes the register shuffle,
+//     not which address each lane supplies.
 //
-// This kernel stores As[[M][K]] in shared memory in A's OWN natural
-// row-major layout (K contiguous) specifically so the A operand needs NO
-// transpose -- unlike every FMA-based kernel earlier in this file, which
-// transposes A into As[K][M] for compute-loop column access. That
-// optimization doesn't apply here (mma.sync does the whole 16x8x16 MMA in
-// one hardware instruction; there is no manual per-element compute loop to
-// optimize for). B is stored Bs[K][N] (N contiguous, B's own natural
-// row-major layout) which is the OPPOSITE of the `.col` (K-contiguous)
-// operand B needs -- so B's ldmatrix call below uses `.trans` to have the
-// instruction transpose it during the load. ldmatrix's `.trans` only
-// changes the internal register shuffle, not the per-thread source-address
-// convention, so this does not change how `b_addr` is computed.
+// ldmatrix addressing (PTX ISA, "ldmatrix"): with `.x4`, lane l supplies the
+// start address of row l%8 of 8x8 quadrant l/8. `.x2` uses lanes 0-15 only,
+// but every lane must pass a valid address, so lanes 16-31 repeat them
+// (lane % 16).
 //
-// ldmatrix address convention (PTX ISA "Warp-level Matrix Load
-// Instruction: ldmatrix"): for `.x4`, each of the 32 lanes supplies ONE
-// address; lanes are grouped in fours of eight (lane/8 = which of the 4
-// 8x8 quadrants, lane%8 = which row within that quadrant), and each
-// supplied address is the START of an 8-contiguous-element row read from
-// shared memory. `.x2` uses only the first 16 lanes' addresses (lane/8 = 0
-// or 1, lane%8 = row); this kernel has every lane (including 16-31)
-// compute a valid, in-bounds address via `lane % 16` for the `.x2` (B)
-// call, since ldmatrix is a warp-collective instruction and every
-// participating lane must supply *some* valid address even where the
-// result is unused.
+// mma.sync.m16n8k16.f32 accumulator layout (PTX ISA, "Matrix Fragments for
+// mma.m16n8k16"), groupID = lane / 4, threadInGroup = lane % 4:
+//   acc[0] -> C[groupID,     threadInGroup*2]
+//   acc[1] -> C[groupID,     threadInGroup*2 + 1]
+//   acc[2] -> C[groupID + 8, threadInGroup*2]
+//   acc[3] -> C[groupID + 8, threadInGroup*2 + 1]
 //
-// mma.sync.m16n8k16.f32 accumulator layout (PTX ISA "Matrix Fragments for
-// mma.m16n8k16"):
-//   groupID = lane / 4, threadInGroup = lane % 4
-//   acc[0] -> C[groupID,          threadInGroup*2]
-//   acc[1] -> C[groupID,          threadInGroup*2 + 1]
-//   acc[2] -> C[groupID + 8,      threadInGroup*2]
-//   acc[3] -> C[groupID + 8,      threadInGroup*2 + 1]
-//
-// Requires sm_80+ (Ampere) for the f16 m16n8k16 shape (guarded by
-// __CUDA_ARCH__ below; the host dispatch additionally checks
-// cuda_has_ampere() before ever launching this kernel). Falls back to
-// kernel_wmma on sm_70-75 (Volta/Turing) via the host dispatch.
+// Requires sm_80+ for the f16 m16n8k16 shape; launch_mma_ldmatrix falls back
+// to kernel_wmma on sm_70-75.
 // ============================================================================
 
 static constexpr int kMmaM = 16;   // mma.sync m16n8k16 native shape
@@ -1179,10 +1013,9 @@ kernel_mma_ldmatrix(const float* __restrict__ A,
         store_frag(acc1, cWarpCol1);
     }
 #else
-    // sm_75 and below: the f16 m16n8k16 mma.sync shape used above does not
-    // exist. This branch is never launched on such hardware (host dispatch
-    // checks cuda_has_ampere() first) -- it exists only so the file still
-    // compiles when -arch targets sm_75 or older.
+    // sm_75 and below have no f16 m16n8k16 shape. Never launched there
+    // (launch_mma_ldmatrix checks cuda_has_ampere()); this branch only keeps
+    // the file compiling for older -arch targets.
     (void)A; (void)B; (void)C; (void)M; (void)K; (void)N;
 #endif
 }
@@ -1391,15 +1224,9 @@ void gemm_cuda_wmma_pipelined(const Matrix<float>& A, const Matrix<float>& B, Ma
     run_on_device(A, B, C, launch_wmma_pipelined);
 }
 
-// Raw-device-pointer, compute-only entry point -- same reasoning as the
-// cuBLAS raw-device-pointer functions further down this file: for a fair
-// compute-only comparison against gemm_cuda_cublas_fp16_device, timing must
-// exclude the fp32->fp16 conversion and
-// cudaMalloc/H2D/D2H that gemm_cuda_wmma_pipelined's Matrix<float>-based
-// wrapper above always pays. Caller must guarantee M/N/K satisfy the
-// exact-tile requirement (M,N multiples of 128; K a multiple of 32) --
-// unlike the wrapper above, this does NOT fall back to kernel_wmma, since
-// there is no non-fp16 input to fall back from at this layer.
+// Compute-only entry point (see cuda.hpp): takes fp16 device buffers, so the
+// timing excludes conversion and transfers. No fallback — the caller must
+// pass M, N multiples of 128 and K a multiple of 32.
 void gemm_cuda_wmma_pipelined_device(const void* dA16, const void* dB16, float* dC,
                                      int M, int K, int N) {
     const dim3 block(kPipeNumWarps * 32), grid(N / kPipeBN, M / kPipeBM);
@@ -1427,7 +1254,7 @@ void gemm_cuda_wmma_pipelined_device(const void* dA16, const void* dB16, float* 
 //                              wmma_pipelined).
 //
 // hpc::Matrix is row-major; cuBLAS is column-major. Row-major C = A*B is
-// exactly column-major C^T = B^T*A^T over the SAME memory, so every call
+// exactly column-major C^T = B^T*A^T over the same memory, so every call
 // below swaps A<->B (and M<->N) and asks for a plain no-transpose GEMM --
 // no data movement, no transpose flags.
 // ============================================================================
@@ -1497,29 +1324,9 @@ void gemm_cuda_cublas_fp16(const Matrix<float>& A, const Matrix<float>& B, Matri
 }
 
 // ============================================================================
-// Reference -- cuBLAS, raw-device-pointer entry points (peak-compute-only
-// benchmarking)
-//
-// Every kernel above -- including gemm_cuda_cublas/_tf32 just above -- times
-// a FULL round trip (cudaMalloc + H2D copy + compute + D2H copy) on every
-// call, by design, so every kernel in this file is measured the same way
-// (see docs/benchmarks.md's "all CUDA benchmarks include host<->device
-// transfer time" note). That is the wrong methodology to answer "what is
-// this GPU's actual achievable compute throughput" at problem sizes large
-// enough to matter: at N=16384 the ~3.2 GB of host<->device traffic plus
-// per-call cudaMalloc of ~1 GB buffers dominates wall-clock time far more
-// than the matmul itself, which is exactly why gemm_cuda_cublas_tf32's
-// end-to-end throughput (measured ~22 TFLOP/s at N=16384 on RTX 5080)
-// badly understates the GPU's real Tensor Core throughput.
-//
-// These two entry points take pre-allocated, already-resident device
-// pointers and do nothing but issue the GEMM call -- allocate and copy
-// once outside the timed region (see BM_CudaCublas*ComputeOnly in
-// bench_gemm_cuda.cpp), then call these repeatedly inside it. They call
-// the exact same cublasSgemm/cublasGemmEx as the Matrix<T>-based wrappers
-// above (same row-major/column-major swap trick), so their correctness is
-// already covered by CudaCublasFloat/CudaCublasTf32Float's GTest cases --
-// no separate correctness test needed for boilerplate that skips a memcpy.
+// Reference -- cuBLAS, compute-only entry points (see cuda.hpp). Same calls as
+// the Matrix-based wrappers above, on caller-provided device buffers; the
+// wrappers' tests cover their correctness.
 // ============================================================================
 void gemm_cuda_cublas_device_f32(const float* dA, const float* dB, float* dC,
                                  int M, int K, int N) {
@@ -1532,21 +1339,10 @@ void gemm_cuda_cublas_tf32_device(const float* dA, const float* dB, float* dC,
                    "cublasGemmEx (TF32)");
 }
 
-// fp16-in/fp32-accumulate compute-only entry point. Dense FP16 Tensor Core
-// throughput is roughly 2x TF32 on Ampere and later (TF32 occupies twice
-// the bits per element, so half as many elements move through the tensor
-// pipe per cycle): ~120 vs ~60 TFLOP/s compute-only on RTX 5080. Reuses
-// kernel_f32_to_f16 (defined above) for the one-time fp32->fp16 staging.
-//
-// Uses void* rather than __half* in every signature below (and in the
-// cuda.hpp declarations) even though this file is happy to use __half
-// internally: cuda.hpp is included by gemm_kernels_stub.cpp and by every
-// host .cpp file (bench_gemm_cuda.cpp, test_gemm_cuda.cpp) that must
-// still compile on a genuinely CPU-only machine with NO CUDA toolkit
-// installed at all (see the build-cuda-stub CI job) -- <cuda_fp16.h>
-// itself would not be found there, so __half cannot appear in a type
-// that header exposes. float*/void*/int/size_t are all the public API
-// above and below may safely use.
+// fp16-in/fp32-accumulate. Dense FP16 runs at roughly 2x TF32 throughput
+// (half the bits per element through the same tensor pipe): ~120 vs ~60
+// TFLOP/s compute-only on RTX 5080. fp16 buffers are void* in the public API
+// because cuda.hpp must compile without <cuda_fp16.h> (CPU-only stub builds).
 void gemm_cuda_convert_f32_to_f16_device(const float* src, void* dst, int count) {
     convert_f32_to_f16(src, static_cast<__half*>(dst), count);
 }
@@ -1558,15 +1354,7 @@ void gemm_cuda_cublas_fp16_device(const void* dA16, const void* dB16, float* dC,
 }
 
 // ============================================================================
-// Reference -- generic device-memory helpers for compute-only benchmarking
-//
-// Thin, toolkit-type-free wrappers (void*/size_t only, same reasoning as
-// above) around cudaMalloc/cudaMemcpy/cudaFree/cudaDeviceSynchronize, so
-// bench_gemm_cuda.cpp's compute-only benchmarks (BM_CudaCublas*ComputeOnly)
-// can pre-stage device buffers without including <cuda_runtime.h> itself --
-// that header isn't available on a CPU-only machine with no CUDA toolkit,
-// and bench_gemm_cuda.cpp (like this whole file's public API) must still
-// compile there against the stub library.
+// Device-memory helpers for the compute-only benchmarks (see cuda.hpp).
 // ============================================================================
 void* gemm_cuda_malloc(std::size_t bytes) {
     void* ptr = nullptr;

@@ -4,20 +4,17 @@
  * @file prefetch.hpp
  * @brief Software-prefetch variants of every blocked GEMM kernel.
  *
- * ============================================================
- *  What software prefetch is and why it helps
- * ============================================================
+ * Hardware prefetchers follow sequential streams; these hints target the
+ * three streams they might not predict:
  *
- * Modern CPUs have a hardware prefetcher that detects sequential or
- * strided access patterns and issues cache-line fills ahead of time.
- * It works well for simple streams but struggles with:
+ *   1. The next A rows — K*sizeof(T) bytes apart.
+ *   2. The next B k-tile — a new, cold address at each k-tile boundary.
+ *   3. The next C rows — a write to a C row no longer in L1 first has to
+ *      load the line.
  *
- *   1. The k-stride walk over A rows — stride = N*sizeof(T) bytes,
- *      may not be predicted reliably at large N.
- *   2. The next B k-tile — after finishing k_blk..k_blk+TK the next
- *      tile starts at a cold address.
- *   3. The C write rows — first write to a C row that is no longer in
- *      L1 incurs a load-for-ownership miss.
+ * Measured, the hints are close to neutral on both Apple M4 Max and Zen 5:
+ * those hardware prefetchers already follow these streams (see
+ * docs/benchmarks.md, "Prefetch distance sweep").
  *
  *
  * ============================================================
@@ -43,12 +40,9 @@
  *  Design
  * ============================================================
  *
- * Each wrapper:
- *  1. Has the *exact same* outer tiled loop as the base kernel.
- *  2. Adds __builtin_prefetch before each micro-kernel call.
- *  3. Calls the *same* micro-kernel — no SIMD code duplication.
- *  4. Is declared `= delete` on an unsupported ISA, like its base kernel
- *     (benchmarks report it as SKIPPED).
+ * Each wrapper repeats its base kernel's tiled loop, adds __builtin_prefetch
+ * before each micro-kernel call, and calls the same micro-kernel. Like its
+ * base kernel it is declared `= delete` on an unsupported ISA.
  */
 
 #include "gemm/avx2.hpp"

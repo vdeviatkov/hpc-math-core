@@ -72,121 +72,63 @@ bool cuda_has_tensor_cores() noexcept;
 /** True if any device has compute capability >= 8.0 (Ampere+, cp.async). */
 bool cuda_has_ampere()       noexcept;
 // ---------------------------------------------------------------------------
-// Level 0 -- Naive: one thread per C(i,j), global memory only.
+// The ladder (see the file comment). Each call allocates device buffers,
+// copies A and B in, runs the kernel and copies C back. The Tensor Core
+// levels (4, 6, 7) are float only: fp32 in/out, fp16 compute.
 // ---------------------------------------------------------------------------
 template <typename T>
 void gemm_cuda_naive(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C);
-// ---------------------------------------------------------------------------
-// Level 1 -- Blocked: TILE=16 shared-memory tiling, +1 column padding.
-// ---------------------------------------------------------------------------
 template <typename T>
 void gemm_cuda_blocked(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C);
-// ---------------------------------------------------------------------------
-// Level 2 -- Register tile: 128x128 thread block, each thread owns 8x8 C tile.
-// ---------------------------------------------------------------------------
 template <typename T>
 void gemm_cuda_reg_tile(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C);
-// ---------------------------------------------------------------------------
-// Level 3 -- Double-buffered register tile.
-//   On Ampere+ (sm_80+): uses cp.async for asynchronous global->shared DMA.
-//   On older GPUs: synchronous loads with __syncthreads barriers.
-// ---------------------------------------------------------------------------
 template <typename T>
 void gemm_cuda_double_buf(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C);
-// ---------------------------------------------------------------------------
-// Level 4 -- Tensor Cores via WMMA.
-//   fp32 input -> fp16 MMA -> fp32 accumulate.
-//   Requires sm_70+ (Volta+). Falls back to double_buf on older hardware.
-//   float only: WMMA does not support double precision in this configuration.
-// ---------------------------------------------------------------------------
 void gemm_cuda_wmma(const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C);
-// ---------------------------------------------------------------------------
-// Level 5 -- Vectorized loads (float4/double2) + shared-memory XOR swizzle.
-//   Falls back to gemm_cuda_reg_tile when K or N isn't a multiple of the
-//   vector width (4 for float, 2 for double).
-// ---------------------------------------------------------------------------
 template <typename T>
 void gemm_cuda_vectorized(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C);
-// ---------------------------------------------------------------------------
-// Level 6 -- Raw Tensor Core MMA via mma.sync + ldmatrix (separate from WMMA).
-//   Requires sm_80+; falls back to gemm_cuda_wmma on sm_70-75.
-//   float only, like WMMA.
-// ---------------------------------------------------------------------------
 void gemm_cuda_mma_ldmatrix(const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C);
-// ---------------------------------------------------------------------------
-// Level 7 -- Pipelined WMMA (bigger tiles + cp.async double buffering).
-//   See gemm_kernels.cu's kernel_wmma_pipelined comment for the design.
-//   Requires sm_70+ (Tensor Cores) and M/N exact multiples of 128, K an
-//   exact multiple of 32 (no tail handling); falls back to gemm_cuda_wmma
-//   otherwise. float only.
-// ---------------------------------------------------------------------------
 void gemm_cuda_wmma_pipelined(const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C);
-// Raw-device-pointer, compute-only entry point (void* fp16 buffers -- same
-// toolkit-independence reasoning as the cuBLAS raw-device-pointer
-// functions below). Caller must guarantee M/N multiples of 128, K a
-// multiple of 32; no fallback at this layer (see gemm_kernels.cu).
-void gemm_cuda_wmma_pipelined_device(const void* dA16, const void* dB16, float* dC,
-                                      int M, int K, int N);
+
 // ---------------------------------------------------------------------------
-// Reference -- cuBLAS (vendor-tuned upper bound, not part of the ladder
-// above): the realistic achievable peak on the GPU.
-//
-//   gemm_cuda_cublas<T>   -- plain SGEMM/DGEMM. Ceiling for the FMA-based
-//                            kernels (naive/blocked/reg_tile/double_buf/
-//                            vectorized).
-//   gemm_cuda_cublas_tf32 -- fp32 in/out, TF32 Tensor Core compute
-//                            (10-bit mantissa). float only.
+// Reference -- cuBLAS. gemm_cuda_cublas<T> is SGEMM/DGEMM; the float-only
+// _tf32 and _fp16 variants use Tensor Core compute via cublasGemmEx (_fp16
+// converts the inputs to fp16 internally).
 // ---------------------------------------------------------------------------
 template <typename T>
 void gemm_cuda_cublas(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C);
 void gemm_cuda_cublas_tf32(const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C);
+void gemm_cuda_cublas_fp16(const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C);
+
 // ---------------------------------------------------------------------------
-// Reference -- cuBLAS, raw-device-pointer entry points. Take pre-allocated,
-// already host->device-copied buffers and do nothing but issue the GEMM
-// call -- for measuring peak compute throughput unconfounded by per-call
-// cudaMalloc/PCIe-transfer overhead (which dominates at large N and badly
-// understates achievable throughput in the Matrix<T>-based wrappers
-// above). Same math as gemm_cuda_cublas<float>/gemm_cuda_cublas_tf32; see
-// gemm_kernels.cu for the full rationale.
+// Compute-only entry points: operate on device buffers the caller has already
+// allocated and filled, so a benchmark can time the GEMM alone, without the
+// per-call cudaMalloc and PCIe copies that dominate at large N.
+//
+// fp16 buffers are typed void*, not __half*: this header is also compiled
+// against the CPU-only stub, where <cuda_fp16.h> does not exist. Each such
+// buffer holds `count` (or M*K / K*N) 2-byte halves.
+//
+// gemm_cuda_wmma_pipelined_device has no fallback: M and N must be multiples
+// of 128 and K a multiple of 32.
 // ---------------------------------------------------------------------------
 void gemm_cuda_cublas_device_f32(const float* dA, const float* dB, float* dC,
                                   int M, int K, int N);
 void gemm_cuda_cublas_tf32_device(const float* dA, const float* dB, float* dC,
                                    int M, int K, int N);
-// ---------------------------------------------------------------------------
-// Reference -- cuBLAS, dense FP16 (fp16-in/fp32-accumulate) via
-// cublasGemmEx: the ceiling for the Tensor Core kernels (Levels 4, 6, 7).
-// Roughly 2x TF32's throughput, since TF32 elements occupy twice the bits
-// FP16 does through the same tensor pipe. gemm_cuda_cublas_fp16
-// is the Matrix<float>-based wrapper (converts to fp16 internally, for
-// correctness testing); gemm_cuda_convert_f32_to_f16_device +
-// gemm_cuda_cublas_fp16_device are the raw-device-pointer, compute-only
-// pair (convert once outside the timed region, then call the GEMM
-// repeatedly), matching the TF32/plain cuBLAS pattern above.
-//
-// The fp16 buffers below are typed `void*`, not `__half*`: this header
-// (via gemm_kernels_stub.cpp and every host .cpp that includes it, e.g.
-// bench_gemm_cuda.cpp/test_gemm_cuda.cpp) must still compile on a
-// genuinely CPU-only machine with no CUDA toolkit at all, where
-// <cuda_fp16.h> would not be found -- see gemm_kernels.cu for the same
-// reasoning. Internally these are real __half buffers of `count`/`M*K`
-// elements (2 bytes each); gemm_cuda_convert_f32_to_f16_device is the
-// only thing that needs to write into one.
-// ---------------------------------------------------------------------------
-void gemm_cuda_cublas_fp16(const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C);
 void gemm_cuda_convert_f32_to_f16_device(const float* src, void* dst, int count);
 void gemm_cuda_cublas_fp16_device(const void* dA16, const void* dB16, float* dC,
                                    int M, int K, int N);
-// ---------------------------------------------------------------------------
-// Reference -- generic device-memory helpers (void*/size_t only, same
-// toolkit-independence reasoning as above) so bench_gemm_cuda.cpp's
-// compute-only benchmarks can pre-stage device buffers without including
-// <cuda_runtime.h> itself.
-// ---------------------------------------------------------------------------
+void gemm_cuda_wmma_pipelined_device(const void* dA16, const void* dB16, float* dC,
+                                      int M, int K, int N);
+
+// Device-memory helpers for the compute-only benchmarks, so they need not
+// include <cuda_runtime.h> (also unavailable on CPU-only builds).
 void* gemm_cuda_malloc(std::size_t bytes);
 void  gemm_cuda_free(void* ptr);
 void  gemm_cuda_memcpy_h2d(void* dst, const void* src, std::size_t bytes);
 void  gemm_cuda_device_synchronize();
+
 // ---------------------------------------------------------------------------
 // Explicit instantiation declarations (definitions in gemm_kernels.cu)
 // ---------------------------------------------------------------------------

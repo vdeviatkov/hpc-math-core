@@ -7,35 +7,25 @@
 # Jobs
 # ─────────────────────────────────────────────────────────────────────────────
 #  build-linux-x86   Ubuntu 24.04 · GCC 14 · x86-64
-#                    Flags: -march=native  (AVX2 + FMA on GitHub runners)
-#                    Tests: scalar, AVX2, prefetch; AVX-512/NEON/SVE/CUDA skipped.
+#                    Flags: HPC_MARCH=x86-64-v3 (AVX2 + FMA)
+#                    Tests: scalar, AVX2, prefetch.
 #
-#  build-linux-arm   Ubuntu 24.04 · GCC 14 · aarch64 (native ARM runner)
-#                    Flags: -march=native  (NEON always present on aarch64)
-#                    Tests: scalar, NEON, prefetch; AVX*/SVE/CUDA skipped.
+#  build-linux-arm   Ubuntu 24.04 · GCC 14 · aarch64 · -march=native
+#                    Tests: scalar, NEON, prefetch (plus SVE if the runner
+#                    CPU has it).
 #
 #  build-macos       macOS 14 (Apple M-series) · Apple Clang · arm64
-#                    Flags: -march=native  (NEON always present)
-#                    Tests: same as linux-arm; matches local developer machine.
+#                    Tests: scalar, NEON, prefetch, AMX (Accelerate).
 #
-#  build-cuda-stub   Ubuntu 24.04 hosted runner — NO CUDA toolkit installed.
-#                    CMake finds no nvcc → compiles gemm_kernels_stub.cpp.
-#                    bench_gemm_cuda and hpc_tests_cuda are built and run;
-#                    every CUDA entry prints SKIPPED (cuda_device_count()=0).
-#                    Purpose: proves the stub path compiles and links on CI
-#                    without requiring a GPU or the NVIDIA toolkit.
+#  build-cuda-stub   Ubuntu 24.04, no CUDA toolkit: CMake finds no nvcc and
+#                    builds gemm_kernels_stub.cpp. The CUDA tests and
+#                    benchmarks build and run, and every one must report
+#                    SKIPPED.
 #
-# Caching
-# ─────────────────────────────────────────────────────────────────────────────
-#  ccache reduces repeat compile times from ~3 min → ~20 s on cache hit.
-#  Cache key: runner OS + compiler + source hash.
-#  FetchContent deps (GoogleTest, Google Benchmark) are cached separately
-#  so they are not re-cloned on every run.
+# Caching: ccache (key: OS + compiler + source hash) and the FetchContent
+# sources (GoogleTest, Google Benchmark).
 #
-# Artifacts
-# ─────────────────────────────────────────────────────────────────────────────
-#  CTest XML results are uploaded as job artifacts so test failures are
-#  visible in the GitHub Actions UI without inspecting raw logs.
+# Artifacts: CTest JUnit XML from every job.
 # =============================================================================
 
 name: CI — Build & Test
@@ -98,10 +88,10 @@ jobs:
 
       - name: CMake configure
         run: |
-          # -DHPC_MARCH=x86-64-v3: override -march=native with AVX2+FMA which is
-          # guaranteed on every GitHub-hosted ubuntu-24.04 x86 runner.
-          # Without this, -march=native can emit AVX-512 on Ice Lake / Sapphire
-          # Rapids hosts, causing SIGILL when ctest runs on a Cascade Lake host.
+          # x86-64-v3 (AVX2 + FMA) runs on every GitHub-hosted x86 runner.
+          # -march=native would target whichever CPU the job lands on, and
+          # ccache can hand those objects to a later job on a CPU without
+          # the same extensions (e.g. AVX-512), which would SIGILL.
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=${{ env.CMAKE_BUILD_TYPE }} \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
@@ -239,8 +229,7 @@ jobs:
   # bench_gemm_cuda and hpc_tests_cuda compile against the stub.
   # All CUDA tests/benchmarks print SKIPPED at runtime (cuda_device_count()=0).
   #
-  # Purpose: validate that the no-CUDA code path builds and links correctly
-  # on every push without needing a GPU runner.
+  # Checks that the no-CUDA code path builds and links on every push.
   # =============================================================================
   build-cuda-stub:
     name: "CUDA stub (no toolkit) · Linux x86-64"

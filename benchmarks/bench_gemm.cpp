@@ -1,40 +1,16 @@
 /**
  * @file bench_gemm.cpp
- * @brief Google Benchmark driver for GEMM kernels — float and double.
+ * @brief Google Benchmark driver for the CPU GEMM kernels, f32 and f64.
  *
- * Running the benchmarks
- * ======================
  *   cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
  *   ./build/benchmarks/bench_gemm --benchmark_format=console
  *
- * Precision variants
- * ==================
- * Every kernel is benchmarked for both element types:
+ * Every kernel runs for both element types; f32 fits twice as many elements
+ * per cache line and SIMD register. A square N×N GEMM performs 2·N³ FLOPs,
+ * reported as the GFLOP/s counter: (2·N³) / (time_µs · 1e3).
  *
- *   double (f64) — 8 bytes per element, IEEE-754 64-bit.
- *                  Reference precision; matches most scientific code.
- *   float  (f32) — 4 bytes per element, IEEE-754 32-bit.
- *                  Twice as many elements fit per cache line / SIMD register,
- *                  so a well-vectorised float kernel can deliver up to 2× the
- *                  GFLOP/s of its double equivalent on the same hardware.
- *                  Widely used in ML inference and HFT risk engines where
- *                  ~7 significant decimal digits are sufficient.
- *
- * With -ffast-math + -march=native the compiler is free to:
- *   • Contract multiply-add pairs into FMA instructions.
- *   • Vectorise the inner j-loop using SIMD (SSE/AVX/AVX-512).
- *   • Reorder floating-point operations for better pipeline utilisation.
- *
- * GFLOP/s formula
- * ---------------
- * A square N×N GEMM performs 2*N³ floating-point operations.
- * Convert µs → GFLOP/s:  (2 * N^3) / (time_µs * 1e3)
- * The formula is identical for float and double — only the throughput differs.
- *
- * Allocation note
- * ===============
- * Matrices are allocated *outside* the benchmark loop so that only the
- * GEMM kernel itself is measured.
+ * Matrices are allocated and filled outside the timed loop, so only the
+ * kernel is measured.
  */
 
 #include "gemm/amx.hpp"
@@ -195,9 +171,8 @@ static void BM_Blocked(benchmark::State& state) {
 /**
  * @brief Benchmark gemm_avx2_naive<T> — i-j-k order, SIMD on the k-loop.
  *
- * Expected result: similar GFLOP/s to scalar naive — the column-stride B
- * access pattern is still cache-hostile regardless of SIMD width.
- * This benchmark answers: "does SIMD alone fix bad memory access?"  (No.)
+ * About scalar-naive speed: the column-stride B access stays cache-hostile
+ * regardless of SIMD width.
  */
 template <std::size_t N, typename T = double>
 static void BM_Avx2Naive(benchmark::State& state) {
@@ -209,10 +184,10 @@ static void BM_Avx2Naive(benchmark::State& state) {
 /**
  * @brief Benchmark gemm_avx2_reordered<T> — i-k-j order, SIMD on the j-loop.
  *
- * Measured: within a few percent of scalar gemm_reordered on Zen 5 — the compiler already auto-vectorises the scalar i-k-j loop at -O3 -ffast-math,
- * so explicit intrinsics add little here. B and C are accessed stride-1, so
- * every cache line is fully consumed. No blocking — degrades at large N when
- * C row i is evicted from L1 between k-iterations.
+ * Measured within a few percent of scalar gemm_reordered on Zen 5: the
+ * compiler already auto-vectorises the scalar i-k-j loop at -O3 -ffast-math.
+ * No blocking — degrades at large N when C row i is evicted from L1 between
+ * k-iterations.
  */
 template <std::size_t N, typename T = double>
 static void BM_Avx2Reordered(benchmark::State& state) {
@@ -224,9 +199,8 @@ static void BM_Avx2Reordered(benchmark::State& state) {
 /**
  * @brief Benchmark gemm_avx2_blocked<T> — tiled i-k-j, register-tiled micro-kernel.
  *
- * Expected result: highest GFLOP/s of the three. Outer tiling keeps the
- * working set in L2; the register tile eliminates C reload traffic and
- * drives both FMA ports at near-peak utilisation.
+ * The fastest of the three: outer tiling keeps the working set in L2 and the
+ * register tile removes C reload traffic.
  */
 template <std::size_t N, typename T = double>
 static void BM_Avx2Blocked(benchmark::State& state) {
@@ -345,13 +319,12 @@ BENCHMARK(BM_Avx2Blocked<4096, float>)
 
 // ============================================================================
 // AVX-512 benchmarks
-// On non-AVX-512 targets each kernel transparently delegates to its AVX2
-// equivalent, so these registrations are always safe to include.
+// Reported as SKIPPED on targets without AVX-512.
 // ============================================================================
 
 /**
  * @brief Benchmark gemm_avx512_naive<T> — i-j-k, 512-bit SIMD on k-loop.
- * Expected: GFLOP/s ≈ scalar naive — gather is still cache-miss bound.
+ * About scalar-naive speed: the gather is still cache-miss bound.
  */
 template <std::size_t N, typename T = double>
 static void BM_Avx512Naive(benchmark::State& state) {
@@ -374,7 +347,7 @@ static void BM_Avx512Reordered(benchmark::State& state) {
 
 /**
  * @brief Benchmark gemm_avx512_blocked<T> — tiled i-k-j + 512-bit register tile.
- * Expected: highest GFLOP/s. L2 tiling + 4×32 f32 C tile held in ZMM registers.
+ * L2 tiling + 4×32 f32 C tile held in ZMM registers; the fastest AVX-512 kernel.
  */
 template <std::size_t N, typename T = double>
 static void BM_Avx512Blocked(benchmark::State& state) {
@@ -449,15 +422,12 @@ BENCHMARK(BM_Avx512Blocked<4096, float>)
 
 // ============================================================================
 // NEON benchmarks
-// On x86 targets each kernel transparently delegates to its AVX2 equivalent,
-// so these registrations are always safe to include in the binary.
-// On Apple Silicon / AArch64 the NEON code path is active.
+// Reported as SKIPPED on targets without AArch64 NEON.
 // ============================================================================
 
 /**
  * @brief Benchmark gemm_neon_naive<T> — i-j-k, NEON on k-loop.
- * Expected: GFLOP/s ≈ scalar naive — column-stride gather is still
- * cache-miss bound regardless of SIMD width.
+ * About scalar-naive speed: the column-stride gather is still cache-miss bound.
  */
 template <std::size_t N, typename T = double>
 static void BM_NeonNaive(benchmark::State& state) {
@@ -480,7 +450,7 @@ static void BM_NeonReordered(benchmark::State& state) {
 
 /**
  * @brief Benchmark gemm_neon_blocked<T> — tiled i-k-j + NEON register tile.
- * Expected: highest GFLOP/s on ARM. L2 tiling + 4×16 f32 C tile in Q registers.
+ * L2 tiling + 4×16 f32 C tile in Q registers; the fastest NEON kernel.
  */
 template <std::size_t N, typename T = double>
 static void BM_NeonBlocked(benchmark::State& state) {
@@ -541,9 +511,7 @@ BENCHMARK(BM_NeonBlocked<4096, float>)
 
 // ============================================================================
 // SVE / SVE2 benchmarks
-// On non-SVE targets (x86, Apple Silicon) each kernel delegates to its NEON
-// (or AVX2) equivalent, so these registrations are always safe to include.
-// On SVE hardware (Graviton3, A64FX, Neoverse V1/V2) the VLA SVE path runs.
+// Reported as SKIPPED on targets without SVE (x86, Apple Silicon).
 //
 // The "vl" counter reports the actual SVE vector length at runtime:
 //   128-bit SVE: vl=4 (f32) / vl=2 (f64)
@@ -553,7 +521,7 @@ BENCHMARK(BM_NeonBlocked<4096, float>)
 
 /**
  * @brief Benchmark gemm_sve_naive<T> — i-j-k, SVE on k-loop (VLA gather).
- * Expected: GFLOP/s ≈ scalar naive — column gather is bandwidth-bound.
+ * Not measured (no SVE hardware); the column gather is cache-miss bound.
  */
 template <std::size_t N, typename T = double>
 static void BM_SveNaive(benchmark::State& state) {
@@ -585,7 +553,7 @@ static void BM_SveReordered(benchmark::State& state) {
 
 /**
  * @brief Benchmark gemm_sve_blocked<T> — tiled i-k-j + VLA register tile.
- * Expected: highest GFLOP/s on SVE. Tile width scales with hardware VL.
+ * Not measured (no SVE hardware). Tile width scales with the hardware VL.
  */
 template <std::size_t N, typename T = double>
 static void BM_SveBlocked(benchmark::State& state) {
@@ -649,9 +617,8 @@ BENCHMARK(BM_SveBlocked<4096, float>)->Unit(benchmark::kMicrosecond)->Name("SveB
 // the packed, cache-blocked, all-ZA-tiles outer-product kernel — see
 // src/gemm/sme.hpp. Elsewhere it reports SKIPPED.
 //
-// Single-threaded. The fair library comparison is Accelerate with
-// VECLIB_MAXIMUM_THREADS=1, and
-// KleidiAI (always single-threaded).
+// Single-threaded. The fair library comparisons are Accelerate with
+// VECLIB_MAXIMUM_THREADS=1 and KleidiAI (always single-threaded).
 //
 // The "svl" counter reports the streaming vector length at runtime
 // (elements per ZA-tile row/column, via svcntsw()/svcntsd()):
@@ -751,10 +718,9 @@ BENCHMARK(BM_KleidiAI<4096>)->Unit(benchmark::kMicrosecond)->Name("KleidiAI/f32/
 // ============================================================================
 // Software-prefetch benchmark templates
 //
-// For each SIMD family we benchmark the *blocked* variant only — that is the
-// kernel where prefetch can help.  Naive / Reordered are already either
-// DRAM-bandwidth-bound (cache-miss pattern makes prefetch irrelevant) or
-// fully L1-resident at useful sizes.
+// Only the blocked kernel of each family gets a prefetch variant: the naive
+// kernels are bound by cache misses prefetch can't hide, and the reordered
+// ones stream data the hardware prefetcher already follows.
 //
 // Naming convention:  <Family>BlockedPf<D>/<prec>/N=<size>
 //   D  = prefetch distance in micro-kernel rows (2, 4, 8, 16)
@@ -815,8 +781,7 @@ static void BM_SveBlockedPf(benchmark::State& state) {
 
 // ---------------------------------------------------------------------------
 // Registrations — distance sweep: D2 / D4 / D8 / D16
-// Focus sizes: 512, 1024, 4096 (working sets >= L2; prefetch most visible)
-// Also N=256 to capture L2-boundary behaviour.
+// Sizes: N = 256, 512, 1024.
 //
 // To run only this family:
 //   ./build/benchmarks/bench_gemm --benchmark_filter="BlockedPf"

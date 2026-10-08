@@ -2,126 +2,30 @@
 
 /**
  * @file sve.hpp
- * @brief Three progressive ARM SVE / SVE2 GEMM kernels.
+ * @brief ARM SVE counterparts of the three AVX2/NEON kernels.
  *
- * ============================================================
- *  Why SVE is fundamentally different from NEON and AVX
- * ============================================================
+ * Unlike NEON (128-bit), AVX2 (256-bit) and AVX-512 (512-bit), SVE's vector
+ * length is implementation-defined (128–2048 bits) and read at runtime with
+ * svcntw() (f32 lanes) / svcntd() (f64 lanes). Loop steps are computed from
+ * it, so one binary runs on 128-bit (Neoverse N2/V2, Graviton4), 256-bit
+ * (Neoverse V1, Graviton3) and 512-bit (A64FX) hardware.
  *
- * NEON Q-registers are always 128-bit wide.
- * AVX2 YMM-registers are always 256-bit wide.
- * AVX-512 ZMM-registers are always 512-bit wide.
+ * Every load, store and FMA takes a predicate. svwhilelt_b32(j, N) is
+ * active only for lanes with j + lane < N, so the last partial vector is
+ * handled by the same loop body — there is no scalar tail loop.
  *
- * SVE (Scalable Vector Extension, ARMv8.2-A, 2016) breaks this model:
- *   • The hardware vector length VL is implementation-defined,
- *     ranging from 128 bits to 2048 bits in 128-bit increments.
- *   • VL is NOT known at compile time.  It is queried at runtime via:
- *       svcntw()  — number of 32-bit (float)  elements per vector
- *       svcntd()  — number of 64-bit (double) elements per vector
- *   • A single binary compiled with -march=armv8.2-a+sve runs correctly
- *     on 128-bit SVE (Neoverse N1), 256-bit SVE (Neoverse V1, Fugaku),
- *     512-bit SVE (A64FX), or 2048-bit SVE (future), without recompilation.
- *   • This is "vector-length agnostic" (VLA) programming — the loop step
- *     is computed from svcntw()/svcntd(), not a compile-time constant.
+ *  gemm_sve_naive      i → j → k. B column j is gathered into a buffer and
+ *                      loaded as a vector; svaddv reduces the accumulator.
+ *  gemm_sve_reordered  i → k → j: broadcast A(i,k), FMA against B and C rows.
+ *  gemm_sve_blocked    tiled i → k → j with a 4-row × 2-vector C register
+ *                      tile whose width follows the hardware vector length.
  *
- * SVE2 (ARMv9.0-A, 2021) is a superset of SVE that adds:
- *   • Matrix outer-product instructions (FMOPA / FMOPS) via SME extension —
- *     see gemm/sme.hpp, which builds on this file's streaming-SVE basis
- *     and implements a whole-tile outer-product GEMM instead of per-lane FMA.
- *   • More complex integer/polynomial operations
- *   For GEMM purposes, SVE and SVE2 are equivalent; the kernels below
- *   target SVE (available on Neoverse V1, A64FX, some Cortex-X cores).
+ * Not measured: no SVE hardware was available. Apple Silicon has no
+ * non-streaming SVE (see sme.hpp).
  *
- *
- * ============================================================
- *  SVE predicate registers
- * ============================================================
- *
- * Every SVE load/store/FMA operates under a predicate register (p0..p15)
- * that masks individual lanes.  This elegantly handles loop tails:
- *   instead of a scalar fallback loop, the last iteration uses a predicate
- *   that has 1s only for the remaining elements.
- *
- *   svwhilelt_b32(i, N)  — creates a predicate with 1 in lane k iff (i+k < N)
- *   svptrue_b32()        — all-true predicate (all lanes active)
- *
- * This means SVE kernels have NO scalar tail loops for the j-dimension —
- * the predicated last iteration handles any N cleanly.
- *
- *
- * ============================================================
- *  Key SVE intrinsics used in these kernels
- * ============================================================
- *
- *  svfloat32_t, svfloat64_t   — scalable vector types (VL × f32/f64)
- *  svbool_t                   — predicate vector
- *
- *  svptrue_b32/b64()          — all-lanes-active predicate
- *  svwhilelt_b32/b64(i, N)    — tail predicate: lane k active iff i+k < N
- *
- *  svld1_f32/f64(pg, ptr)     — predicated load
- *  svst1_f32/f64(pg, ptr, v)  — predicated store
- *  svdup_n_f32/f64(s)         — broadcast scalar to all lanes
- *  svmla_f32/f64_x(pg, a, b, c) — a = a + b * c  (FMA, pg-controlled)
- *
- *  svcntw() / svcntd()        — runtime VL query (elements per vector)
- *
- *  svaddv_f32/f64(pg, v)      — horizontal reduce → scalar (for naive kernel)
- *
- *
- * ============================================================
- *  Three kernels — same pedagogical structure as AVX2 / NEON
- * ============================================================
- *
- *  Kernel 1 — gemm_sve_naive
- *    Loop order: i → j → k
- *    SIMD on k-loop: accumulate A row × B column using VL-wide FMA.
- *    B access: stride-N column gather — fill a vl-element heap buffer
- *    (B(k,j)..B(k+vl-1,j)) then load as a contiguous SVE vector.
- *    No scalar tail: svaddv reduces the final accumulator to a scalar.
- *    Expected: GFLOP/s ≈ scalar naive (bandwidth-bound from gather).
- *
- *  Kernel 2 — gemm_sve_reordered
- *    Loop order: i → k → j
- *    SIMD on j-loop: broadcast A(i,k), VL-wide FMA against B row / C row.
- *    No scalar j-tail: svwhilelt predicate handles remainder lanes.
- *    Not measured (no SVE hardware available). On every measured family the
- *    explicit-SIMD reordered kernel performs about the same as the scalar
- *    one, which the compiler auto-vectorises, so a large gain is unlikely.
- *
- *  Kernel 3 — gemm_sve_blocked
- *    Loop order: tiled i → k → j
- *    Outer L2 blocking + inner VLA register tile.
- *    Unlike NEON/AVX the tile width (kJStep) is computed at runtime
- *    from svcntw()/svcntd(), so the micro-kernel automatically scales
- *    with the hardware VL.
- *    Expected: highest GFLOP/s on SVE hardware.
- *
- *
- * ============================================================
- *  Hardware availability
- * ============================================================
- *
- * SVE is available on:
- *   AWS Graviton3/4 (256-bit, Neoverse V1/V2)
- *   Fujitsu A64FX   (512-bit, used in Fugaku supercomputer)
- *   ARM Neoverse N2 (256-bit)
- *   Some Cortex-X3/X4 mobile cores (128-bit)
- *   NOT on: Apple Silicon (M-series uses NEON only, not SVE)
- *   NOT on: x86 (Intel/AMD)
- *
- * The header detects __ARM_FEATURE_SVE at compile time (HPC_HAS_SVE in hpc/isa.hpp).
- * If the ISA is absent this header declares all three kernels `= delete`
- * (see hpc/isa.hpp): calling them is a compile-time error, never a silent
- * substitution of a slower kernel under the same name.
- *
- * To compile with SVE on GCC/Clang targeting Graviton3:
- *   -march=armv8.2-a+sve   (explicit)
- *   -march=neoverse-v1     (CPU-specific, enables SVE automatically)
- *   -march=native          (auto-detects on the build machine)
- *
- * To compile with SVE2:
- *   -march=armv9-a+sve2
+ * HPC_HAS_SVE (hpc/isa.hpp) follows __ARM_FEATURE_SVE, set by e.g.
+ * -march=armv8.2-a+sve, -mcpu=neoverse-v1, or -march=native on SVE hardware.
+ * Where it is 0 the kernels are declared `= delete`.
  */
 
 #include "hpc/isa.hpp"
@@ -142,10 +46,8 @@ namespace hpc::gemm {
 // ============================================================================
 // SVE tile constants
 // ============================================================================
-// Unlike NEON/AVX, the j-step width is NOT a compile-time constant —
-// it depends on svcntw()/svcntd() which vary per CPU.  The outer blocking
-// tile dimensions (M, K) are fixed at values that work well across all
-// known SVE implementations (128-bit through 512-bit).
+// The j-step is svcntw()/svcntd() × kSveRegCols, read at runtime; only the
+// outer blocking tile sizes are compile-time constants.
 
 inline constexpr std::size_t kSveTileM = 64;   // outer i-tile (rows of A / C)
 inline constexpr std::size_t kSveTileK = 256;  // outer k-tile (contraction width)
@@ -155,8 +57,8 @@ inline constexpr std::size_t kSveTileN = 512;  // outer j-tile (cols of B / C)
                                                // 64 vectors — well within L1 TLB.
 
 // Number of C rows accumulated simultaneously in the blocked micro-kernel.
-// Fixed at 4: 4 rows × 2 vectors × VL floats each.  With VL=256b this is
-// 4 × 2 × 8 = 64 f32 = 256 B of C held in registers — same as AVX2 blocked.
+// 4 rows × 2 vectors; at 256-bit VL that is 4 × 16 f32 (256 B), the same
+// tile as AVX2 blocked.
 inline constexpr std::size_t kSveRegRows = 4;
 // Number of SVE vectors per C row in the micro-kernel.
 // 2 vectors × VL elements = 2*svcntw() f32 or 2*svcntd() f64 per row.
@@ -173,17 +75,12 @@ inline constexpr std::size_t kSveRegCols = 2;
  *
  * Register tile: 4 rows × 2 SVE vectors = 4 × (2 * svcntw()) f32.
  *
- * On 256-bit SVE (VL=8 f32): tile = 4 × 16 f32 = 64 B  (same as AVX2)
- * On 512-bit SVE (VL=16 f32): tile = 4 × 32 f32 = 128 B
- * On 128-bit SVE (VL=4 f32): tile = 4 × 8 f32  = 32 B
+ * 128-bit SVE: 4 × 8 f32 (128 B); 256-bit: 4 × 16 (256 B); 512-bit: 4 × 32 (512 B).
  *
- * The predicate pg is all-true for full-width iterations; the caller passes
- * svptrue_b32() for all tiles except the j-tail where svwhilelt_b32 is used.
- *
- * Instruction note: svmla_f32_x(pg, acc, a, b)
- *   acc = acc + a * b  (FMA, predicated by pg, "don't care" for inactive lanes)
- *   Using _x (don't-care) rather than _z (zero) or _m (merge) because
- *   inactive lanes hold stale accumulator values that we don't want zeroed.
+ * pg0/pg1 are all-true except in the j-tail, where they come from
+ * svwhilelt_b32. svmla_f32_x leaves inactive lanes undefined; that is safe
+ * because the final stores use the same predicates, so those lanes are
+ * never written to C.
  *
  * @param a      A(i, k_blk) — row stride lda
  * @param b0     B(k_blk, j) — first SVE-width block
@@ -293,23 +190,10 @@ inline void sve_micro_f64_4x2v(const double* __restrict__ a, const double* __res
 /**
  * @brief SVE GEMM with naive i-j-k loop order.
  *
- * Direct SVE counterpart of gemm_neon_naive / gemm_avx2_naive.
- *
- * Loop structure:  for i: for j: for k:  C(i,j) += A(i,k) * B(k,j)
- *
- * SVE specifics vs NEON naive:
- *   • Inner k-loop step = svcntw() f32 / svcntd() f64 (runtime VL).
- *   • B column access B(k..k+VL-1, j) is stride-ldb gather — cache-hostile.
- *     On SVE this is done with a manual scalar load into a VLA-allocated
- *     stack array, then svld1.  (SVE does have gather-load instructions
- *     via svld1_gather_index, but the memory access pattern is identical —
- *     each element is a cache miss at large N.)
- *   • Final tail: svaddv_f32/f64 reduces the accumulated vector to a scalar
- *     in a single instruction.  No scalar fallback needed.
- *
- * Expected result: GFLOP/s ≈ scalar naive — gather saturates bandwidth.
- * Pedagogical purpose: confirms that VLA makes no difference for
- * cache-hostile access patterns (same lesson as AVX2/NEON naive).
+ * Counterpart of gemm_neon_naive / gemm_avx2_naive with a runtime k-step of
+ * svcntw()/svcntd(). B(k..k+VL-1, j) is gathered with stride ldb into a
+ * std::vector buffer and loaded with svld1 (svld1_gather_index would touch
+ * the same cache lines). svaddv reduces the accumulator at the end.
  */
 #if !HPC_HAS_SVE
 template <typename T>
@@ -331,8 +215,8 @@ void gemm_sve_naive(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
 
     if constexpr (sizeof(T) == 4) {
         const std::size_t vl = svcntw();  // elements per SVE vector (runtime)
-        // VLA stack buffer: vl floats for gathering one B column segment.
-        // Using std::vector avoids a VLA (which is a GCC extension, not C++20).
+        // Buffer for one gathered B column segment (std::vector: VLAs are not
+        // standard C++).
         std::vector<float> b_col(vl);
         for (std::size_t i = 0; i < M; ++i) {
             for (std::size_t j = 0; j < N; ++j) {
@@ -388,17 +272,9 @@ void gemm_sve_naive(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
 /**
  * @brief SVE GEMM with cache-friendly i-k-j loop order — vector-length agnostic.
  *
- * Direct SVE counterpart of gemm_neon_reordered / gemm_avx2_reordered.
- *
- * Loop structure:  for i: for k: a_broad = A(i,k);  for j: C(i,j) += a_broad * B(k,j)
- *
- * SVE specifics vs NEON reordered:
- *   • j-loop step = svcntw() / svcntd() — determined at runtime.
- *   • No scalar j-tail: the final (partial) iteration uses
- *     svwhilelt_b32(j, N) which produces a predicate with 1s only for
- *     in-bounds lanes.  svld1 / svmla / svst1 with this predicate handle
- *     the tail exactly, without any scalar fallback code.
- *   • This is the key SVE elegance: one predicated loop covers all N.
+ * Counterpart of gemm_neon_reordered / gemm_avx2_reordered. The j-step is
+ * svcntw()/svcntd(); the last partial vector uses an svwhilelt_b32(j, N)
+ * predicate, so one loop covers any N.
  *
  * Not measured (no SVE hardware available). On every measured family the
  * explicit-SIMD reordered kernel performs about the same as the
@@ -471,29 +347,14 @@ void gemm_sve_reordered(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
 /**
  * @brief SVE GEMM with cache-blocking and VLA register-tiled micro-kernel.
  *
- * Direct SVE counterpart of gemm_neon_blocked / gemm_avx2_blocked.
+ * Counterpart of gemm_neon_blocked / gemm_avx2_blocked: i-k-j order, 3-level
+ * tiling (kSveTileM × kSveTileK × kSveTileN), and a C tile of 4 rows ×
+ * kSveRegCols vectors held in registers for a whole k-tile. Its width,
+ * kSveRegCols × svcntw()/svcntd(), follows the hardware vector length; the
+ * j-tail is handled by predicates inside the micro-kernel.
  *
- * Combines all three techniques with SVE-specific adaptations:
- *   1. i-k-j loop order      (stride-1 B and C access)
- *   2. 3-level L2 cache tiling (kSveTileM × kSveTileK × kSveTileN)
- *   3. VLA register tile:
- *      - Tile width = kSveRegCols × svcntw/d() — scales with hardware VL.
- *      - 4 rows × 2 SVE vectors of C held in scalable registers for the
- *        full k-tile, eliminating C load/store traffic during k-iteration.
- *      - j-tail handled entirely by predicates in the micro-kernel —
- *        no separate scalar tail loop.
- *
- * Working set (256-bit SVE, f32, default tile sizes):
- *   A tile: 64 × 256 × 4 B  =  64 KB  (L2 resident)
- *   B tile: 256 × 512 × 4 B = 512 KB  (L2 resident on Neoverse V1: 1 MB L2)
- *   C tile: 4 rows in registers + 64 × 512 × 4 B = 128 KB streamed
- *
- * Portability: because kJStep = kSveRegCols × svcntw/d() is computed at
- * runtime, the same binary delivers correct and efficient code on:
- *   128-bit SVE (kJStep = 2×4  =  8 f32)
- *   256-bit SVE (kJStep = 2×8  = 16 f32)  — Graviton3, Neoverse V1
- *   512-bit SVE (kJStep = 2×16 = 32 f32)  — A64FX (Fugaku)
- *   2048-bit SVE(kJStep = 2×64 =128 f32)  — future SVE2 / SME hardware
+ * Tile footprints (f32): A 64 KB, B 512 KB (L2-resident on Neoverse V1's
+ * 1 MB L2), C 128 KB streamed.
  */
 #if !HPC_HAS_SVE
 template <typename T>
@@ -596,13 +457,5 @@ void gemm_sve_blocked(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
     }
 }
 #endif  // HPC_HAS_SVE
-
-// ---------------------------------------------------------------------------
-// Convenience alias: gemm_sve → gemm_sve_blocked
-// ---------------------------------------------------------------------------
-template <typename T>
-inline void gemm_sve(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
-    gemm_sve_blocked(A, B, C);
-}
 
 }  // namespace hpc::gemm

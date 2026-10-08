@@ -2,73 +2,23 @@
 
 /**
  * @file avx2.hpp
- * @brief Three progressive AVX2 + FMA GEMM kernels.
+ * @brief Three AVX2 + FMA GEMM kernels, one optimisation step apart.
  *
- * ============================================================
- *  Design philosophy: isolate one optimisation per kernel
- * ============================================================
+ *  gemm_avx2_naive      i → j → k, 8 f32 / 4 f64 per FMA on the k-loop. B is
+ *                       read down a column (stride N), so cache misses cap it
+ *                       near scalar-naive speed.
+ *  gemm_avx2_reordered  i → k → j: broadcast A(i,k), FMA against stride-1
+ *                       B and C rows. About the same as scalar
+ *                       gemm_reordered, which the compiler auto-vectorises.
+ *  gemm_avx2_blocked    tiled i → k → j with a 4×16 f32 / 4×8 f64 C tile
+ *                       held in YMM registers for a whole k-tile.
  *
- * Each kernel adds exactly one new technique over the previous, so the
- * benchmark numbers directly answer the question "how much does *this*
- * technique contribute?"
+ * 16 × 256-bit YMM registers (8 f32 / 4 f64). With 2 FMA ports:
+ * 2 × 8 lanes × 2 FLOP = 32 FLOP/cycle f32, 16 f64.
  *
- *  Kernel 1 — gemm_avx2_naive
- *    Loop order: i → j → k  (same as scalar naive)
- *    New technique: widen the inner k-loop to process 8 f32 / 4 f64 elements
- *                   per FMA using a single YMM accumulator per (i,j) pair.
- *    Remaining bottleneck: column-stride access to B is cache-hostile (same
- *    as scalar naive), so the 8-wide f32 SIMD gives little speedup.
- *
- *  Kernel 2 — gemm_avx2_reordered
- *    Loop order: i → k → j  (same as scalar reordered)
- *    New technique: broadcast A(i,k) into a YMM register and FMA it against
- *                   SIMD-width-consecutive elements of B row k and C row i.
- *    Why better than naive: B and C are now accessed stride-1 across j, so
- *    every cache line loaded is fully consumed.  This is the AVX2 equivalent
- *    of the scalar reordered kernel and the baseline for explicit SIMD.
- *
- *  Kernel 3 — gemm_avx2_blocked
- *    Loop order: tiled i → k → j  (same as scalar blocked)
- *    New technique: outer 3-level tiling constrains the working set to L2;
- *                   inner micro-kernel holds a 4×16 f32 (or 4×8 f64) tile
- *                   of C entirely in YMM registers for the full k-tile,
- *                   eliminating all store-reload round trips.
- *    Versus reordered: at large N, C row i is evicted from L1 between
- *    k-iterations; keeping the C tile in registers removes that traffic.
- *
- *
- * ============================================================
- *  AVX2 register file and FMA throughput
- * ============================================================
- *
- * AVX2: 16 × 256-bit YMM registers.
- *   f32: 8 floats  per YMM  (32 B)
- *   f64: 4 doubles per YMM  (32 B)
- *
- * FMA: vfmadd231ps / vfmadd231pd
- *   acc = acc + a * b   (2 FLOP, latency 5 cyc, throughput 0.5 cyc on Skylake)
- *
- * Theoretical peak (single core, 3 GHz):
- *   f32: 2 ports × 8 lanes × 2 FLOP = 32 FLOP/cycle → 96 GFLOP/s
- *   f64: 2 ports × 4 lanes × 2 FLOP = 16 FLOP/cycle → 48 GFLOP/s
- *
- *
- * ============================================================
- *  Portability guard
- * ============================================================
- *
- * AVX2 + FMA is available on:
- *   Intel: Haswell (2013) and later
- *   AMD:   Zen 1 (2017) and later
- *   NOT:   Apple Silicon (M-series is ARM NEON, not x86 AVX)
- *
- * The header detects __AVX2__ at compile time (HPC_HAS_AVX2 in hpc/isa.hpp).
- * If the ISA is absent this header declares all three kernels `= delete`
- * (see hpc/isa.hpp): calling them is a compile-time error, never a silent
- * substitution of a slower kernel under the same name.
- *
- * To enable explicitly without -march=native:
- *   cmake -DCMAKE_CXX_FLAGS="-mavx2 -mfma" ...
+ * Available on Intel Haswell+ and AMD Zen+; not on Apple Silicon.
+ * HPC_HAS_AVX2 (hpc/isa.hpp) follows __AVX2__; where it is 0 the kernels
+ * are declared `= delete`.
  */
 
 #include "hpc/isa.hpp"
@@ -191,21 +141,8 @@ inline void avx2_micro_f64_4x8(const double* __restrict__ a, const double* __res
 /**
  * @brief AVX2 GEMM with naive i-j-k loop order.
  *
- * Loop structure (identical to scalar gemm_naive):
- *   for i: for j: for k:  C(i,j) += A(i,k) * B(k,j)
- *
- * AVX2 change vs scalar naive:
- *   The inner k-loop is widened to process SIMD_W elements simultaneously.
- *   For f32: one YMM holds A(i, k..k+7) and B(k..k+7, j); the 8 products
- *   are accumulated into a YMM register and reduced to a scalar at the end.
- *
- *   for i:
- *     for j:
- *       __m256 acc = 0
- *       for k in steps of 8:
- *         acc += A_row_i[k..k+7] * B_col_j[k..k+7]   // gather! B is column-stride
- *       C(i,j) += hsum(acc) + scalar_tail
- *
+ * The k-loop is 8 wide (f32): a YMM holds A(i, k..k+7) and B(k..k+7, j),
+ * the products accumulate in a YMM and are summed horizontally at the end.
  * B(k, j) with fixed j and varying k is a column of B: consecutive k are N
  * elements apart, so each B element sits on a different cache line and has
  * to be gathered. SIMD width doesn't change that; GFLOP/s stays close to
@@ -297,20 +234,6 @@ void gemm_avx2_naive(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
 /**
  * @brief AVX2 GEMM with cache-friendly i-k-j loop order.
  *
- * Loop structure (identical to scalar gemm_reordered):
- *   for i: for k: a_ik = A(i,k);  for j:  C(i,j) += a_ik * B(k,j)
- *
- * AVX2 change vs scalar reordered:
- *   The inner j-loop is widened to process SIMD_W consecutive j-elements
- *   per FMA. A(i,k) is broadcast to all lanes; B(k, j..j+W-1) and
- *   C(i, j..j+W-1) are loaded/stored sequentially (stride-1).
- *
- *   for i:
- *     for k:
- *       a_broad = broadcast(A(i,k))          // scalar → all 8/4 lanes
- *       for j in steps of W:
- *         C[j..j+W] = FMA(a_broad, B[j..j+W], C[j..j+W])
- *
  * A(i,k) is broadcast once per k; B(k, j..) and C(i, j..) are read with
  * stride 1, so no gather is needed and every cache line is fully used. No
  * blocking: it degrades at large N when C row i no longer fits in L1.
@@ -380,17 +303,10 @@ void gemm_avx2_reordered(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
 /**
  * @brief AVX2 GEMM with cache-blocking and register-tiled micro-kernel.
  *
- * This is the full implementation combining all three techniques:
- *   1. i-k-j loop order      (from gemm_reordered)
- *   2. 3-level cache blocking (from gemm_blocked)
- *   3. Register tile          (new: keeps a 4-row × 2-vector C sub-tile in
- *                              YMM registers for the entire k-tile, eliminating
- *                              L1 load/store round trips for the C accumulators)
- *
- * Micro-kernel register allocation (f32, 14 of 16 YMM):
- *   ymm0..ymm7   — 4 rows × 2 YMM = 8 C accumulators
- *   ymm8..ymm11  — 4 × broadcast(A(i+r, k))
- *   ymm12..ymm13 — 2 × B(k, j..j+15)
+ * i-k-j order and 3-level tiling (as in gemm_blocked), plus a register tile:
+ * 4 rows × 2 YMM of C stay in registers for a whole k-tile. Per k step the
+ * micro-kernel keeps 8 accumulators, 4 broadcasts and 2 B vectors live
+ * (14 of 16 YMM).
  *
  * Versus gemm_avx2_reordered at large N: there, C row i (N×sizeof(T)) can
  * fall out of L1 between k-iterations. Here the 4×16 f32 C sub-tile stays in
@@ -480,13 +396,5 @@ void gemm_avx2_blocked(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
     }
 }
 #endif  // HPC_HAS_AVX2
-
-// ---------------------------------------------------------------------------
-// Convenience alias: gemm_avx2 → gemm_avx2_blocked  (backward compat)
-// ---------------------------------------------------------------------------
-template <typename T>
-inline void gemm_avx2(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
-    gemm_avx2_blocked(A, B, C);
-}
 
 }  // namespace hpc::gemm

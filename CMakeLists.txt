@@ -2,8 +2,7 @@ cmake_minimum_required(VERSION 3.25)
 project(hpc-math-core LANGUAGES CXX)
 
 # ---------------------------------------------------------------------------
-# C++20 — required for std::span, concepts, and other modern facilities used
-# in later stages of this benchmark suite.
+# C++20
 # ---------------------------------------------------------------------------
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -40,16 +39,10 @@ endif()
 # -march=native     : Emit instructions for the exact CPU this binary is built
 #                     on (AVX2, FMA, BMI2, …). The resulting binary is NOT
 #                     portable to other machines.
-# -ffast-math       : Allows the compiler to reorder, contract and approximate
-#                     floating-point operations in ways that violate strict
-#                     IEEE-754. Enables:
-#                       -fno-signed-zeros, -fno-trapping-math,
-#                       -fassociative-math, -freciprocal-math,
-#                       -ffinite-math-only (assumes no NaN / Inf).
-#                     ⚠ Do NOT use in production code that relies on exact
-#                     FP semantics (e.g. compensated summation, NaN detection).
-#                     For benchmarking raw throughput it is safe and often
-#                     unlocks FMA contraction and vectoriser cost-models.
+# -ffast-math       : Allows reassociation, FMA contraction and reciprocal
+#                     approximations, and assumes no NaN/Inf. Lets the
+#                     compiler vectorise the scalar reduction loops; not
+#                     suitable for code that needs strict IEEE-754 semantics.
 # -funroll-loops    : Unroll loops whose trip count is known at compile time.
 #                     Reduces loop-overhead instructions; pairs well with SIMD.
 # -fno-omit-frame-pointer : Keep frame pointers so that profilers (perf,
@@ -64,11 +57,10 @@ endif()
 # ---------------------------------------------------------------------------
 # -march target selection
 #
-# Default: -march=native — emit instructions for the exact build CPU.
-#   Maximises performance locally and in CI on self-hosted runners.
-#   ⚠ Binary is NOT portable to other CPUs.
+# Default: -march=native — instructions for the build CPU; the binary may not
+# run on other CPUs.
 #
-# Override for CI / cross-compilation:
+# Overrides:
 #   cmake -DHPC_MARCH=x86-64-v3 ..   → AVX2 + FMA (safe on all GitHub x86 runners)
 #   cmake -DHPC_MARCH=armv8-a+simd .. → baseline AArch64
 #   cmake -DHPC_MARCH=      ..       → empty string disables the flag entirely
@@ -80,37 +72,24 @@ set(HPC_MARCH "native" CACHE STRING "Value passed to -march=. Set to x86-64-v3 f
 #
 # Enable with:  cmake -DHPC_ENABLE_SME=ON ..
 #
-# ⚠ Unlike every other ISA flag in this file, a successful *compile* does
-# NOT imply SME will work: on Apple Silicon (M4/M4 Pro/M4 Max, the only
-# broadly available SME2 hardware as of this writing), the generic
-# "-march=armv9-a+sme2" flag produces a binary that SIGILLs on its very
-# first instruction inside the streaming region. Clang emits a CNTD
-# instruction outside streaming mode to size the ZA-save prologue buffer;
-# CNTD is an ordinary (non-streaming) SVE instruction, and Apple Silicon
-# implements NO non-streaming SVE unit — only Streaming SVE via SME. See
-# src/gemm/sme.hpp for the full writeup. "-mcpu=apple-m4" sidesteps this by
-# generating a prologue that doesn't need an outside-streaming SVE
-# instruction. Because this failure mode is a runtime SIGILL rather than a
-# compile error, we compile AND RUN a tiny SME probe for each candidate
-# flag at configure time and use the first one that actually executes.
+# A successful compile does not mean SME works. On Apple Silicon,
+# -march=armv9-a+sme2 builds a binary that SIGILLs on the first instruction
+# of a streaming function: Clang sizes the ZA save buffer with CNTD, a
+# non-streaming SVE instruction, and Apple Silicon has no non-streaming SVE.
+# -mcpu=apple-m4 avoids it. So each candidate flag below is tried by compiling
+# and running a small SME probe, and the first that runs is used.
 #
-# This block MUST run before -march=${HPC_MARCH} is baked into
-# add_compile_options() below: passing both "-march=native" AND
-# "-mcpu=apple-m4" to Apple Clang silently drops the SME/SVE target
-# features that "-mcpu=apple-m4" alone provides (verified empirically —
-# "-march=native" has no notion of SME and clobbers it when combined). So
-# when an "-mcpu=..." candidate wins, HPC_MARCH is forced empty here,
-# disabling the plain -march flag entirely in favour of the CPU-name flag
-# (which already implies the full baseline architecture).
+# This must run before -march=${HPC_MARCH} is added: Apple Clang given both
+# -march=native and -mcpu=apple-m4 drops the SME features, so when an -mcpu
+# candidate wins, HPC_MARCH is cleared.
 # ---------------------------------------------------------------------------
 option(HPC_ENABLE_SME "Enable ARM SME (Scalable Matrix Extension) instructions" OFF)
 
 if(HPC_ENABLE_SME)
     include(CheckCXXSourceRuns)
 
-    # Minimal probe: zero ZA, one FMOPA outer-product accumulate, one
-    # horizontal-slice store out of ZA. Exercises exactly the instruction
-    # sequence gemm_sme relies on (see src/gemm/sme.hpp).
+    # Probe: zero ZA, one FMOPA, one horizontal-slice store from ZA — the
+    # instruction types gemm_sme uses.
     set(HPC_SME_PROBE_SRC [[
 #include <arm_sme.h>
 __arm_locally_streaming __arm_new("za")
@@ -145,7 +124,7 @@ int main() { probe(); return 0; }
             endif()
             add_compile_options($<$<COMPILE_LANGUAGE:CXX>:${FLAG}>)
             set(_HPC_SME_FOUND TRUE)
-            message(STATUS "SME enabled — verified working (compiled AND executed) with flag '${FLAG}'")
+            message(STATUS "SME enabled — the probe compiled and ran with flag '${FLAG}'")
         endif()
     endforeach()
 
@@ -209,9 +188,9 @@ endif()
 #
 # Enable with:  cmake -DHPC_ENABLE_AVX512=ON ..
 #
-# ⚠ WARNING: Only enable on CPUs that support AVX-512 (Intel Skylake-SP,
-# Ice Lake, Sapphire Rapids; AMD Zen 4+). Using these flags on unsupported
-# hardware will cause an Illegal Instruction (SIGILL) crash at runtime.
+# Needed only for MSVC or a non-native HPC_MARCH: -march=native already
+# enables AVX-512 on a capable CPU. On a CPU without AVX-512 the resulting
+# binary dies with SIGILL.
 # ---------------------------------------------------------------------------
 option(HPC_ENABLE_AVX512 "Enable AVX-512 instruction set extensions" OFF)
 
@@ -245,18 +224,10 @@ endif()
 #
 # Enable with:  cmake -DHPC_ENABLE_AMX=ON ..   (defaults to ON on Apple platforms)
 #
-# Apple Silicon has its own AMX (Apple Matrix coprocessor) — architecturally
-# unrelated to Intel's AMX despite the shared acronym, and NOT exposed via
-# any public ACLE-style intrinsic header the way ARM SME is (see
-# HPC_ENABLE_SME above). Apple does not document raw AMX instructions for
-# third-party use. The one sanctioned, stable way to benefit from it is
-# Accelerate.framework's BLAS (cblas_sgemm / cblas_dgemm) — Apple's own
-# highly-tuned implementation, understood (Apple does not publish which
-# execution unit it targets) to dispatch to the AMX coprocessor blocks
-# on Apple Silicon. Unlike Intel AMX, this requires no special compiler
-# flags, no runtime CPUID/permission dance,
-# and no risk of SIGILL — Accelerate.framework ships in every macOS SDK,
-# so this option is safe to default ON.
+# gemm_amx calls Accelerate's BLAS, the supported route to Apple's AMX
+# coprocessor (see src/gemm/amx.hpp). It needs no special compiler flags and
+# carries no SIGILL risk — Accelerate ships in every macOS SDK — so it is on
+# by default on Apple platforms.
 # ---------------------------------------------------------------------------
 option(HPC_ENABLE_AMX "Enable Apple AMX GEMM path via Accelerate.framework (Apple platforms only)" ${APPLE})
 
@@ -290,9 +261,7 @@ endif()
 # ---------------------------------------------------------------------------
 # Dependencies via FetchContent
 #
-# Both Google Benchmark and Google Test are pinned to specific release tags
-# to ensure reproducible builds. Update tags deliberately rather than using
-# HEAD or LATEST.
+# Pinned to release tags for reproducible builds.
 # ---------------------------------------------------------------------------
 include(FetchContent)
 
@@ -322,10 +291,8 @@ FetchContent_MakeAvailable(benchmark)
 # ---------------------------------------------------------------------------
 # Core library target
 #
-# "hpc_math_core" is a header-only INTERFACE library for now.  All public
-# headers live under include/ and are exposed via target_include_directories.
-# Switch to STATIC when .cpp translation units are added (e.g. explicit
-# SIMD template instantiations).
+# hpc_math_core is a header-only INTERFACE library: it carries the include
+# paths and the optional Accelerate / KleidiAI link dependencies.
 # ---------------------------------------------------------------------------
 add_library(hpc_math_core INTERFACE)
 target_include_directories(hpc_math_core INTERFACE
