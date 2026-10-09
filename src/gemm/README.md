@@ -789,10 +789,10 @@ Each loaded vector now feeds 2 (f32) or 2–4 (f64) FMOPAs instead of one.
 
 2. A and B both packed, with GotoBLAS cache blocking.
 `jc (Nc) → pc (Kc) → pack B panel → ic (Mc) → pack A block → jr (nr) → ir (mr) → k`.
-Inside the k loop both operands are now unit-stride streams. Before, each k
-read one B row `ldb` elements away from the last, which is why the old
-kernels fell apart at N ≥ 2048. Partial C sums across `pc` blocks are
-carried by loading C into ZA (`svld1_hor_za32/64`) before the k loop.
+Inside the k loop both operands are unit-stride streams (see
+[Why A and B are packed](#why-a-and-b-are-packed) below). Partial C sums
+across `pc` blocks are carried by loading C into ZA (`svld1_hor_za32/64`)
+before the k loop.
 The block sizes (`kSmeMc=128`, `kSmeKc=1024`, `kSmeNc=4096`) came from a
 sweep on M4 Max. Large Kc and Nc won because they amortise both the C
 reloads and the A repacking. On M4 the SME unit is shared by a P-core
@@ -818,6 +818,58 @@ f64. The only shape difference is `kCols<T>` (2 or 4 tile columns); one
 helpers (`mopa`, `move_tile`, `move_column`, `move_c`) hide the
 `za32`/`za64` intrinsic split. A 2×2 layout for f64 as well (4 of 8 tiles)
 would remove even that branch, but measured 9% slower at N=4096.
+
+### Why A and B are packed
+
+The two operands are packed for different reasons.
+
+A has to be packed. Each k step, FMOPA needs a column of A —
+`A(i0..i0+31, k)` — as one vector. A is row-major, so those 32 values are K
+elements apart in memory. Streaming mode forbids gather loads, and scalar
+loads in streaming mode are slow, so the driver transposes A into strips
+where each k's column is contiguous (`pack_a`). Each strip is then reused
+for every B strip in the panel; with the NEON transpose, packing A costs
+about 5% of the runtime at N=2048.
+
+B is packed to keep it cached. A row segment `B(k, j..j+31)` is already
+contiguous, so FMOPA could read B in place. But consecutive k rows are then
+N × sizeof(T) bytes apart, and one B strip (kc × nr = 1024 × 32 floats =
+128 KB) is reused by every A strip of the block — 4 per Mc block, and again
+for each of the M/Mc blocks. Measured with B read in place (same kernel,
+only the B source changed; M4 Max, f32, GFLOP/s):
+
+| N | stride between B rows | packed B | B read in place |
+|---|---|---|---|
+| 512 | 2 KB | 1,276 | 1,350 (+6%) |
+| 1024 | 4 KB | 1,404 | 1,372 (−2%) |
+| 2016 | 8,064 B | 1,528 | 1,525 (same) |
+| 2048 | 8 KB = 2¹³ B | 1,427 | 1,255 (−12%) |
+| 4000 | 16,000 B | 1,367 | 1,265 (−7%) |
+| 4096 | 16 KB = 2¹⁴ B | 1,316 | 589 (−55%) |
+
+N=4000 and N=4096 touch almost the same number of memory pages, yet lose 7%
+and 55%. The large loss comes from the power-of-two stride. A cache maps
+each address to a set using bits in the middle of the address, and each set
+holds only a few lines (its ways). Adding 2¹⁴ to an address never changes
+its low 14 bits, so at N=4096 all 1,024 rows of the strip fall into the
+same set or a few sets, and only a few of them can be cached at once — the
+128 KB strip keeps evicting itself, although it is far smaller than the
+cache. At N=4000 the stride shifts the set bits on every row and the strip
+fits; the remaining −7% is consistent with the cost of touching ~1,000
+different 16 KB pages instead of 8 (not measured directly).
+
+```
+B read in place, N=4096:              packed B:
+row k → base + k·16 KB                row k → base + k·128 B
+        same cache set every row              next cache set every row
+        only a few rows fit at once           the whole strip fits
+```
+
+Packing copies the strip into one contiguous buffer, so its rows fill
+consecutive cache sets whatever N is. The copy is not free: at N=512, where
+the cache holds everything anyway, reading in place is 6% faster, and at
+N=1024 the two are even. Packing pays off at large N, and most at
+power-of-two N.
 
 Edges: packing zero-pads partial strips, so FMOPAs always run with an
 all-true predicate. Only the C transfers into and out of ZA are predicated.

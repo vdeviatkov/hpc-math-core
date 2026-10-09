@@ -63,8 +63,12 @@
  *       jc (kSmeNc) → pc (kSmeKc) → pack B panel → ic (kSmeMc) → pack A block
  *       → macro-kernel: jr (nr) → ir (mr) → k
  *     The packed B strip (kc×nr) and A strip (kc×mr) are both read with unit
- *     stride; without packing B, each k reads a row ldb elements from the
- *     last, which falls off sharply at N ≥ 2048. Partial C sums across pc
+ *     stride. A must be packed: FMOPA needs a column of A as one vector and
+ *     streaming mode has no gather loads. B is packed to keep the 128 KB
+ *     strip cached while every A strip reuses it: read in place, its rows
+ *     are N·sizeof(T) apart, and at a power-of-two N they all map to the same
+ *     cache sets — measured −55% at N=4096 (only −7% at N=4000). See
+ *     src/gemm/README.md, "Why A and B are packed". Partial C sums across pc
  *     blocks are carried by loading C into ZA before the k loop.
  *
  *  3. Packing outside streaming mode. Scalar/NEON code is slow in streaming
