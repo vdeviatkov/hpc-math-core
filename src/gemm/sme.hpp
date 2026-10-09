@@ -63,13 +63,57 @@
  *       jc (kSmeNc) → pc (kSmeKc) → pack B panel → ic (kSmeMc) → pack A block
  *       → macro-kernel: jr (nr) → ir (mr) → k
  *     The packed B strip (kc×nr) and A strip (kc×mr) are both read with unit
- *     stride. A must be packed: FMOPA needs a column of A as one vector and
- *     streaming mode has no gather loads. B is packed to keep the 128 KB
- *     strip cached while every A strip reuses it: read in place, its rows
- *     are N·sizeof(T) apart, and at a power-of-two N they all map to the same
- *     cache sets — measured −55% at N=4096 (only −7% at N=4000). See
- *     src/gemm/README.md, "Why A and B are packed". Partial C sums across pc
- *     blocks are carried by loading C into ZA before the k loop.
+ *     stride. Partial C sums across pc blocks are carried by loading C into
+ *     ZA before the k loop.
+ *
+ *     A must be packed: FMOPA needs a column of A as one vector and
+ *     streaming mode has no gather loads.
+ *
+ *     B is packed to keep each strip cached. The packed panel (f32: 1024 ×
+ *     4096 floats, 16 MB) is not stored row-major but strip by strip, each
+ *     strip contiguous:
+ *
+ *       dst[s·nr·kc + k·nr + c] = B(k, s·nr + c)
+ *
+ *       ┌ strip 0: cols 0..31 ┬ strip 1: cols 32..63 ┬ ... ┬ strip 127 ┐
+ *       │ row 0..1023, 128 B  │ row 0..1023          │     │           │
+ *       └────── 128 KB ───────┴─────── 128 KB ───────┴ ... ┴───────────┘
+ *
+ *     Reuse happens at two levels (f32):
+ *
+ *       what             size     reused by
+ *       one B strip      128 KB   the 4 ir iterations of a jr step (Mc/mr)
+ *       whole B panel    16 MB    every ic block (M/Mc of them)
+ *
+ *     The panel is one contiguous block, so it is limited only by capacity
+ *     (it fills the 16 MB P-cluster L2; this is why kSmeNc stops at 4096).
+ *     The strip is where layout matters. Read in place, strip row k is at
+ *     B + k·N + jr, so its 1,024 rows are N·sizeof(T) bytes apart instead
+ *     of 128 B.
+ *
+ *     A cache splits an address into tag | set index | line offset. The
+ *     offset is bits 0–6 (128 B lines); the set index is the next bits; a
+ *     line may only live in one of the few ways of its own set. A stride of
+ *     2^14 (N=4096, f32) never changes bits 0–13, so every row of the strip
+ *     lands in the same set:
+ *
+ *       row 0     base + 0·16384      set X
+ *       row 1     base + 1·16384      set X
+ *       ...
+ *       row 1023  base + 1023·16384   set X   → 1,024 lines, a few ways
+ *
+ *     Packed, row k is at strip + k·128 and each row takes the next set, so
+ *     the strip spreads over all sets. At N=4000 the stride is 16,000 B =
+ *     125 lines; 125 is odd, so the set index walks every set before
+ *     repeating and the strip also fits.
+ *
+ *     Pointer chase on an M4 Max P-core (1,024 lines, random order, ns per
+ *     load): 128 B apart 0.78, 16,000 B apart 2.4 (TLB), 16 KB apart 24.4.
+ *     At 16 KB apart only 8 lines stay in L1 (128 KB, 8-way, 128 sets) and
+ *     512 but not 1,024 stay in L2, so the strip does not survive between
+ *     ir iterations at any level. In gemm_sme this costs −55% at N=4096,
+ *     −12% at N=2048 (an 8 KB stride uses twice as many sets), −7% at N=4000. See
+ *     src/gemm/README.md, "Why A and B are packed".
  *
  *  3. Packing outside streaming mode. Scalar/NEON code is slow in streaming
  *     mode on M4, so packing runs in the ordinary (non-streaming) driver and
