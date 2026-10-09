@@ -59,15 +59,25 @@
  *     4) is the only shape difference between the types. A 2×2 layout for
  *     f64 too (4 of 8 tiles) measured 9% slower at N=4096.
  *
- *  2. A and B packed, GotoBLAS-style cache blocking. Loop nest
- *       jc (kSmeNc) → pc (kSmeKc) → pack B panel → ic (kSmeMc) → pack A block
- *       → macro-kernel: jr (nr) → ir (mr) → k
- *     The packed B strip (kc×nr) and A strip (kc×mr) are both read with unit
- *     stride. Partial C sums across pc blocks are carried by loading C into
- *     ZA before the k loop.
+ *  2. A and B packed, GotoBLAS-style cache blocking (loop nest and why it
+ *     has this order: "The algorithm" below). The packed B strip (kc×nr) and
+ *     A strip (kc×mr) are both read with unit stride.
  *
  *     A must be packed: FMOPA needs a column of A as one vector and
- *     streaming mode has no gather loads.
+ *     streaming mode has no gather loads. Read in place, the column
+ *     A(i0..i0+31, k) is 32 values K·sizeof(T) apart — 32 cache lines per
+ *     k step. pack_a uses the same strip layout as B, transposed:
+ *
+ *       dst[s·mr·kc + k·mr + r] = A(s·mr + r, k)
+ *
+ *       ┌ strip 0: rows 0..31 ┬ strip 1: rows 32..63 ┬ strip 2 ┬ strip 3 ┐
+ *       │ k = 0..1023, 128 B  │ k = 0..1023          │         │         │
+ *       └────── 128 KB ───────┴─────── 128 KB ───────┴─────────┴─────────┘
+ *       (f32 A block, Mc × Kc = 128 × 1024, 512 KB)
+ *
+ *     Each k step then reads one full 128 B line (f64: mr = 16 doubles, also
+ *     128 B) with one svld1_x2, consecutive k steps go to consecutive cache
+ *     sets, and the strip streams through the prefetcher like B.
  *
  *     B is packed to keep each strip cached. The packed panel (f32: 1024 ×
  *     4096 floats, 16 MB) is not stored row-major but strip by strip, each
@@ -126,16 +136,81 @@
  *     instruction count. SME2 is therefore required (HPC_HAS_SME checks
  *     __ARM_FEATURE_SME2 too).
  *
- * Edges: packing zero-pads partial strips to full mr/nr, so FMOPAs always
- * run with an all-true predicate; only the C transfers into and out of ZA
- * are predicated (columns) and bounded (rows).
- *
  * Pitfall: every streaming helper called from the ZA-owning macro-kernel
  * needs a ZA attribute (__arm_inout("za") etc.). Without one it is
  * "private-ZA": Clang won't inline it and wraps each call in a lazy ZA save
  * (TPIDR2 + smstart za) — inside the k loop that cuts throughput ~5×.
  *
  * Single-threaded. Compare against Accelerate with VECLIB_MAXIMUM_THREADS=1.
+ *
+ *
+ * ============================================================
+ *  The algorithm
+ * ============================================================
+ *
+ *   for jc (Nc = 4096)      pack_b → 16 MB B panel        normal mode
+ *    for pc (Kc = 1024)
+ *     for ic (Mc = 128)     pack_a → 512 KB A block       normal mode
+ *      macro_kernel:                                      streaming mode
+ *       for jr              one B strip, 128 KB
+ *        for ir             4 A strips, each re-reads the same B strip
+ *         C tile → ZA
+ *         for k = 0..1023   2 A + 2 B vectors → 4 FMOPA
+ *         ZA → C tile
+ *
+ *  1. Setup. s = svcntsw()/svcntsd() (16 f32 / 8 f64); micro-tile
+ *     mr = 2s, nr = kCols·s (32×32 f32, 16×32 f64); allocate a_pack
+ *     (Mc×Kc) and b_pack (Kc×Nc).
+ *  2. pack_b (per jc, pc): strip by strip, each strip's rows contiguous;
+ *     partial strips zero-padded to nr.
+ *  3. pack_a (per ic): transpose into strips of mr rows so that column
+ *     A(i0..i0+mr−1, k) is one contiguous vector; NEON 4×4 / 2×2
+ *     transposes; rows zero-padded to mr.
+ *  4. macro_kernel (__arm_locally_streaming __arm_new("za")), for each
+ *     jr, ir:
+ *       - pc == 0: svzero_za(); otherwise move_c loads the partial sums of
+ *         C into ZA, so sums carry across pc blocks.
+ *       - k loop: svld1_x2 for A, svld1_x2 for B (f64: a second one for
+ *         B columns 2–3), then 4 (f32) or 8 (f64) FMOPAs into separate
+ *         tiles.
+ *       - move_c stores ZA back to C.
+ *  5. Edges: thanks to the zero padding, FMOPAs always run with an
+ *     all-true predicate; only the C transfers into and out of ZA are
+ *     predicated (columns) and bounded (rows).
+ *
+ * Why this loop order. Each level holds one operand fixed while the levels
+ * inside it reuse it (f32, N=4096):
+ *
+ *   loop  trips  fixed during it       size     reused by        lives in
+ *   k     1024   C micro-tile          4 KB     1,024 k steps    ZA
+ *   ir    4      B strip kc×nr         128 KB   4 A strips       cache
+ *   jr    128    A block mc×kc         512 KB   128 B strips     L2
+ *   ic    32     B panel kc×nc         16 MB    32 A blocks      L2 / SLC
+ *   pc    4      — (splits K)
+ *   jc    1      — (splits N)
+ *
+ *   - k innermost: C stays in ZA for the whole k loop and touches memory
+ *     once per pc pass. Per k step f32 loads 256 B for 2,048 flops
+ *     (8 flop/B); f64 loads 384 B for 1,024 flops (~2.7 flop/B).
+ *   - ir inside jr: a B strip is reused after only one A strip (128 KB)
+ *     has passed through the cache, and an A strip after ~640 KB. Swapped,
+ *     each A strip would walk the whole 16 MB B panel before the next one
+ *     reuses it: the same bytes read, but at a reuse distance of the whole
+ *     L2.
+ *   - ic inside pc: B is packed once per (jc, pc) and serves all M/Mc A
+ *     blocks. A is the operand repacked often, which is cheap: each A
+ *     element is packed N/Nc times, each B element once — O(MK + KN)
+ *     against O(MNK) flops.
+ *   - pc bounds the strips and panels in K. The cost is one C round trip
+ *     through ZA per pc (K/Kc times), so Kc is large.
+ *   - jc caps the B panel at the 16 MB P-cluster L2; at N ≤ 4096 it runs
+ *     once.
+ *
+ * Blocks are sized for L2, not L1 as in classic GotoBLAS, because on M4 the
+ * SME unit is shared by the P-cluster and reads operands from L2.
+ *
+ * f64: mr = 16, nr = 32, so 8 ir steps per jr, a 256 KB B strip, a 1 MB A
+ * block and a 32 MB B panel.
  *
  *
  * ============================================================
@@ -224,14 +299,15 @@ inline void pack_a(const T* A, std::size_t lda, std::size_t mc, std::size_t kc, 
                     const float32x4_t r1 = vld1q_f32(src + lda + k);
                     const float32x4_t r2 = vld1q_f32(src + 2 * lda + k);
                     const float32x4_t r3 = vld1q_f32(src + 3 * lda + k);
-                    const float64x2_t t0 = vreinterpretq_f64_f32(vtrn1q_f32(r0, r1));
-                    const float64x2_t t1 = vreinterpretq_f64_f32(vtrn2q_f32(r0, r1));
-                    const float64x2_t t2 = vreinterpretq_f64_f32(vtrn1q_f32(r2, r3));
-                    const float64x2_t t3 = vreinterpretq_f64_f32(vtrn2q_f32(r2, r3));
-                    vst1q_f32(out, vreinterpretq_f32_f64(vtrn1q_f64(t0, t2)));
-                    vst1q_f32(out + mr, vreinterpretq_f32_f64(vtrn1q_f64(t1, t3)));
-                    vst1q_f32(out + 2 * mr, vreinterpretq_f32_f64(vtrn2q_f64(t0, t2)));
-                    vst1q_f32(out + 3 * mr, vreinterpretq_f32_f64(vtrn2q_f64(t1, t3)));
+                    // r0..r3 = rows a..d. Swap single floats, then 2-float halves.
+                    const float32x4_t t0 = vtrn1q_f32(r0, r1);  // a0 b0 a2 b2
+                    const float32x4_t t1 = vtrn2q_f32(r0, r1);  // a1 b1 a3 b3
+                    const float32x4_t t2 = vtrn1q_f32(r2, r3);  // c0 d0 c2 d2
+                    const float32x4_t t3 = vtrn2q_f32(r2, r3);  // c1 d1 c3 d3
+                    vst1q_f32(out, vcombine_f32(vget_low_f32(t0), vget_low_f32(t2)));
+                    vst1q_f32(out + mr, vcombine_f32(vget_low_f32(t1), vget_low_f32(t3)));
+                    vst1q_f32(out + 2 * mr, vcombine_f32(vget_high_f32(t0), vget_high_f32(t2)));
+                    vst1q_f32(out + 3 * mr, vcombine_f32(vget_high_f32(t1), vget_high_f32(t3)));
                 } else {
                     const float64x2_t r0 = vld1q_f64(src + k);
                     const float64x2_t r1 = vld1q_f64(src + lda + k);
