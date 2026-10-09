@@ -295,19 +295,19 @@ inline void pack_a(const T* A, std::size_t lda, std::size_t mc, std::size_t kc, 
             for (std::size_t k = 0; k < kc_v; k += L) {
                 T* out = strip + k * mr + r;
                 if constexpr (sizeof(T) == 4) {
-                    const float32x4_t r0 = vld1q_f32(src + k);
-                    const float32x4_t r1 = vld1q_f32(src + lda + k);
-                    const float32x4_t r2 = vld1q_f32(src + 2 * lda + k);
-                    const float32x4_t r3 = vld1q_f32(src + 3 * lda + k);
-                    // r0..r3 = rows a..d. Swap single floats, then 2-float halves.
-                    const float32x4_t t0 = vtrn1q_f32(r0, r1);  // a0 b0 a2 b2
-                    const float32x4_t t1 = vtrn2q_f32(r0, r1);  // a1 b1 a3 b3
-                    const float32x4_t t2 = vtrn1q_f32(r2, r3);  // c0 d0 c2 d2
-                    const float32x4_t t3 = vtrn2q_f32(r2, r3);  // c1 d1 c3 d3
-                    vst1q_f32(out, vcombine_f32(vget_low_f32(t0), vget_low_f32(t2)));
-                    vst1q_f32(out + mr, vcombine_f32(vget_low_f32(t1), vget_low_f32(t3)));
-                    vst1q_f32(out + 2 * mr, vcombine_f32(vget_high_f32(t0), vget_high_f32(t2)));
-                    vst1q_f32(out + 3 * mr, vcombine_f32(vget_high_f32(t1), vget_high_f32(t3)));
+                    // 4×4 transpose: swap single floats, then 2-float halves.
+                    const float32x4_t r0 = vld1q_f32(src + k);            // a0 a1 a2 a3
+                    const float32x4_t r1 = vld1q_f32(src + lda + k);      // b0 b1 b2 b3
+                    const float32x4_t r2 = vld1q_f32(src + 2 * lda + k);  // c0 c1 c2 c3
+                    const float32x4_t r3 = vld1q_f32(src + 3 * lda + k);  // d0 d1 d2 d3
+                    const float32x4_t t0 = vtrn1q_f32(r0, r1);            // a0 b0 a2 b2
+                    const float32x4_t t1 = vtrn2q_f32(r0, r1);            // a1 b1 a3 b3
+                    const float32x4_t t2 = vtrn1q_f32(r2, r3);            // c0 d0 c2 d2
+                    const float32x4_t t3 = vtrn2q_f32(r2, r3);            // c1 d1 c3 d3
+                    vst1q_f32(out,          vcombine_f32(vget_low_f32(t0),  vget_low_f32(t2)));   // a0 b0 c0 d0
+                    vst1q_f32(out + mr,     vcombine_f32(vget_low_f32(t1),  vget_low_f32(t3)));   // a1 b1 c1 d1
+                    vst1q_f32(out + 2 * mr, vcombine_f32(vget_high_f32(t0), vget_high_f32(t2)));  // a2 b2 c2 d2
+                    vst1q_f32(out + 3 * mr, vcombine_f32(vget_high_f32(t1), vget_high_f32(t3)));  // a3 b3 c3 d3
                 } else {
                     const float64x2_t r0 = vld1q_f64(src + k);
                     const float64x2_t r1 = vld1q_f64(src + lda + k);
