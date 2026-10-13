@@ -1,0 +1,22 @@
+{
+  "date": "2026-10-12",
+  "machine": "Apple M4 Max (12 P-cores, 128-byte cache lines, 128 KiB L1d per P-core, 16 MiB L2 per P-cluster), macOS 26.3.1",
+  "load_average_1min": "4.1-6.2 during the runs (desktop machine, other work running)",
+  "compiler": "Apple clang 17.0.0 (clang-1700.4.4.1)",
+  "flags": "-O3 -DNDEBUG -mcpu=apple-m4 -ffast-math -funroll-loops (CMake Release, HPC_ENABLE_SME=ON)",
+  "commands": {
+    "phases.csv": "./build/benchmarks/sme_b_layout 4096 15 3",
+    "height.csv": "./build/benchmarks/sme_b_stride_probe height",
+    "width.csv": "./build/benchmarks/sme_b_stride_probe width",
+    "chase.csv": "./build/benchmarks/cache_chase"
+  },
+  "base_commit": "77e86bf",
+  "base_commit_note": "kernel, Matrix and sme_b_layout as in base_commit; sme_b_stride_probe.cpp and cache_chase.cpp were added in the following commit. The hashes identify the exact sources.",
+  "sha256": {
+    "src/gemm/sme.hpp": "4d4c783052574073673bf7d413e4eaac53b5a5320f1b531796fac292bea3292a",
+    "include/hpc/matrix.hpp": "7f5162f46bdb1dd0e9d28ee10b6dd53f9f22881e347ed7501cf115dfe57182d3",
+    "benchmarks/experiments/sme_b_layout.cpp": "1a6312e6c0ce855d4701f847d79f35b8128f46cca296cef9598c5a4ff764fb6e",
+    "benchmarks/experiments/sme_b_stride_probe.cpp": "943bd5c3cea01bc45d96f3480962b4a13e097481b208a9c523b52a0ea6f3b52d",
+    "benchmarks/experiments/cache_chase.cpp": "d91823452c4789eedcf4bb44b4d332e05fdf5dd360615b8168fa228f05d3b8ca"
+  }
+}

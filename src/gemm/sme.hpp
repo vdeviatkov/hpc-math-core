@@ -197,12 +197,12 @@
  *    0.78 ns for lines 128 B apart).
  * Only large problems are affected: at N ≤ 1024 in place is within 2% of
  * packed or faster (f64 N=1024, an 8 KB stride: +7%), as everything stays
- * in L2. Not established: which cache level the SME unit's loads conflict
- * in (it reads through L2; the pointer chase shows the core's view), and
- * what causes the gap left away from powers of two (TLB reach — an
- * in-place strip spans ~1,024 pages, a packed one ~8 — prefetching or
- * footprint). Padding B would not replace packing in a library anyway: the
- * caller owns B's layout, while packing works for any N.
+ * in L2. The conflicts are in L2: with rows 16 KiB apart the macro-kernel
+ * keeps pace with a padded stride up to 384 rows per strip and breaks by
+ * 448 rows, far beyond L1's 8 ways. With a padded stride, in place still
+ * trails packed by 0% at N=1024 up to ~10% at N=4096. Padding B would not
+ * replace packing in a library anyway: the caller owns B's layout, while
+ * packing works for any N. Data: docs/experiments/sme-b-stride.
  *
  * The packing buffers are Matrix<T> storage, 64-byte aligned by contract;
  * the ≥ 128 KB buffers came back 128-byte aligned in all 600 allocations

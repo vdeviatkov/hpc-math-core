@@ -7,8 +7,8 @@ Technical investigations into matrix kernels and memory performance by Vladyslav
 
 ## Articles
 
-[ARM SME2 GEMM: a power-of-two performance cliff]({{ '/articles/sme2-cache-associativity.html' | relative_url }})
+[A power-of-two stride halves SME2 GEMM throughput on Apple M4]({{ '/articles/sme2-cache-associativity.html' | relative_url }})
 
-Why an SME2 matrix multiplication on Apple M4 Max runs at half speed when B's rows are 16 KiB apart, and what packing and padding recover.
+An SME2 matrix multiplication runs at half speed when B's rows are 16 KiB apart. Tracing it to L2 set conflicts, measuring where they start, and the cost of padding and packing.
 
 [Implementation and project documentation](https://github.com/vdeviatkov/hpc-math-core)

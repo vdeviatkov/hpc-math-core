@@ -1,0 +1,98 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="520" viewBox="0 0 1000 520" role="img">
+<title>Where the 16 KiB stride breaks: rows per B strip</title>
+<rect width="1000" height="520" fill="white"/>
+<g font-family="Arial, sans-serif" fill="#172635">
+<text x="500" y="34" font-size="23" text-anchor="middle">Where the 16 KiB stride breaks: rows per B strip</text>
+<text x="500" y="61" font-size="14" text-anchor="middle">Apple M4 Max · FP32 · single thread · median of 9</text>
+<text x="495.0" y="99" font-size="17" text-anchor="middle">N = 1024, B read in place, macro-kernel only</text>
+<path d="M 100 410.0 H 890" stroke="#dce2e8"/>
+<text x="90" y="415.0" font-size="12" text-anchor="end">0</text>
+<path d="M 100 351.6 H 890" stroke="#dce2e8"/>
+<text x="90" y="356.6" font-size="12" text-anchor="end">400</text>
+<path d="M 100 293.2 H 890" stroke="#dce2e8"/>
+<text x="90" y="298.2" font-size="12" text-anchor="end">800</text>
+<path d="M 100 234.8 H 890" stroke="#dce2e8"/>
+<text x="90" y="239.8" font-size="12" text-anchor="end">1200</text>
+<path d="M 100 176.39999999999998 H 890" stroke="#dce2e8"/>
+<text x="90" y="181.39999999999998" font-size="12" text-anchor="end">1600</text>
+<path d="M 100 118.0 H 890" stroke="#dce2e8"/>
+<text x="90" y="123.0" font-size="12" text-anchor="end">2000</text>
+<text x="100.0" y="433" font-size="12" text-anchor="middle">8</text>
+<text x="160.76923076923077" y="433" font-size="12" text-anchor="middle">16</text>
+<text x="221.53846153846155" y="433" font-size="12" text-anchor="middle">32</text>
+<text x="282.3076923076923" y="433" font-size="12" text-anchor="middle">64</text>
+<text x="343.0769230769231" y="433" font-size="12" text-anchor="middle">128</text>
+<text x="403.84615384615387" y="433" font-size="12" text-anchor="middle">256</text>
+<text x="464.61538461538464" y="433" font-size="12" text-anchor="middle">384</text>
+<text x="525.3846153846154" y="433" font-size="12" text-anchor="middle">448</text>
+<text x="586.1538461538462" y="433" font-size="12" text-anchor="middle">512</text>
+<text x="646.9230769230769" y="433" font-size="12" text-anchor="middle">576</text>
+<text x="707.6923076923077" y="433" font-size="12" text-anchor="middle">640</text>
+<text x="768.4615384615385" y="433" font-size="12" text-anchor="middle">768</text>
+<text x="829.2307692307693" y="433" font-size="12" text-anchor="middle">896</text>
+<text x="890.0" y="433" font-size="12" text-anchor="middle">1024</text>
+<polyline points="100.0,382.114 160.76923076923077,364.74 221.53846153846155,329.408 282.3076923076923,292.178 343.0769230769231,256.99199999999996 403.84615384615387,217.13400000000001 464.61538461538464,208.52 525.3846153846154,259.036 586.1538461538462,248.81599999999997 646.9230769230769,245.312 707.6923076923077,239.034 768.4615384615385,269.84000000000003 829.2307692307693,294.514 890.0,314.808" fill="none" stroke="#245ea8" stroke-width="3"/>
+<circle cx="100.0" cy="382.114" r="4" fill="#245ea8"/>
+<text x="100.0" y="403.114" font-size="13" text-anchor="middle">191</text>
+<circle cx="160.76923076923077" cy="364.74" r="4" fill="#245ea8"/>
+<text x="160.76923076923077" y="385.74" font-size="13" text-anchor="middle">310</text>
+<circle cx="221.53846153846155" cy="329.408" r="4" fill="#245ea8"/>
+<text x="221.53846153846155" y="350.408" font-size="13" text-anchor="middle">552</text>
+<circle cx="282.3076923076923" cy="292.178" r="4" fill="#245ea8"/>
+<text x="282.3076923076923" y="313.178" font-size="13" text-anchor="middle">807</text>
+<circle cx="343.0769230769231" cy="256.99199999999996" r="4" fill="#245ea8"/>
+<text x="343.0769230769231" y="277.99199999999996" font-size="13" text-anchor="middle">1048</text>
+<circle cx="403.84615384615387" cy="217.13400000000001" r="4" fill="#245ea8"/>
+<text x="403.84615384615387" y="238.13400000000001" font-size="13" text-anchor="middle">1321</text>
+<circle cx="464.61538461538464" cy="208.52" r="4" fill="#245ea8"/>
+<text x="464.61538461538464" y="229.52" font-size="13" text-anchor="middle">1380</text>
+<circle cx="525.3846153846154" cy="259.036" r="4" fill="#245ea8"/>
+<text x="525.3846153846154" y="280.036" font-size="13" text-anchor="middle">1034</text>
+<circle cx="586.1538461538462" cy="248.81599999999997" r="4" fill="#245ea8"/>
+<text x="586.1538461538462" y="269.816" font-size="13" text-anchor="middle">1104</text>
+<circle cx="646.9230769230769" cy="245.312" r="4" fill="#245ea8"/>
+<text x="646.9230769230769" y="266.312" font-size="13" text-anchor="middle">1128</text>
+<circle cx="707.6923076923077" cy="239.034" r="4" fill="#245ea8"/>
+<text x="707.6923076923077" y="260.034" font-size="13" text-anchor="middle">1171</text>
+<circle cx="768.4615384615385" cy="269.84000000000003" r="4" fill="#245ea8"/>
+<text x="768.4615384615385" y="290.84000000000003" font-size="13" text-anchor="middle">960</text>
+<circle cx="829.2307692307693" cy="294.514" r="4" fill="#245ea8"/>
+<text x="829.2307692307693" y="315.514" font-size="13" text-anchor="middle">791</text>
+<circle cx="890.0" cy="314.808" r="4" fill="#245ea8"/>
+<text x="890.0" y="335.808" font-size="13" text-anchor="middle">652</text>
+<polyline points="100.0,380.946 160.76923076923077,361.82 221.53846153846155,320.21000000000004 282.3076923076923,288.09000000000003 343.0769230769231,239.18 403.84615384615387,200.344 464.61538461538464,175.52399999999997 525.3846153846154,172.896 586.1538461538462,171.436 646.9230769230769,164.28199999999998 707.6923076923077,165.304 768.4615384615385,160.34 829.2307692307693,160.34 890.0,157.712" fill="none" stroke="#be4d14" stroke-width="3"/>
+<circle cx="100.0" cy="380.946" r="4" fill="#be4d14"/>
+<text x="100.0" y="368.946" font-size="13" text-anchor="middle">199</text>
+<circle cx="160.76923076923077" cy="361.82" r="4" fill="#be4d14"/>
+<text x="160.76923076923077" y="349.82" font-size="13" text-anchor="middle">330</text>
+<circle cx="221.53846153846155" cy="320.21000000000004" r="4" fill="#be4d14"/>
+<text x="221.53846153846155" y="308.21000000000004" font-size="13" text-anchor="middle">615</text>
+<circle cx="282.3076923076923" cy="288.09000000000003" r="4" fill="#be4d14"/>
+<text x="282.3076923076923" y="276.09000000000003" font-size="13" text-anchor="middle">835</text>
+<circle cx="343.0769230769231" cy="239.18" r="4" fill="#be4d14"/>
+<text x="343.0769230769231" y="227.18" font-size="13" text-anchor="middle">1170</text>
+<circle cx="403.84615384615387" cy="200.344" r="4" fill="#be4d14"/>
+<text x="403.84615384615387" y="188.344" font-size="13" text-anchor="middle">1436</text>
+<circle cx="464.61538461538464" cy="175.52399999999997" r="4" fill="#be4d14"/>
+<text x="464.61538461538464" y="163.52399999999997" font-size="13" text-anchor="middle">1606</text>
+<circle cx="525.3846153846154" cy="172.896" r="4" fill="#be4d14"/>
+<text x="525.3846153846154" y="160.896" font-size="13" text-anchor="middle">1624</text>
+<circle cx="586.1538461538462" cy="171.436" r="4" fill="#be4d14"/>
+<text x="586.1538461538462" y="159.436" font-size="13" text-anchor="middle">1634</text>
+<circle cx="646.9230769230769" cy="164.28199999999998" r="4" fill="#be4d14"/>
+<text x="646.9230769230769" y="152.28199999999998" font-size="13" text-anchor="middle">1683</text>
+<circle cx="707.6923076923077" cy="165.304" r="4" fill="#be4d14"/>
+<text x="707.6923076923077" y="153.304" font-size="13" text-anchor="middle">1676</text>
+<circle cx="768.4615384615385" cy="160.34" r="4" fill="#be4d14"/>
+<text x="768.4615384615385" y="148.34" font-size="13" text-anchor="middle">1710</text>
+<circle cx="829.2307692307693" cy="160.34" r="4" fill="#be4d14"/>
+<text x="829.2307692307693" y="148.34" font-size="13" text-anchor="middle">1710</text>
+<circle cx="890.0" cy="157.712" r="4" fill="#be4d14"/>
+<text x="890.0" y="145.712" font-size="13" text-anchor="middle">1728</text>
+<text x="495.0" y="463" font-size="14" text-anchor="middle">rows per B strip, Kc (categories, not to scale)</text>
+<text transform="translate(23 270) rotate(-90)" text-anchor="middle" font-size="14">GFLOP/s</text>
+<path d="M 270 494 h 35" stroke="#245ea8" stroke-width="3"/>
+<text x="315" y="499" font-size="14" text-anchor="start">rows 16,384 B apart</text>
+<path d="M 550 494 h 35" stroke="#be4d14" stroke-width="3"/>
+<text x="595" y="499" font-size="14" text-anchor="start">rows 16,512 B apart</text>
+</g></svg>

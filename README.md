@@ -87,7 +87,7 @@ docs/                         Benchmark results, build guide, cache background, 
 
 | Document | Contents |
 |---|---|
-| [ARM SME2 GEMM: a power-of-two performance cliff](docs/articles/sme2-cache-associativity.md) | Article: why B read in place runs at half speed at N=4096, and what packing and padding recover |
+| [A power-of-two stride halves SME2 GEMM throughput on Apple M4](docs/articles/sme2-cache-associativity.md) | Article: L2 set conflicts at a 16 KiB row stride, located and measured, and the two fixes |
 | [src/gemm/README.md](src/gemm/README.md) | Map of the kernels: files, techniques, registers and intrinsics per family. Each kernel's design is in its own header. |
 | [docs/benchmarks.md](docs/benchmarks.md) | All measurements and their analysis: Apple M4 Max, AMD Zen 5, RTX 5080 |
 | [docs/build.md](docs/build.md) | Build on Linux, macOS and Windows, CMake options, SME/AMX flags, what runs where, CI |
