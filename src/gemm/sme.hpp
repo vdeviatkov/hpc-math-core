@@ -2,11 +2,11 @@
 
 /**
  * @file sme.hpp
- * @brief ARM SME (Scalable Matrix Extension) GEMM — four steps: one ZA tile,
+ * @brief ARM SME (Scalable Matrix Extension) GEMM in four steps: one ZA tile,
  *        all ZA tiles, cache blocking, packed B.
  *
  * ============================================================
- *  Outer products instead of FMA
+ *  SME in brief
  * ============================================================
  *
  * The AVX2, AVX-512, NEON and SVE kernels compute C with vector FMA:
@@ -19,41 +19,31 @@
  *
  * With a[k] = A(i0+r, k) and b[k] = B(k, j0+c), K of these instructions
  * produce an SVL×SVL tile of C — the same primitive as GPU Tensor Cores.
- * SVL (the streaming vector length) is read at runtime with svcntsw() /
- * svcntsd(): 16 f32 / 8 f64 on Apple M4.
+ * SVL is read at runtime with svcntsw() / svcntsd(): 16 f32 / 8 f64 on
+ * Apple M4, where ZA holds 4 f32 or 8 f64 tiles of SVL×SVL.
  *
- *
- * ============================================================
- *  Streaming mode
- * ============================================================
- *
- * FMOPA, loads/stores of ZA and `zero {za}` are only legal in streaming SVE
+ * FMOPA, ZA loads/stores and `zero {za}` are only legal in streaming SVE
  * mode. `__arm_locally_streaming` makes Clang wrap a function in SMSTART /
  * SMSTOP; `__arm_new("za")` gives it its own ZA state (any live caller ZA
- * state is saved, and ZA starts zeroed).
- *
- * Gather loads are not legal in streaming mode (Clang: "builtin can only be
- * called from a non-streaming function"), so the strided A column the outer
- * product needs cannot be loaded directly — A has to be packed.
+ * state is saved, and ZA starts zeroed). Gather loads are not legal in
+ * streaming mode, so the strided column of A that FMOPA needs cannot be
+ * loaded directly: every kernel here packs A ("Packing" below).
  *
  *
  * ============================================================
- *  The kernels — four steps
+ *  The four kernels
  * ============================================================
  *
- *   kernel            ZA tiles   A              B          cache blocking
- *   gemm_sme_1tile    1          packed strips  in place   none
- *   gemm_sme_tiles    all        packed strips  in place   none
- *   gemm_sme_blocked  all        packed strips  in place   GotoBLAS
- *   gemm_sme          all        packed strips  packed     GotoBLAS
+ *   kernel            ZA tiles   B          cache blocking
+ *   gemm_sme_1tile    1          in place   none
+ *   gemm_sme_tiles    all        in place   none
+ *   gemm_sme_blocked  all        in place   GotoBLAS
+ *   gemm_sme          all        packed     GotoBLAS
  *
- * Every step packs A (pack_a): FMOPA needs a column of A as one vector and
- * streaming mode has no gather loads. The strips make each k step's column
- * contiguous (64 B for one tile, a full 128 B line for two), which also
- * keeps A clear of the cache-set conflicts a power-of-two row stride causes
- * (design item 2 below). So each step changes one thing: the number of
- * tiles, then blocking, then packing B. Each kernel is one template for
- * f32 and f64; the last three share one macro-kernel.
+ * All four pack A, so each step changes one thing. Each is one template for
+ * f32 and f64; the last three share macro_kernel. All are single-threaded:
+ * compare against Accelerate with VECLIB_MAXIMUM_THREADS=1 (~1650 GFLOP/s
+ * f32, ~410 f64 on one M4 Max core).
  *
  * One M4 Max core, GFLOP/s, median of 3 runs:
  *
@@ -69,192 +59,39 @@
  *   gemm_sme_blocked     342   422   442   284   373   271
  *   gemm_sme             315   397   414   406   410   403
  *
- *  - 1tile → tiles: 2.3–3.4× f32, 2.9–5.8× f64. All tiles hide FMOPA
- *    latency (design item 1). At large N the one-tile kernel is also
- *    bandwidth bound: each A and B vector it loads feeds one FMOPA.
- *  - tiles → blocked: 2.0× f32 at N=2048, 3.2× at N=4000. Without
- *    blocking, all of A is re-read for every B strip and no longer stays
- *    cached. N=4000 is as slow as N=4096, so this is not a stride effect;
- *    capacity is the likely cause. At N=4096 blocking gains only 1.3×,
- *    because the next problem takes over.
+ *  - 1tile → tiles, 2.3–3.4× f32 / 2.9–5.8× f64: FMOPA latency hidden
+ *    ("All ZA tiles" below). At large N the one-tile kernel is also
+ *    bandwidth bound, since each vector it loads feeds one FMOPA.
+ *  - tiles → blocked, 2.0× f32 at N=2048 / 3.2× at N=4000: without
+ *    blocking, all of A is re-read for every B strip and falls out of
+ *    cache. N=4000 is as slow as N=4096, so this is not a stride effect;
+ *    capacity is the likely cause.
  *  - blocked → gemm_sme: within 3% at N=4000, but 2.3× f32 / 1.5× f64 at
- *    N=4096 and 1.15× f32 at N=2048. The loss follows the power-of-two
- *    distance between B strip rows and is consistent with cache-set
- *    conflicts; packing B removes it (design item 2).
- *  - At N ≤ 512 the kernels without pack_b are faster (+30% f32 at N=256
- *    for gemm_sme_tiles): everything fits in cache anyway, and gemm_sme
- *    pays for copying B.
+ *    N=4096 and 1.15× f32 at N=2048 — the power-of-two stride effect that
+ *    packing B removes ("Packing" below).
+ *  - At N ≤ 512 the kernels without pack_b are faster (+30% f32 at N=256):
+ *    everything fits in cache, and gemm_sme pays for copying B.
  *
  *
  * ============================================================
- *  gemm_sme — design
+ *  gemm_sme
  * ============================================================
  *
- * gemm_sme_1tile peaks at ~470 GFLOP/s f32 on one M4 Max core, against
- * ~1650 GFLOP/s for Accelerate on the same core. gemm_sme closes most of
- * that gap with four design choices. gemm_sme_tiles already has 1, 3 and 4
- * (it shares gemm_sme's macro-kernel); gemm_sme_blocked adds the blocking
- * of 2 and gemm_sme the packing of B:
+ * All ZA tiles. With one tile every FMOPA waits for the previous one's
+ * accumulator, so the loop runs at FMOPA latency, not throughput. The
+ * micro-kernel keeps every tile busy with independent outer products:
  *
- *  1. All ZA tiles in use. With one tile, every FMOPA waits for the previous
- *     one's accumulator, so the loop runs at FMOPA latency, not throughput.
- *     ZA holds 4 f32 tiles (SVL×SVL each) or 8 f64 tiles; the micro-kernel
- *     keeps all of them busy with independent outer products:
+ *   f32: 2×2 tiles → 32×32 C block, per k: 2 A + 2 B vectors → 4 FMOPA
+ *   f64: 2×4 tiles → 16×32 C block, per k: 2 A + 4 B vectors → 8 FMOPA
  *
- *       f32: 2×2 tiles → (2·SVL)×(2·SVL) = 32×32 C block on a 512-bit SVL
- *            per k: 2 A vectors + 2 B vectors → 4 FMOPA
- *       f64: 2×4 tiles → (2·SVL)×(4·SVL) = 16×32 C block
- *            per k: 2 A vectors + 4 B vectors → 8 FMOPA
+ * Each loaded vector feeds 2 (or 4) FMOPAs. kCols<T> (2 or 4) is the only
+ * shape difference between the types; a 2×2 layout for f64 too (4 of 8
+ * tiles) measured 9% slower at N=4096. The A and B vectors of one k step
+ * are each fetched with one SME2 svld1_x2 (LD1W/LD1D {z0-z1}), halving the
+ * load count; SME2 is therefore required (HPC_HAS_SME checks
+ * __ARM_FEATURE_SME2 too).
  *
- *     Each loaded vector feeds 2 (or 4) FMOPAs instead of 1. kCols<T> (2 or
- *     4) is the only shape difference between the types. A 2×2 layout for
- *     f64 too (4 of 8 tiles) measured 9% slower at N=4096.
- *
- *  2. A and B packed, GotoBLAS-style cache blocking (loop nest and why it
- *     has this order: "gemm_sme — the algorithm" below). The packed B strip
- *     (kc×nr) and A strip (kc×mr) are both read with unit stride.
- *
- *     A must be packed: FMOPA needs a column of A as one vector and
- *     streaming mode has no gather loads. Read in place, the column
- *     A(i0..i0+31, k) is 32 values K·sizeof(T) apart — 32 cache lines per
- *     k step. pack_a uses the same strip layout as B, transposed:
- *
- *       dst[s·mr·kc + k·mr + r] = A(s·mr + r, k)
- *
- *       ┌ strip 0: rows 0..31 ┬ strip 1: rows 32..63 ┬ strip 2 ┬ strip 3 ┐
- *       │ k = 0..1023, 128 B  │ k = 0..1023          │         │         │
- *       └────── 128 KB ───────┴─────── 128 KB ───────┴─────────┴─────────┘
- *       (f32 A block, Mc × Kc = 128 × 1024, 512 KB)
- *
- *     Each k step then reads one full 128 B line (f64: mr = 16 doubles, also
- *     128 B) with one svld1_x2, consecutive k steps go to consecutive cache
- *     sets, and the strip streams through the prefetcher like B.
- *
- *     B is packed to keep each strip cached. The packed panel (f32: 1024 ×
- *     4096 floats, 16 MB) is not stored row-major but strip by strip, each
- *     strip contiguous:
- *
- *       dst[s·nr·kc + k·nr + c] = B(k, s·nr + c)
- *
- *       ┌ strip 0: cols 0..31 ┬ strip 1: cols 32..63 ┬ ... ┬ strip 127 ┐
- *       │ row 0..1023, 128 B  │ row 0..1023          │     │           │
- *       └────── 128 KB ───────┴─────── 128 KB ───────┴ ... ┴───────────┘
- *
- *     Reuse happens at two levels (f32):
- *
- *       what             size     reused by
- *       one B strip      128 KB   the 4 ir iterations of a jr step (Mc/mr)
- *       whole B panel    16 MB    every ic block (M/Mc of them)
- *
- *     The panel is one contiguous block, so it is limited only by capacity
- *     (it fills the 16 MB P-cluster L2; this is why kSmeNc stops at 4096).
- *     The strip is where layout matters. Read in place, strip row k is at
- *     B + k·N + jr, so its 1,024 rows are N·sizeof(T) bytes apart instead
- *     of 128 B.
- *
- *     At a power-of-two stride this appears to cause severe cache-set
- *     conflicts. A cache splits an address into tag | set index | line
- *     offset. The offset is bits 0–6 (128 B lines); the set index is the
- *     next bits; a line may only live in one of the few ways of its own
- *     set. A stride of 2^14 (N=4096, f32) never changes bits 0–13, so if
- *     the set index comes straight from those bits (Apple does not document
- *     M4's indexing), every row of the strip lands in the same set:
- *
- *       row 0     base + 0·16384      set X
- *       row 1     base + 1·16384      set X
- *       ...
- *       row 1023  base + 1023·16384   set X   → 1,024 lines, a few ways
- *
- *     Packed, row k is at strip + k·128 and each row takes the next set, so
- *     the strip spreads over all sets. At N=4000 the stride is 16,000 B =
- *     125 lines; 125 is odd, so the set index walks every set before
- *     repeating and the strip also fits. What helps is the compact,
- *     contiguous layout, not the strip width of 32 (that comes from the
- *     tile shape).
- *
- *     Evidence (gemm_sme_blocked = gemm_sme without pack_b, f32):
- *       - N swept around powers of two: in place loses 55% to packed at
- *         N=4096 and 17% at N=2048, but is within 7% of it at N = 2016,
- *         2080, 4000, 4032, 4064 and 4128.
- *       - Same 4096×4096 problem, only B's row stride changed: ldb = 4096
- *         loses 55%, ldb = 4128 (one extra cache line per row) 3%. So the
- *         loss follows the byte stride, not N, the work or the pages
- *         touched.
- *       - A pointer chase from a P-core (1,024 lines, random order) costs
- *         0.78 ns per load at 128 B apart, 2.4 ns at 16,000 B (likely
- *         TLB) and 24.4 ns at 16 KB; at 16 KB apart only 8 lines stay in
- *         L1 and fewer than 1,024 in L2.
- *     Not established: which cache level the SME unit's loads conflict in
- *     (it reads through L2, and the pointer chase only shows the core's
- *     view), and the cause of the 3–11% that in place still loses away
- *     from powers of two (TLB, prefetching and footprint were not
- *     separated). Full tables, f64 included: src/gemm/README.md, "Why A
- *     and B are packed"; reproduce with bench_gemm --benchmark_filter=BStride.
- *
- *     Terms. N is the matrix size: every run above is square, so B has
- *     K = N rows of N columns. ldb is the number of elements between the
- *     starts of consecutive B rows (= N unless B is stored padded), and
- *     the stride is the byte distance, ldb·sizeof(T). "N=4000" therefore
- *     means a 16,000 B stride for f32 and 32,000 B for f64.
- *
- *     Which sizes are affected. With 128 B lines and the 128-set L1
- *     above, rows s bytes apart (s a multiple of 128) step the set index
- *     by s/128 and visit 128 / gcd(s/128, 128) different sets: 1 at a
- *     16 KB stride, 2 at 8 KB, all 128 at 16,000 B. So any stride with
- *     many trailing zero bits is at risk, not only exact powers of two
- *     (f32 N=3072 and 6144 would use 4 and 2 sets; not measured). The
- *     loss also needs a large problem: it was measured only at N=2048 and
- *     4096 (f32 −17% / −55%, f64 −31% / −33%). At N ≤ 1024 in place is
- *     within 2% of packed or faster (f64 N=1024: +7%, although its stride
- *     is 8 KB like f32 N=2048), as the whole problem stays in L2.
- *
- *     Other strides vs packed strips. Away from those sizes, reading B in
- *     place comes close to packed but does not match it: −3% f32 / −7 to
- *     −8% f64 at N = 4000, 4032 and 4128 (−7% / −11% at N=4064), and
- *     padding the 4096 rows by 128 B (ldb = 4128) gives −3% / −8%. Around
- *     N=2000 f32 in place is up to 3% faster, because it skips the copy.
- *     One plausible factor in the remaining gap (not measured): a packed f32
- *     strip is 128 KB of contiguous memory, ~8 pages of 16 KB, while read
- *     in place its 1,024 rows sit on ~1,024 different pages — more TLB
- *     entries, and the prefetcher crosses page boundaries far more often.
- *     Padding is no substitute for packing in a library anyway: the caller
- *     owns B's layout (Matrix<T> has no padding), while packing works for
- *     any N and ldb.
- *
- *     How the strip widths are chosen. They follow from the micro-tile,
- *     not from cache tuning. A packed B row is nr = kCols<T>·SVL elements
- *     (2·16 floats = 128 B, 4·8 doubles = 256 B); a packed A row is
- *     mr = 2·SVL elements (128 B for both types). Contiguity is what
- *     removes the set conflicts, and any width would do that. The width
- *     matters for another reason: a row that is a whole number of cache
- *     lines, starting on a line boundary, never splits a load across two
- *     lines (the misaligned ldb = 4097 control costs −16% f32). Matrix<T>
- *     only promises 64-byte alignment; the packing buffers (≥ 128 KB)
- *     came back 128-byte aligned in all 600 allocations tried on macOS,
- *     but nothing guarantees it.
- *
- *  3. Packing outside streaming mode. Scalar/NEON code is slow in streaming
- *     mode on M4, so packing runs in the ordinary (non-streaming) driver and
- *     only the macro-kernel runs streaming — one SMSTART/SMSTOP per
- *     Mc×Nc×Kc block. A is transposed with NEON 4×4 / 2×2 in-register
- *     transposes, ~10% faster overall than a scalar packing loop.
- *
- *  4. SME2 multi-vector loads. The A and B operands of one k step are each
- *     fetched with LD1W/LD1D {z0-z1} (svld1_x2), halving the load
- *     instruction count. SME2 is therefore required (HPC_HAS_SME checks
- *     __ARM_FEATURE_SME2 too).
- *
- * Pitfall: every streaming helper called from the ZA-owning macro-kernel
- * needs a ZA attribute (__arm_inout("za") etc.). Without one it is
- * "private-ZA": Clang won't inline it and wraps each call in a lazy ZA save
- * (TPIDR2 + smstart za) — inside the k loop that cuts throughput ~5×.
- *
- * Single-threaded. Compare against Accelerate with VECLIB_MAXIMUM_THREADS=1.
- *
- *
- * ============================================================
- *  gemm_sme — the algorithm
- * ============================================================
+ * Cache blocking, GotoBLAS-style (f32 sizes):
  *
  *   for jc (Nc = 4096)      pack_b → 16 MB B panel        normal mode
  *    for pc (Kc = 1024)
@@ -262,32 +99,13 @@
  *      macro_kernel:                                      streaming mode
  *       for jr              one B strip, 128 KB
  *        for ir             4 A strips, each re-reads the same B strip
- *         C tile → ZA
+ *         C tile → ZA       (zeroed when pc == 0, else loaded from C)
  *         for k = 0..1023   2 A + 2 B vectors → 4 FMOPA
  *         ZA → C tile
  *
- *  1. Setup. s = svcntsw()/svcntsd() (16 f32 / 8 f64); micro-tile
- *     mr = 2s, nr = kCols·s (32×32 f32, 16×32 f64); allocate a_pack
- *     (Mc×Kc) and b_pack (Kc×Nc).
- *  2. pack_b (per jc, pc): strip by strip, each strip's rows contiguous;
- *     partial strips zero-padded to nr.
- *  3. pack_a (per ic): transpose into strips of mr rows so that column
- *     A(i0..i0+mr−1, k) is one contiguous vector; NEON 4×4 / 2×2
- *     transposes; rows zero-padded to mr.
- *  4. macro_kernel (__arm_locally_streaming __arm_new("za")), for each
- *     jr, ir:
- *       - pc == 0: svzero_za(); otherwise move_c loads the partial sums of
- *         C into ZA, so sums carry across pc blocks.
- *       - k loop: svld1_x2 for A, svld1_x2 for B (f64: a second one for
- *         B columns 2–3), then 4 (f32) or 8 (f64) FMOPAs into separate
- *         tiles.
- *       - move_c stores ZA back to C.
- *  5. Edges: thanks to the zero padding, FMOPAs always run with an
- *     all-true predicate; only the C transfers into and out of ZA are
- *     predicated (columns) and bounded (rows).
- *
- * Why this loop order. Each level holds one operand fixed while the levels
- * inside it reuse it (f32, N=4096):
+ * Each level holds one operand fixed while the levels inside it reuse it
+ * (f32, N=4096; f64 has 16-row A strips, so 8 ir steps, and twice the
+ * bytes per block):
  *
  *   loop  trips  fixed during it       size     reused by        lives in
  *   k     1024   C micro-tile          4 KB     1,024 k steps    ZA
@@ -297,49 +115,117 @@
  *   pc    4      — (splits K)
  *   jc    1      — (splits N)
  *
- *   - k innermost: C stays in ZA for the whole k loop and touches memory
- *     once per pc pass. Per k step f32 loads 256 B for 2,048 flops
- *     (8 flop/B); f64 loads 384 B for 1,024 flops (~2.7 flop/B).
- *   - ir inside jr: a B strip is reused after only one A strip (128 KB)
- *     has passed through the cache, and an A strip after ~640 KB. Swapped,
- *     each A strip would walk the whole 16 MB B panel before the next one
- *     reuses it: the same bytes read, but at a reuse distance of the whole
- *     L2.
- *   - ic inside pc: B is packed once per (jc, pc) and serves all M/Mc A
- *     blocks. A is the operand repacked often, which is cheap: each A
- *     element is packed N/Nc times, each B element once — O(MK + KN)
- *     against O(MNK) flops.
- *   - pc bounds the strips and panels in K. The cost is one C round trip
- *     through ZA per pc (K/Kc times), so Kc is large.
- *   - jc caps the B panel at the 16 MB P-cluster L2; at N ≤ 4096 it runs
- *     once.
+ *  - k innermost: C stays in ZA for the whole k loop and touches memory
+ *    once per pc pass. Per k step f32 loads 256 B for 2,048 flops
+ *    (8 flop/B), f64 384 B for 1,024 flops (~2.7 flop/B).
+ *  - ir inside jr: a B strip is reused after one A strip (128 KB) has
+ *    passed through the cache, an A strip after ~640 KB. Swapped, each A
+ *    strip would walk the whole 16 MB panel before the next one reused it.
+ *  - ic inside pc: B is packed once per (jc, pc) and serves all M/Mc A
+ *    blocks; A, the small operand, is repacked N/Nc times. Packing is
+ *    O(MK + KN) against O(MNK) flops.
+ *  - pc: C makes one round trip through ZA per Kc, so Kc is large.
+ *  - jc: caps the B panel at the 16 MB P-cluster L2.
  *
- * Blocks are sized for L2, not L1 as in classic GotoBLAS, because on M4 the
- * SME unit is shared by the P-cluster and reads operands from L2.
+ * Blocks are sized for L2, not L1 as in classic GotoBLAS: on M4 the SME
+ * unit is shared by the P-cluster and reads operands from L2.
  *
- * f64: mr = 16, nr = 32, so 8 ir steps per jr, a 256 KB B strip, a 1 MB A
- * block and a 32 MB B panel.
+ * Packing runs in the non-streaming driver, because scalar and NEON code is
+ * slow in streaming mode; only macro_kernel runs streaming, with one
+ * SMSTART/SMSTOP per Mc×Nc×Kc block.
+ *
+ * Edges: packing zero-pads strips to mr / nr, so FMOPAs always run with an
+ * all-true predicate; only the C transfers into and out of ZA are
+ * predicated (columns) and bounded (rows).
+ *
+ * Pitfall: every streaming helper called from the ZA-owning macro_kernel
+ * needs a ZA attribute (__arm_inout("za") etc.). Without one it is
+ * "private-ZA": Clang won't inline it and wraps each call in a lazy ZA save
+ * (TPIDR2 + smstart za); inside the k loop that cuts throughput ~5×.
  *
  *
  * ============================================================
- *  Build notes and availability
+ *  Packing
  * ============================================================
  *
- * Apple Silicon implements streaming SVE (via SME) but no non-streaming SVE.
- * `-march=armv9-a+sme2` compiles, but the binary SIGILLs on the first
- * cntd/cntw Clang emits in a function prologue to size the ZA save buffer:
- * those are non-streaming SVE instructions. `-mcpu=apple-m4` avoids them.
- * Because a compile-only check cannot catch this, the CMake SME probe
- * (HPC_ENABLE_SME) compiles and runs a small SME program at configure time.
+ * Both operands become strips with one contiguous row per k step:
+ *
+ *   A: dst[s·mr·kc + k·mr + r] = A(s·mr + r, k)   row k = column k of A,
+ *                                                  rows s·mr .. s·mr+mr−1
+ *   B: dst[s·nr·kc + k·nr + c] = B(k, s·nr + c)   row k = B(k, s·nr .. +nr−1)
+ *
+ *   ┌ strip 0 ┬ strip 1 ┬ ... ┐   f32: kc = 1024 rows × 128 B = 128 KB each
+ *
+ * Row widths follow the micro-tile, not cache tuning: mr = 2·SVL (128 B
+ * for both types), nr = kCols·SVL (128 B f32, 256 B f64). Each k step reads
+ * one row of each strip with svld1_x2.
+ *
+ * A must be packed: read in place, the column A(i0..i0+31, k) is 32 values
+ * K·sizeof(T) apart — 32 cache lines per k step, with no gather load to
+ * fetch them. pack_a transposes with NEON 4×4 / 2×2 in-register transposes,
+ * ~10% faster overall than a scalar loop.
+ *
+ * B could be read in place, as its row segments are contiguous, but then
+ * the strip's rows are ldb·sizeof(T) bytes apart (ldb = N: every run here
+ * is square N×N, so "N=4000" means a 16,000 B stride for f32). At
+ * power-of-two strides this appears to cause severe cache-set conflicts.
+ * An address splits into tag | set index | line offset (bits 0–6 for 128 B
+ * lines), and a line may only live in one of the few ways of its own set.
+ * A 2^14 B stride (f32 N=4096) never changes bits 0–13, so if the set index
+ * comes from those bits (Apple does not document M4's indexing), all 1,024
+ * rows of the strip land in one set:
+ *
+ *   in place, N=4096:  row k at base + k·16 KB    same set every row
+ *   packed:            row k at strip + k·128 B   next set every row
+ *
+ * More generally, rows s bytes apart visit 128 / gcd(s/128, 128) of the 128
+ * L1 sets: 1 at 16 KB, 2 at 8 KB, all 128 at 16,000 B (125 lines, odd).
+ * Contiguity is what fixes it; any strip width would.
+ *
+ * Evidence, gemm_sme_blocked (in place) vs gemm_sme (packed), f32 / f64:
+ *  - N swept around powers of two: −17% / −31% at N=2048 and −55% / −33%
+ *    at N=4096, but within 3% at N = 1984–2080 and −3…−7% / −7…−11% at
+ *    N = 4000–4128.
+ *  - The same 4096×4096 problem with only ldb changed: ldb = 4096 −55% /
+ *    −33%, ldb = 4128 (+128 B per row) −3…−8% / −6…−8% over two runs. The
+ *    collapse follows the byte stride, not N, the work or the pages
+ *    touched; padded B still stays a few percent behind packed strips.
+ *  - ldb = 4097, whose rows are no longer 128 B aligned and so span two
+ *    lines each: −16% / −10%. Line-sized, line-aligned rows matter too.
+ *  - A pointer chase from a P-core over 1,024 lines 16 KB apart keeps only
+ *    8 of them in L1 and fewer than 1,024 in L2 (24 ns per load, against
+ *    0.78 ns for lines 128 B apart).
+ * Only large problems are affected: at N ≤ 1024 in place is within 2% of
+ * packed or faster (f64 N=1024, an 8 KB stride: +7%), as everything stays
+ * in L2. Not established: which cache level the SME unit's loads conflict
+ * in (it reads through L2; the pointer chase shows the core's view), and
+ * what causes the gap left away from powers of two (TLB reach — an
+ * in-place strip spans ~1,024 pages, a packed one ~8 — prefetching or
+ * footprint). Padding B would not replace packing in a library anyway: the
+ * caller owns B's layout, while packing works for any N.
+ *
+ * The packing buffers are Matrix<T> storage, 64-byte aligned by contract;
+ * the ≥ 128 KB buffers came back 128-byte aligned in all 600 allocations
+ * tried on macOS, but nothing guarantees it.
+ *
+ * Full tables: docs/benchmarks.md, "SME: B row stride". Reproduce with
+ * bench_gemm --benchmark_filter=BStride.
+ *
+ *
+ * ============================================================
+ *  Build and availability
+ * ============================================================
+ *
+ * SME2 is available on Apple M4 / M4 Pro / M4 Max (512-bit SVL), not on
+ * Apple M1–M3, AWS Graviton3/4, Fujitsu A64FX or x86. HPC_HAS_SME
+ * (hpc/isa.hpp) follows __ARM_FEATURE_SME && __ARM_FEATURE_SME2; where it is
+ * 0, all four kernels are declared `= delete`. The flags and why a wrong
+ * combination SIGILLs on Apple Silicon: docs/build.md, "SME and AMX build
+ * flags".
  *
  * svcntsw()/svcntsd() compile to RDSVL, an SME instruction that is legal
  * outside streaming mode, so the non-streaming driver can size its packing
  * buffers with them.
- *
- * SME2 is available on Apple M4 / M4 Pro / M4 Max (512-bit SVL); not on
- * Apple M1–M3, AWS Graviton3/4, Fujitsu A64FX or x86. HPC_HAS_SME
- * (hpc/isa.hpp) follows __ARM_FEATURE_SME && __ARM_FEATURE_SME2; where it is
- * 0, all four kernels are declared `= delete`.
  */
 
 #include "hpc/isa.hpp"
@@ -360,16 +246,11 @@
 namespace hpc::gemm {
 
 // ============================================================================
-// Cache-blocking parameters (elements)
-//
-// On M4 the SME unit is shared by a P-core cluster and streams operands from
-// L2, so blocks are sized for L2 rather than L1:
-//   packed B panel  kSmeKc × kSmeNc  (f32: 1024 × 4096 × 4B = 16 MB)
-//   packed A block  kSmeMc × kSmeKc  (f32:  128 × 1024 × 4B = 512 KB)
-// kSmeKc also sets how often a C block is reloaded into ZA (once per Kc).
-// Values picked by a sweep on M4 Max (Mc 64–512, Kc 256–2048, Nc 512–4096):
-// large Kc/Nc win because they amortise C reloads and A repacking; the
-// gain from Nc 2048 → 4096 shows only at N ≥ 4096 (+5%).
+// Cache-blocking parameters (elements) for gemm_sme and gemm_sme_blocked;
+// what each block holds is in the file header ("gemm_sme"). Values picked by
+// a sweep on M4 Max (Mc 64–512, Kc 256–2048, Nc 512–4096): large Kc/Nc win
+// because they amortise C reloads and A repacking; the gain from Nc 2048 →
+// 4096 shows only at N ≥ 4096 (+5%).
 // ============================================================================
 
 inline constexpr std::size_t kSmeMc = 128;
@@ -608,14 +489,9 @@ Matrix<T> pack_all_a(const Matrix<T>& A, std::size_t mr) {
 }  // namespace sme_detail
 
 /**
- * @brief C = A · B on ARM SME with a single ZA tile — the first step of the
- *        ladder: FMOPA latency bound.
- *
- * A is packed into s-row strips (s = SVL elements), which every SME kernel
- * needs: FMOPA takes a column of A as one vector and streaming mode has no
- * gather loads. The strips also keep A clear of the cache-set conflicts a
- * power-of-two row stride causes (see the file header). B is read in place
- * and there is no cache blocking. Single-threaded.
+ * @brief C = A · B on ARM SME, step 1 of 4: one ZA tile, A packed into
+ *        SVL-row strips, B read in place, no cache blocking. FMOPA latency
+ *        bound; see the file header.
  */
 template <typename T>
 void gemm_sme_1tile(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
@@ -635,13 +511,10 @@ void gemm_sme_1tile(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
 }
 
 /**
- * @brief C = A · B on ARM SME with all ZA tiles — the second step: FMOPA
- *        latency hidden, B still read in place.
- *
- * Same micro-kernel as gemm_sme (2×2 za32 / 2×4 za64 tiles), A packed into
- * 2·SVL-row strips once, but no B packing and no cache blocking: B strip rows
- * are N·sizeof(T) apart, and A is re-read for every B strip, so it slows
- * down from N=2048 (see the file header). Single-threaded.
+ * @brief C = A · B on ARM SME, step 2 of 4: all ZA tiles (gemm_sme's
+ *        macro_kernel run once over the whole problem), A packed into
+ *        2·SVL-row strips, B read in place, no cache blocking. See the file
+ *        header.
  */
 template <typename T>
 void gemm_sme_tiles(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
@@ -712,14 +585,9 @@ void blocked_driver(const Matrix<T>& A, const T* B, std::size_t ldb, Matrix<T>& 
 }  // namespace sme_detail
 
 /**
- * @brief C = A · B on ARM SME with all ZA tiles and GotoBLAS cache blocking,
- *        B read in place — the third step.
- *
- * Exactly gemm_sme without pack_b. Blocking fixes gemm_sme_tiles' large-N
- * slowdown, but B strip rows stay N·sizeof(T) apart, and at a power-of-two
- * stride it loses up to 55% to gemm_sme, consistent with cache-set
- * conflicts (design item 2 in the file header).
- * Single-threaded.
+ * @brief C = A · B on ARM SME, step 3 of 4: gemm_sme without pack_b (all ZA
+ *        tiles, cache blocking, B read in place). See the file header,
+ *        "Packing", for what that costs at power-of-two N.
  */
 template <typename T>
 void gemm_sme_blocked(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
@@ -730,9 +598,8 @@ void gemm_sme_blocked(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
 }
 
 /**
- * @brief C = A · B on ARM SME — packed, cache-blocked, all ZA tiles in use.
- *
- * See the file header for the design. Single-threaded.
+ * @brief C = A · B on ARM SME, step 4 of 4: all ZA tiles, cache blocking,
+ *        A and B packed. See the file header, "gemm_sme".
  */
 template <typename T>
 void gemm_sme(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {

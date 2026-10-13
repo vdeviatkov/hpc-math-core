@@ -52,9 +52,6 @@ namespace hpc::gemm {
 inline constexpr std::size_t kSveTileM = 64;   // outer i-tile (rows of A / C)
 inline constexpr std::size_t kSveTileK = 256;  // outer k-tile (contraction width)
 inline constexpr std::size_t kSveTileN = 512;  // outer j-tile (cols of B / C)
-                                               // 512 × 4B = 2 KB per B row-tile;
-                                               // on 256-bit SVE (8 f32/vec) this is
-                                               // 64 vectors — well within L1 TLB.
 
 // Number of C rows accumulated simultaneously in the blocked micro-kernel.
 // 4 rows × 2 vectors; at 256-bit VL that is 4 × 16 f32 (256 B), the same

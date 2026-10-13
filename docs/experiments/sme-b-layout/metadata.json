@@ -1,0 +1,15 @@
+{
+  "date": "2026-10-12",
+  "machine": "Apple M4 Max, macOS 26.3.1",
+  "load_average_1min": [5.55, 6.23],
+  "compiler": "Apple clang 17.0.0 (clang-1700.4.4.1)",
+  "flags": "-O3 -DNDEBUG -mcpu=apple-m4 -ffast-math -funroll-loops (CMake Release, HPC_ENABLE_SME=ON)",
+  "command": "./build/benchmarks/sme_b_layout 4096 15 3",
+  "base_commit": "b3238d14b8d59c84a8abffac7d0883d67457f871",
+  "base_commit_note": "run on uncommitted changes on top of base_commit; the hashes identify the exact sources",
+  "sha256": {
+    "src/gemm/sme.hpp": "4d4c783052574073673bf7d413e4eaac53b5a5320f1b531796fac292bea3292a",
+    "include/hpc/matrix.hpp": "7f5162f46bdb1dd0e9d28ee10b6dd53f9f22881e347ed7501cf115dfe57182d3",
+    "benchmarks/experiments/sme_b_layout.cpp": "1a6312e6c0ce855d4701f847d79f35b8128f46cca296cef9598c5a4ff764fb6e"
+  }
+}

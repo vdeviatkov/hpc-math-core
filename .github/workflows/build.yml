@@ -1,32 +1,14 @@
-# =============================================================================
-# hpc-math-core — CI build & test workflow
-# =============================================================================
+# Build and test on three hosted runners. None has a GPU, an SME-capable CPU
+# or a CUDA toolkit, so every job builds the CUDA stub
+# (src/cuda/gemm_kernels_stub.cpp) and the SME / KleidiAI kernels are absent.
 #
-# Triggers: every push and pull-request to any branch.
+#   linux-x86   GCC 14, HPC_MARCH=x86-64-v3   scalar, AVX2, prefetch
+#   linux-arm   GCC 14, -march=native         scalar, NEON, prefetch (SVE if the runner has it)
+#   macos       Apple Clang                   scalar, NEON, prefetch, AMX via Accelerate
 #
-# Jobs
-# ─────────────────────────────────────────────────────────────────────────────
-#  build-linux-x86   Ubuntu 24.04 · GCC 14 · x86-64
-#                    Flags: HPC_MARCH=x86-64-v3 (AVX2 + FMA)
-#                    Tests: scalar, AVX2, prefetch.
-#
-#  build-linux-arm   Ubuntu 24.04 · GCC 14 · aarch64 · -march=native
-#                    Tests: scalar, NEON, prefetch (plus SVE if the runner
-#                    CPU has it).
-#
-#  build-macos       macOS 14 (Apple M-series) · Apple Clang · arm64
-#                    Tests: scalar, NEON, prefetch, AMX (Accelerate).
-#
-#  build-cuda-stub   Ubuntu 24.04, no CUDA toolkit: CMake finds no nvcc and
-#                    builds gemm_kernels_stub.cpp. The CUDA tests and
-#                    benchmarks build and run, and every one must report
-#                    SKIPPED.
-#
-# Caching: ccache (key: OS + compiler + source hash) and the FetchContent
-# sources (GoogleTest, Google Benchmark).
-#
-# Artifacts: CTest JUnit XML from every job.
-# =============================================================================
+# linux-x86 pins x86-64-v3 because ccache may hand objects to a later job on a
+# CPU with different extensions; -march=native objects could then SIGILL.
+# It also checks that every CUDA benchmark reports SKIPPED.
 
 name: CI — Build & Test
 
@@ -36,258 +18,82 @@ on:
   pull_request:
     branches: ["**"]
 
-# Cancel in-progress runs for the same branch on new push.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# ---------------------------------------------------------------------------
-# Shared environment
-# ---------------------------------------------------------------------------
 env:
-  CMAKE_BUILD_TYPE: Release
   CCACHE_DIR: ${{ github.workspace }}/.ccache
   CCACHE_MAXSIZE: 500M
   CTEST_OUTPUT_ON_FAILURE: "1"
 
-# =============================================================================
-# Job 1: Linux x86-64 (GCC 14)
-# =============================================================================
 jobs:
-  build-linux-x86:
-    name: "Linux x86-64 · GCC 14"
-    runs-on: ubuntu-24.04
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86
+            runner: ubuntu-24.04
+            cmake_args: -DHPC_MARCH=x86-64-v3
+            cuda_smoke: true
+          - name: linux-arm
+            runner: ubuntu-24.04-arm
+          - name: macos
+            runner: macos-14
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install GCC 14 & ccache
+      - name: Install toolchain (Linux)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            gcc-14 g++-14 ccache ninja-build
+          sudo apt-get install -y --no-install-recommends gcc-14 g++-14 ccache ninja-build
           sudo update-alternatives --install /usr/bin/cc  cc  /usr/bin/gcc-14 100
           sudo update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++-14 100
 
-      - name: Restore ccache
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.CCACHE_DIR }}
-          # Include runner.arch so ARM and x86 builds never share cached objects.
-          key: ccache-linux-x86-gcc14-${{ runner.arch }}-${{ hashFiles('CMakeLists.txt', 'src/**', 'include/**') }}
-          restore-keys: ccache-linux-x86-gcc14-${{ runner.arch }}-
-
-      - name: Restore FetchContent cache
-        uses: actions/cache@v4
-        with:
-          path: build/_deps
-          # FetchContent sources are arch-independent, but the key still
-          # includes runner.arch to avoid any cmake cache file cross-contamination.
-          key: fetchcontent-linux-x86-${{ runner.arch }}-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: fetchcontent-linux-x86-${{ runner.arch }}-
-
-      - name: CMake configure
-        run: |
-          # x86-64-v3 (AVX2 + FMA) runs on every GitHub-hosted x86 runner.
-          # -march=native would target whichever CPU the job lands on, and
-          # ccache can hand those objects to a later job on a CPU without
-          # the same extensions (e.g. AVX-512), which would SIGILL.
-          cmake -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=${{ env.CMAKE_BUILD_TYPE }} \
-            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-            -DHPC_MARCH=x86-64-v3
-
-      - name: Build
-        run: cmake --build build --parallel
-
-      - name: Run tests
-        working-directory: build
-        run: ctest --output-junit ../test-results-linux-x86.xml
-
-      - name: ccache stats
-        run: ccache --show-stats
-
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-results-linux-x86
-          path: test-results-linux-x86.xml
-
-  # =============================================================================
-  # Job 2: Linux aarch64 (GCC 14, native ARM runner)
-  # =============================================================================
-  build-linux-arm:
-    name: "Linux aarch64 · GCC 14"
-    runs-on: ubuntu-24.04-arm
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install GCC 14 & ccache
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            gcc-14 g++-14 ccache ninja-build
-          sudo update-alternatives --install /usr/bin/cc  cc  /usr/bin/gcc-14 100
-          sudo update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++-14 100
-
-      - name: Restore ccache
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.CCACHE_DIR }}
-          key: ccache-linux-arm-gcc14-${{ runner.arch }}-${{ hashFiles('CMakeLists.txt', 'src/**', 'include/**') }}
-          restore-keys: ccache-linux-arm-gcc14-${{ runner.arch }}-
-
-      - name: Restore FetchContent cache
-        uses: actions/cache@v4
-        with:
-          path: build/_deps
-          key: fetchcontent-linux-arm-${{ runner.arch }}-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: fetchcontent-linux-arm-${{ runner.arch }}-
-
-      - name: CMake configure
-        run: |
-          cmake -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=${{ env.CMAKE_BUILD_TYPE }} \
-            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-
-      - name: Build
-        run: cmake --build build --parallel
-
-      - name: Run tests
-        working-directory: build
-        run: ctest --output-junit ../test-results-linux-arm.xml
-
-      - name: ccache stats
-        run: ccache --show-stats
-
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-results-linux-arm
-          path: test-results-linux-arm.xml
-
-  # =============================================================================
-  # Job 3: macOS 14 (Apple Clang, Apple M runner)
-  # =============================================================================
-  build-macos:
-    name: "macOS 14 · Apple Clang · arm64"
-    runs-on: macos-14
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install ccache & ninja
+      - name: Install toolchain (macOS)
+        if: runner.os == 'macOS'
         run: brew install ccache ninja
 
       - name: Restore ccache
         uses: actions/cache@v4
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache-macos14-appleclang-${{ runner.arch }}-${{ hashFiles('CMakeLists.txt', 'src/**', 'include/**') }}
-          restore-keys: ccache-macos14-appleclang-${{ runner.arch }}-
+          key: ccache-${{ matrix.name }}-${{ hashFiles('CMakeLists.txt', 'src/**', 'include/**', 'tests/**', 'benchmarks/**') }}
+          restore-keys: ccache-${{ matrix.name }}-
 
-      - name: Restore FetchContent cache
+      - name: Restore FetchContent sources
         uses: actions/cache@v4
         with:
           path: build/_deps
-          key: fetchcontent-macos-${{ runner.arch }}-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: fetchcontent-macos-${{ runner.arch }}-
+          key: fetchcontent-${{ matrix.name }}-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: fetchcontent-${{ matrix.name }}-
 
-      - name: CMake configure
-        run: |
-          cmake -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=${{ env.CMAKE_BUILD_TYPE }} \
-            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+      - name: Configure
+        run: >
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          ${{ matrix.cmake_args }}
 
       - name: Build
         run: cmake --build build --parallel
 
-      - name: Run tests
-        working-directory: build
-        run: ctest --output-junit ../test-results-macos.xml
+      - name: Test
+        run: ctest --test-dir build --output-junit ${{ github.workspace }}/test-results.xml
 
-      - name: ccache stats
-        run: ccache --show-stats
-
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-results-macos
-          path: test-results-macos.xml
-
-  # =============================================================================
-  # Job 4: CUDA stub — hosted runner, no toolkit, stub library only.
-  #
-  # CMake's check_language(CUDA) finds no nvcc → builds gemm_kernels_stub.cpp.
-  # bench_gemm_cuda and hpc_tests_cuda compile against the stub.
-  # All CUDA tests/benchmarks print SKIPPED at runtime (cuda_device_count()=0).
-  #
-  # Checks that the no-CUDA code path builds and links on every push.
-  # =============================================================================
-  build-cuda-stub:
-    name: "CUDA stub (no toolkit) · Linux x86-64"
-    runs-on: ubuntu-24.04
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install GCC 14 & ccache
+      - name: Check that CUDA benchmarks skip without a GPU
+        if: matrix.cuda_smoke
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            gcc-14 g++-14 ccache ninja-build
-          sudo update-alternatives --install /usr/bin/cc  cc  /usr/bin/gcc-14 100
-          sudo update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++-14 100
-
-      - name: Restore ccache
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.CCACHE_DIR }}
-          key: ccache-cuda-stub-gcc14-${{ runner.arch }}-${{ hashFiles('CMakeLists.txt', 'src/**', 'include/**') }}
-          restore-keys: ccache-cuda-stub-gcc14-${{ runner.arch }}-
-
-      - name: Restore FetchContent cache
-        uses: actions/cache@v4
-        with:
-          path: build/_deps
-          key: fetchcontent-cuda-stub-${{ runner.arch }}-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: fetchcontent-cuda-stub-${{ runner.arch }}-
-
-      # No CUDA toolkit installed — CMake will detect no nvcc and use the stub.
-      - name: CMake configure (stub path)
-        run: |
-          cmake -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=${{ env.CMAKE_BUILD_TYPE }} \
-            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-            -DHPC_MARCH=x86-64-v3
-
-      - name: Build (stub + all CPU targets)
-        run: cmake --build build --parallel
-
-      - name: Run tests (CUDA tests print SKIPPED — expected)
-        working-directory: build
-        run: ctest --output-junit ../test-results-cuda-stub.xml
-
-      - name: Smoke-test bench_gemm_cuda (all rows must say SKIPPED)
-        run: |
-          ./build/benchmarks/cuda/bench_gemm_cuda \
-            --benchmark_filter="N=64" \
-            --benchmark_min_time=0.01s 2>&1 \
-          | tee /tmp/cuda_bench_out.txt
-          # Fail if any row ran instead of being skipped.
-          if grep -qP "^\s+\d" /tmp/cuda_bench_out.txt; then
-            echo "ERROR: a CUDA benchmark ran on a no-GPU runner"
+          ./build/benchmarks/bench_gemm_cuda --benchmark_filter="N=64" \
+            --benchmark_min_time=0.01s 2>&1 | tee cuda_bench.txt
+          if grep -qP "^\s+\d" cuda_bench.txt; then
+            echo "a CUDA benchmark ran on a runner without a GPU"
             exit 1
           fi
-          echo "OK — all CUDA benchmarks correctly skipped"
 
       - name: ccache stats
         run: ccache --show-stats
@@ -296,7 +102,5 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-results-cuda-stub
-          path: test-results-cuda-stub.xml
-
-
+          name: test-results-${{ matrix.name }}
+          path: test-results.xml

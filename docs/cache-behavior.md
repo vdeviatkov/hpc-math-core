@@ -119,7 +119,7 @@ The reordered kernel's stride-1 walk over B row k is the easiest case. The naïv
 
 ## 7. What Comes Next: Loop Tiling
 
-Even the reordered kernel has an issue for very large matrices: the outer k-loop causes row `i` of C to be evicted from L1 between k-iterations if N is large. Loop tiling (blocking) addresses this by processing a small tile (e.g. 64×64 elements) that stays cache-resident before moving on. This is Level 1, `gemm_blocked`.
+Even the reordered kernel has an issue for very large matrices: the outer k-loop causes row `i` of C to be evicted from L1 between k-iterations if N is large. Loop tiling (blocking) addresses this by processing a small tile (e.g. 64×64 elements) that stays cache-resident before moving on: `gemm_blocked`.
 
 ```
 Tiled access pattern (tile size T_r × T_c):
@@ -127,14 +127,14 @@ Tiled access pattern (tile size T_r × T_c):
   for i_block in [0, M, T_r):
     for k_block in [0, K, T_k):
       for j_block in [0, N, T_c):
-        // This 3D tile of A, B, C fits in L1:
+        // These tiles of A, B and C stay in cache:
         for i in [i_block, min(i_block+T_r, M)):
           for k in [k_block, min(k_block+T_k, K)):
             for j in [j_block, min(j_block+T_c, N)):
               C(i,j) += A(i,k) * B(k,j)
 ```
 
-With a tile size of 64×64 doubles, the working set is `3 * 64 * 64 * 8 = 98 KB`. This fits comfortably in L2 (256 KB) and significantly reduces L3 traffic compared to the reordered kernel.
+With 64×64 tiles of doubles the working set is `3 × 64 × 64 × 8 B = 96 KiB`: more than an L1, but well inside the L2 of both CPUs measured here (1 MiB per Zen 5 core, 16 MiB per M4 cluster).
 
 ---
 
@@ -148,7 +148,7 @@ Peak GFLOP/s ≤ (DRAM bandwidth GB/s) × (Arithmetic intensity FLOP/byte)
 
 For naïve GEMM in the worst case, where every access to B misses all the way to DRAM:
 - Each multiply-add (2 FLOPs) pulls a 64-byte line to use one 8-byte double → arithmetic intensity ≈ 2 / 64 ≈ 0.03 FLOP/byte
-- DRAM bandwidth ≈ 50 GB/s (dual-channel DDR4-3200; 25.6 GB/s per channel)
+- DRAM bandwidth ≈ 50 GB/s, for example (dual-channel DDR4-3200)
 - Peak ≈ 50 × 0.03 = ~1.6 GFLOP/s
 
 Caches soften this at moderate N (part of B stays resident), but the trend shows in the measurements: naïve f64 on M4 Max falls from 9.5 GFLOP/s at N=64 to 0.66 at N=4096 ([benchmarks.md](benchmarks.md#apple-m4-max)).
@@ -157,18 +157,18 @@ For the reordered kernel, effective bandwidth is much higher (from caches), but 
 ```
 Peak compute = cores × SIMD width × FMA throughput × frequency
 ```
-This motivates the SIMD implementations in Levels 2–4 (AVX2, AVX-512, NEON/SVE).
+This motivates the explicit SIMD kernels (AVX2, AVX-512, NEON, SVE) and the matrix engines.
 
 
 ---
 
 ## 9. GPU Memory Hierarchy
 
-The same latency ladder exists on a GPU, with one extra tier — per-SM shared memory — that the CUDA kernels in [src/gemm/README.md](../src/gemm/README.md#algorithm-9--cuda-kernels-cudahpp--srccudagemm_kernelscu) exploit explicitly.
+The same latency ladder exists on a GPU, with one extra tier — per-SM shared memory — that the CUDA kernels ([src/gemm/cuda.hpp](../src/gemm/cuda.hpp)) manage explicitly.
 
 ```
                   ┌──────────────────────────────────────────────────┐
-                  │  GPU (this repo's: NVIDIA RTX 5080, sm_120)      │
+                  │  GPU: NVIDIA RTX 5080 (sm_120), as benchmarked   │
   ┌───────────────┴──────────────┐  ┌──────────────────────────┐     │
   │  SM 0  (Streaming Multiproc) │  │  SM 1  …  SM 83          │     │
   │  ┌─────────┐  ┌───────────┐  │  │                          │     │
@@ -188,4 +188,4 @@ The same latency ladder exists on a GPU, with one extra tier — per-SM shared m
 [benchmarks.md](benchmarks.md#nvidia-rtx-5080--cuda). Shared memory and L1
 share one on-chip array per SM; up to 100 KB of it can be shared memory.)
 
-Warp coalescence: 32 threads in a warp issue memory loads together. If consecutive threads access consecutive addresses, the hardware merges them into a single 128-byte transaction. In our kernels, thread `(ty, tx)` computes `C(i, j)` where `j = blockCol*TILE + tx` — so consecutive threads in a warp differ only in `tx`, giving coalesced access to B rows and C rows.
+Coalescing: the 32 threads of a warp issue their loads together, and when consecutive threads access consecutive addresses the hardware merges them into 128-byte transactions. In CUDA Levels 0 and 1, thread `(ty, tx)` computes `C(i, j)` with `j = blockCol·TILE + tx`, so consecutive threads of a warp differ only in `tx` and their accesses to rows of B and C coalesce.

@@ -17,12 +17,11 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 # ---------------------------------------------------------------------------
-# Compiler diagnostics
+# Compiler diagnostics, for C++ sources only: nvcc would pass them to its
+# host compiler, where -Wpedantic flags every line directive nvcc generates.
 # ---------------------------------------------------------------------------
 add_compile_options(
-    $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall>
-    $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wextra>
-    $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wpedantic>
+    "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:GNU,Clang,AppleClang>>:-Wall;-Wextra;-Wpedantic>"
 )
 
 # MSVC uses __restrict instead of __restrict__ (GCC/Clang extension).
@@ -32,40 +31,10 @@ if(MSVC)
 endif()
 
 # ---------------------------------------------------------------------------
-# Aggressive optimisation flags (Release / RelWithDebInfo builds only)
-#
-# -O3               : Full optimisation — auto-vectorisation, loop transforms,
-#                     function inlining beyond -O2 thresholds.
-# -march=native     : Emit instructions for the exact CPU this binary is built
-#                     on (AVX2, FMA, BMI2, …). The resulting binary is NOT
-#                     portable to other machines.
-# -ffast-math       : Allows reassociation, FMA contraction and reciprocal
-#                     approximations, and assumes no NaN/Inf. Lets the
-#                     compiler vectorise the scalar reduction loops; not
-#                     suitable for code that needs strict IEEE-754 semantics.
-# -funroll-loops    : Unroll loops whose trip count is known at compile time.
-#                     Reduces loop-overhead instructions; pairs well with SIMD.
-# -fno-omit-frame-pointer : Keep frame pointers so that profilers (perf,
-#                     Instruments) can unwind the call stack correctly even
-#                     in optimised builds.
-#
-# Inter-Procedural Optimisation (LTO / LTCG):
-#   cmake -DHPC_ENABLE_LTO=ON enables link-time optimisation so that the
-#   compiler can inline and optimise across translation-unit boundaries.
-#   Increases link time significantly for large projects.
+# -march target. The default, native, builds for the build CPU only.
+# x86-64-v3 gives a portable AVX2 + FMA build; an empty value omits -march.
 # ---------------------------------------------------------------------------
-# ---------------------------------------------------------------------------
-# -march target selection
-#
-# Default: -march=native — instructions for the build CPU; the binary may not
-# run on other CPUs.
-#
-# Overrides:
-#   cmake -DHPC_MARCH=x86-64-v3 ..   → AVX2 + FMA (safe on all GitHub x86 runners)
-#   cmake -DHPC_MARCH=armv8-a+simd .. → baseline AArch64
-#   cmake -DHPC_MARCH=      ..       → empty string disables the flag entirely
-# ---------------------------------------------------------------------------
-set(HPC_MARCH "native" CACHE STRING "Value passed to -march=. Set to x86-64-v3 for portable x86 CI builds.")
+set(HPC_MARCH "native" CACHE STRING "Value passed to -march= (empty: no -march flag)")
 
 # ---------------------------------------------------------------------------
 # Optional: ARM SME (Scalable Matrix Extension)
@@ -135,34 +104,17 @@ int main() { probe(); return 0; }
     endif()
 endif()
 
+# Release flags (rationale: docs/build.md). Every entry is limited to CXX
+# sources: $<CXX_COMPILER_ID:...> alone does not restrict a flag to C++, so
+# on a CUDA build these would also reach nvcc, and on Windows nvcc rejects
+# the raw /-prefixed MSVC flags ("A single input file is required for a
+# non-link phase when an outputfile is specified").
 add_compile_options(
-    # --- GCC / Clang / AppleClang ---
-    # COMPILE_LANGUAGE:CXX guards are required on every entry here: without
-    # it, $<CXX_COMPILER_ID:...> only asserts "the project's CXX compiler
-    # is this vendor" -- it does NOT restrict the flag to CXX sources -- so
-    # on a CUDA-enabled build these host flags leak into every nvcc
-    # invocation too. On Linux/macOS nvcc's -forward-unknown-to-host-compiler
-    # quietly hands GCC/Clang-style flags like -ffast-math/-march=native to
-    # the host compiler, but on Windows nvcc's own argument parser rejects
-    # the unguarded MSVC block below (see next comment) with "nvcc fatal :
-    # A single input file is required for a non-link phase when an
-    # outputfile is specified".
     $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:GNU,Clang,AppleClang>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>:-O3>
     $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<BOOL:${HPC_MARCH}>,$<CXX_COMPILER_ID:GNU,Clang,AppleClang>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>:-march=${HPC_MARCH}>
     $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:GNU,Clang,AppleClang>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>:-ffast-math>
     $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:GNU,Clang,AppleClang>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>:-funroll-loops>
     $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:GNU,Clang,AppleClang>>:-fno-omit-frame-pointer>
-    # --- MSVC ---
-    # /O2          : Full optimisation (equivalent to -O2/-O3)
-    # /fp:fast     : Fast floating-point model (equivalent to -ffast-math)
-    # /Oy-         : Preserve frame pointers for profiling
-    # NOTE: /arch flag is added below after AVX-512 detection.
-    # Unguarded, nvcc (13.2, Windows) misparses these raw "/"-prefixed
-    # tokens on its own command line and fails with "A single input file is
-    # required for a non-link phase when an outputfile is specified" --
-    # they must reach nvcc only via -Xcompiler, never directly, hence the
-    # COMPILE_LANGUAGE:CXX guard (nvcc's CUDA-language compile rule adds
-    # its own /O2 etc. separately, already correctly wrapped).
     $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:MSVC>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>:/O2>
     $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:MSVC>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>:/fp:fast>
     $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:MSVC>>:/Oy->
@@ -343,34 +295,17 @@ if(HPC_ENABLE_KLEIDIAI)
 endif()
 
 # ---------------------------------------------------------------------------
-# Sub-directories
-# ---------------------------------------------------------------------------
-enable_testing()
-add_subdirectory(tests)
-add_subdirectory(benchmarks)
-
-# ---------------------------------------------------------------------------
-# Optional CUDA support
+# CUDA (optional, detected automatically)
 #
-# CUDA is enabled automatically if a CUDA toolkit is found on the system.
-# When found:
-#   - CUDA language is enabled for the project.
-#   - A static library `hpc_math_cuda` is compiled from src/cuda/*.cu.
-#     It links against hpc_math_core (for the Matrix<T> header).
-#   - bench_gemm_cuda and hpc_tests_cuda targets are added.
-#
-# When NOT found (macOS CPU-only, CI, …):
-#   - A stub library `hpc_math_cuda` is created from
-#     src/cuda/gemm_kernels_stub.cpp that provides cuda_device_count()→0
-#     and throws on any kernel call.
-#   - bench_gemm_cuda and hpc_tests_cuda still build; all benchmarks/tests
-#     are skipped at runtime.
+# With nvcc, hpc_math_cuda is built from src/cuda/gemm_kernels.cu. Without
+# it, hpc_math_cuda is src/cuda/gemm_kernels_stub.cpp: cuda_device_count()
+# returns 0, so the CUDA tests and benchmarks still build and report SKIPPED.
 # ---------------------------------------------------------------------------
 include(CheckLanguage)
 check_language(CUDA)
 
 if(CMAKE_CUDA_COMPILER)
-    message(STATUS "CUDA toolkit found — enabling GPU kernels (${CMAKE_CUDA_COMPILER})")
+    message(STATUS "CUDA toolkit found — building GPU kernels (${CMAKE_CUDA_COMPILER})")
 
     # Choose the architecture BEFORE enable_language(CUDA).
     #
@@ -441,45 +376,16 @@ if(CMAKE_CUDA_COMPILER)
 
     message(STATUS "CUDA architectures: ${CMAKE_CUDA_ARCHITECTURES}")
 
-    # The CUDA kernel library — compiled from .cu source.
-    add_library(hpc_math_cuda STATIC
-        src/cuda/gemm_kernels.cu
-    )
-    target_include_directories(hpc_math_cuda PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
-    )
-    target_compile_features(hpc_math_cuda PUBLIC cxx_std_20)
-    # Allow .cu files to use C++20 features.
-    set_target_properties(hpc_math_cuda PROPERTIES
-        CUDA_STANDARD 17        # nvcc C++17 is the max widely supported standard
-        CUDA_STANDARD_REQUIRED  ON
-        CUDA_SEPARABLE_COMPILATION OFF
-    )
-    # CUDA::cublas backs the vendor-tuned reference kernels
-    # (gemm_cuda_cublas / gemm_cuda_cublas_tf32 / gemm_cuda_cublas_fp16) used
-    # to measure this GPU's realistic achievable peak against the
-    # hand-written kernels above.
+    add_library(hpc_math_cuda STATIC src/cuda/gemm_kernels.cu)
+    set_target_properties(hpc_math_cuda PROPERTIES CUDA_STANDARD 17 CUDA_STANDARD_REQUIRED ON)
+    # cuBLAS backs the reference entry points (gemm_cuda_cublas*).
     target_link_libraries(hpc_math_cuda PUBLIC hpc_math_core CUDA::cudart CUDA::cublas)
-
-    message(STATUS "Building CUDA benchmark  : benchmarks/bench_gemm_cuda")
-    message(STATUS "Building CUDA test suite : tests/hpc_tests_cuda")
-
 else()
-    message(STATUS "No CUDA compiler found — building CPU-only stub for CUDA symbols")
-
-    # Stub implementation so that bench_gemm_cuda / hpc_tests_cuda compile
-    # on machines without CUDA (they will just skip at runtime).
-    add_library(hpc_math_cuda STATIC
-        src/cuda/gemm_kernels_stub.cpp
-    )
-    target_include_directories(hpc_math_cuda PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
-    )
-    target_compile_features(hpc_math_cuda PUBLIC cxx_std_20)
+    message(STATUS "No CUDA compiler found — building the CPU-only CUDA stub")
+    add_library(hpc_math_cuda STATIC src/cuda/gemm_kernels_stub.cpp)
     target_link_libraries(hpc_math_cuda PUBLIC hpc_math_core)
 endif()
 
-add_subdirectory(tests/cuda)
-add_subdirectory(benchmarks/cuda)
+enable_testing()
+add_subdirectory(tests)
+add_subdirectory(benchmarks)

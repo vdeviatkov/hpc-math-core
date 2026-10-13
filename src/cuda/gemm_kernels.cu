@@ -1,20 +1,12 @@
 /**
  * @file gemm_kernels.cu
- * @brief CUDA GEMM kernel implementations -- progressive optimization ladder.
+ * @brief The CUDA GEMM kernels, Levels 0-7, and the cuBLAS reference.
  *
- * Level 0: kernel_naive          -- global memory only, 1 thread -> 1 C(i,j)
- * Level 1: kernel_blocked        -- TILE=16 shared-memory tiling
- * Level 2: kernel_reg_tile       -- 128x128 thread block, each thread owns 8x8 C tile
- * Level 3: kernel_double_buf     -- Level 2 + double buffering (cp.async on Ampere+)
- * Level 4: kernel_wmma           -- Tensor Cores via WMMA (fp16 in, fp32 accumulate)
- * Level 5: kernel_vectorized     -- Level 2 + float4/double2 loads + XOR-swizzled smem
- * Level 6: kernel_mma_ldmatrix   -- Tensor Cores via raw ldmatrix + mma.sync PTX
- * Level 7: kernel_wmma_pipelined -- WMMA with 128x128 tiles + cp.async double buffering
- * Reference: cuBLAS (SGEMM/DGEMM, TF32, FP16) -- vendor ceiling, not part of the ladder
- *
- * Each level's comment below explains what it adds. The GPU memory
- * hierarchy these kernels work against is described in
- * docs/cache-behavior.md, section 9.
+ * The levels and their public entry points are listed in gemm/cuda.hpp.
+ * Each kernel's comment below explains what it adds over the level it
+ * builds on; the host launchers near the end of the file pick each level's
+ * fallback when its hardware or shape requirement is not met. The GPU memory
+ * hierarchy these kernels work against: docs/cache-behavior.md, section 9.
  */
 
 #include "gemm/cuda.hpp"
@@ -74,6 +66,11 @@ static constexpr int kWMMA_K = 16;
 
 // ============================================================================
 // Level 0: Naive
+//
+// One thread computes one C(i,j), reading A and B straight from global
+// memory. Adjacent threads of a warp read adjacent B[k][j], so the B loads
+// coalesce, and L1/L2 absorb much of the reuse — which makes this baseline
+// harder to beat than it looks.
 // ============================================================================
 template <typename T>
 __global__ void kernel_naive(const T* __restrict__ A,
@@ -90,7 +87,14 @@ __global__ void kernel_naive(const T* __restrict__ A,
 }
 
 // ============================================================================
-// Level 1: Blocked / Tiled  (TILE=16 shared-memory)
+// Level 1: Shared-memory tiling, TILE=16
+//
+// A 16x16 thread block stages each 16x16 k-tile of A and B in shared memory,
+// so each global element is loaded once per block instead of once per
+// thread: 16x fewer global loads. The shared-memory reads are a broadcast
+// (As[ty][p]) and a contiguous row (Bs[p][tx]), so they are free of bank
+// conflicts; the +1 padding is not needed for that. Each thread still owns
+// one output, so the two __syncthreads() per k-tile pay for only 16 FMAs.
 // ============================================================================
 template <typename T>
 __global__ void kernel_blocked(const T* __restrict__ A,
@@ -532,17 +536,10 @@ kernel_vectorized(const T* __restrict__ A,
 // Thread block: 4 warps in X x 4 warps in Y = 16 warps = 512 threads.
 // Thread block output: (4*16) x (4*16) = 64x64.
 //
-// The input matrices are fp32. We convert to fp16 into shared memory,
-// run wmma::mma_sync (fp16 x fp16 -> fp32), and accumulate in fp32 fragments.
-//
-// Key concepts:
-//   wmma::fragment  -- opaque per-warp register file holding a matrix tile.
-//   wmma::load_matrix_sync  -- cooperative warp load from shared memory.
-//   wmma::mma_sync  -- 16x16x16 Tensor Core MMA.
-//   wmma::store_matrix_sync -- cooperative warp store to global memory.
-//
-// The fp16 conversion introduces ~1e-3 relative error vs fp32 GEMM; the
-// tests use a relaxed tolerance.
+// A and B are fp32; each tile is converted to fp16 on its way into shared
+// memory, multiplied with wmma::mma_sync (fp16 x fp16 -> fp32) and
+// accumulated in fp32 fragments. The conversion costs ~1e-3 relative error,
+// hence the relaxed test tolerance.
 //
 // Falls back to gemm_cuda_double_buf on non-WMMA targets.
 // ============================================================================
@@ -672,9 +669,9 @@ kernel_wmma(const float* __restrict__ A,
 // double buffering.
 //
 // kernel_wmma (64x64 block tile, single-buffered, one mma_sync per warp per
-// k-step) reaches ~5–6 TFLOP/s on RTX 5080; cuBLAS FP16 (compute-only)
-// reaches ~120 on the same Tensor Cores. This kernel closes most of that
-// gap the way CUTLASS-style kernels do, still on the wmma:: C++ API:
+// k-step) runs an order of magnitude below cuBLAS FP16 on the same Tensor
+// Cores. This kernel closes most of that gap the way CUTLASS-style kernels
+// do, still on the wmma:: C++ API:
 //
 //   1. Bigger block tile: 128x128 with BK=32 (vs 64x64, BK=16), so more work
 //      per shared-memory round trip and per __syncthreads() pair.
@@ -1339,9 +1336,7 @@ void gemm_cuda_cublas_tf32_device(const float* dA, const float* dB, float* dC,
                    "cublasGemmEx (TF32)");
 }
 
-// fp16-in/fp32-accumulate. Dense FP16 runs at roughly 2x TF32 throughput
-// (half the bits per element through the same tensor pipe): ~120 vs ~60
-// TFLOP/s compute-only on RTX 5080. fp16 buffers are void* in the public API
+// fp16 in, fp32 accumulate. fp16 buffers are void* in the public API
 // because cuda.hpp must compile without <cuda_fp16.h> (CPU-only stub builds).
 void gemm_cuda_convert_f32_to_f16_device(const float* src, void* dst, int count) {
     convert_f32_to_f16(src, static_cast<__half*>(dst), count);

@@ -1,25 +1,15 @@
 /**
  * @file test_gemm_cuda.cpp
- * @brief Google Test correctness suite for all CUDA GEMM kernels.
+ * @brief Correctness tests for the CUDA GEMM kernels (gemm/cuda.hpp).
  *
- * Kernels tested:
- *   gemm_cuda_naive, gemm_cuda_blocked                         (Levels 0-1)
- *   gemm_cuda_reg_tile, gemm_cuda_double_buf                  (Levels 2-3)
- *   gemm_cuda_wmma                                            (Level 4, fp32 only)
- *   gemm_cuda_vectorized                                      (Level 5)
- *   gemm_cuda_mma_ldmatrix                                    (Level 6, fp32 only)
- *   gemm_cuda_wmma_pipelined                                  (Level 7, fp32 only)
- *   gemm_cuda_cublas, gemm_cuda_cublas_tf32, gemm_cuda_cublas_fp16 (Reference, tf32/fp16 fp32 only)
+ * Each kernel is compared with gemm_naive on its own list of shapes. A
+ * result passes when its relative error (against max(|ref|, 1)) or its
+ * absolute error is under the tolerance: 1e-4 / 1e-3 for f32, 1e-10 / 1e-9
+ * for f64, and 1e-2 for the kernels that multiply in fp16 or TF32, where
+ * the input conversion alone costs ~1e-3.
  *
- * All tests skip at runtime when no CUDA device is present.
- * The Tensor Core kernels and cuBLAS TF32/FP16 additionally skip when
- * Tensor Cores (sm_70+) / sm_80+ are unavailable.
- *
- * Tolerances:
- *   float  (SIMT): rel 1e-4, abs 1e-3
- *   double (SIMT): rel 1e-10, abs 1e-9
- *   float  (WMMA / mma.sync): rel 1e-2, abs 1e-2  -- fp16 conversion
- *     introduces ~1e-3 error of its own.
+ * Every test skips without a CUDA device (the stub build has none), and the
+ * Tensor Core / TF32 ones also on GPUs older than they need.
  */
 
 #include "gemm/cuda.hpp"
@@ -28,393 +18,122 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <random>
+#include <string>
+#include <vector>
 
-// ---------------------------------------------------------------------------
-// Skip guards
-// ---------------------------------------------------------------------------
-class CudaTest : public ::testing::Test {
-protected:
-    void SetUp() override {
-        if (hpc::gemm::cuda_device_count() == 0)
-            GTEST_SKIP() << "No CUDA device available on this machine";
-    }
-};
+namespace {
 
-class CudaTensorCoreTest : public ::testing::Test {
-protected:
-    void SetUp() override {
-        if (hpc::gemm::cuda_device_count() == 0)
-            GTEST_SKIP() << "No CUDA device available on this machine";
-        if (!hpc::gemm::cuda_has_tensor_cores())
-            GTEST_SKIP() << "Tensor Cores not available (requires sm_70+)";
-    }
-};
+using hpc::Matrix;
+using namespace hpc::gemm;
 
-// gemm_cuda_mma_ldmatrix requires sm_80+ specifically (mma.sync m16n8k16
-// f16 shape); so does TF32 in cuBLAS.
-class CudaAmpereMmaTest : public ::testing::Test {
-protected:
-    void SetUp() override {
-        if (hpc::gemm::cuda_device_count() == 0)
-            GTEST_SKIP() << "No CUDA device available on this machine";
-        if (!hpc::gemm::cuda_has_ampere())
-            GTEST_SKIP() << "mma.sync m16n8k16 requires sm_80+ (Ampere)";
-    }
-};
-
-// ---------------------------------------------------------------------------
-// Tolerance helpers
-// ---------------------------------------------------------------------------
-template <typename T> constexpr T abs_tol();
-template <> constexpr float  abs_tol<float>()  { return 1e-3f; }
-template <> constexpr double abs_tol<double>() { return 1e-9; }
-
-template <typename T> constexpr T rel_tol();
-template <> constexpr float  rel_tol<float>()  { return 1e-4f; }
-template <> constexpr double rel_tol<double>() { return 1e-10; }
-
-// ---------------------------------------------------------------------------
-// Fill / compare helpers
-// ---------------------------------------------------------------------------
 template <typename T>
-static void fill_random(hpc::Matrix<T>& M, unsigned seed = 42) {
+void fill_random(Matrix<T>& M, unsigned seed) {
     std::mt19937 rng(seed);
     std::uniform_real_distribution<T> dist(T{-1}, T{1});
-    for (std::size_t i = 0; i < M.rows(); ++i)
-        for (std::size_t j = 0; j < M.cols(); ++j)
-            M(i, j) = dist(rng);
+    for (std::size_t i = 0; i < M.size(); ++i)
+        M.data()[i] = dist(rng);
 }
 
+enum class Needs { kDevice, kTensorCores, kAmpere };
+
+struct Shape {
+    std::size_t M, K, N;
+};
+
 template <typename T>
-static void expect_near(const hpc::Matrix<T>& got, const hpc::Matrix<T>& ref,
-                        const char* label,
-                        double rel = -1.0, double abs_t = -1.0) {
-    ASSERT_EQ(got.rows(), ref.rows());
-    ASSERT_EQ(got.cols(), ref.cols());
-    const double r = (rel   < 0) ? double(rel_tol<T>()) : rel;
-    const double a = (abs_t < 0) ? double(abs_tol<T>()) : abs_t;
-    for (std::size_t i = 0; i < ref.rows(); ++i) {
-        for (std::size_t j = 0; j < ref.cols(); ++j) {
-            const double g    = double(got(i, j));
-            const double rf   = double(ref(i, j));
-            const double diff = std::abs(g - rf);
-            const double scale = std::max(std::abs(rf), 1.0);
-            EXPECT_TRUE(diff / scale < r || diff < a)
-                << label << " mismatch at (" << i << "," << j << ")"
-                << " got=" << g << " ref=" << rf
-                << " rel_err=" << diff/scale << " (tol=" << r << ")";
+struct Case {
+    const char* name;
+    void (*kernel)(const Matrix<T>&, const Matrix<T>&, Matrix<T>&);
+    Needs needs;
+    bool reduced_precision;  ///< fp16 or TF32 multiply: relaxed tolerance
+    std::vector<Shape> shapes;
+};
+
+std::vector<Shape> square(std::initializer_list<std::size_t> sizes) {
+    std::vector<Shape> shapes;
+    for (const std::size_t n : sizes)
+        shapes.push_back({n, n, n});
+    return shapes;
+}
+
+std::vector<Shape> operator+(std::vector<Shape> a, const Shape& b) {
+    a.push_back(b);
+    return a;
+}
+
+// Sizes that are not multiples of 16 check WMMA's staged edge-tile store;
+// N=99/100 check gemm_cuda_vectorized's fallback (K, N not multiples of the
+// vector width); N=192 checks gemm_cuda_wmma_pipelined's fallback (not a
+// multiple of 128) and 384x160x256 its fast path with M, K, N all different.
+const std::vector<Case<float>> kF32 = {
+    {"Naive", gemm_cuda_naive<float>, Needs::kDevice, false, square({32, 64, 128, 256})},
+    {"Blocked", gemm_cuda_blocked<float>, Needs::kDevice, false,
+     square({32, 64, 128, 256}) + Shape{100, 50, 200}},
+    {"RegTile", gemm_cuda_reg_tile<float>, Needs::kDevice, false,
+     square({64, 128, 256, 512}) + Shape{200, 100, 300}},
+    {"DoubleBuf", gemm_cuda_double_buf<float>, Needs::kDevice, false, square({64, 128, 256, 512})},
+    {"Wmma", gemm_cuda_wmma, Needs::kTensorCores, true,
+     square({64, 128, 256, 512, 17, 50, 72, 100}) + Shape{40, 24, 56}},
+    {"Vectorized", gemm_cuda_vectorized<float>, Needs::kDevice, false,
+     square({32, 64, 128, 256, 100}) + Shape{100, 50, 200}},
+    {"MmaLdmatrix", gemm_cuda_mma_ldmatrix, Needs::kAmpere, true, square({64, 128, 256})},
+    {"WmmaPipelined", gemm_cuda_wmma_pipelined, Needs::kTensorCores, true,
+     square({128, 256, 512, 192}) + Shape{384, 160, 256}},
+    {"Cublas", gemm_cuda_cublas<float>, Needs::kDevice, false, square({64, 256, 512})},
+    {"CublasTf32", gemm_cuda_cublas_tf32, Needs::kAmpere, true, square({64, 256, 512})},
+    {"CublasFp16", gemm_cuda_cublas_fp16, Needs::kTensorCores, true, square({64, 256, 512})},
+};
+
+const std::vector<Case<double>> kF64 = {
+    {"Naive", gemm_cuda_naive<double>, Needs::kDevice, false, square({32, 64, 128, 256})},
+    {"Blocked", gemm_cuda_blocked<double>, Needs::kDevice, false, square({32, 128})},
+    {"RegTile", gemm_cuda_reg_tile<double>, Needs::kDevice, false, square({64, 256, 512})},
+    {"DoubleBuf", gemm_cuda_double_buf<double>, Needs::kDevice, false, square({64, 256, 512})},
+    {"Vectorized", gemm_cuda_vectorized<double>, Needs::kDevice, false, square({32, 128, 99})},
+    {"Cublas", gemm_cuda_cublas<double>, Needs::kDevice, false, square({64, 256})},
+};
+
+template <typename T>
+void run_case(const Case<T>& c) {
+    if (cuda_device_count() == 0)
+        GTEST_SKIP() << "No CUDA device available";
+    if (c.needs == Needs::kTensorCores && !cuda_has_tensor_cores())
+        GTEST_SKIP() << "needs Tensor Cores (sm_70+)";
+    if (c.needs == Needs::kAmpere && !cuda_has_ampere())
+        GTEST_SKIP() << "needs sm_80+";
+
+    const double rel = c.reduced_precision ? 1e-2 : (sizeof(T) == 4 ? 1e-4 : 1e-10);
+    const double abs = c.reduced_precision ? 1e-2 : (sizeof(T) == 4 ? 1e-3 : 1e-9);
+    for (const Shape& s : c.shapes) {
+        Matrix<T> A(s.M, s.K), B(s.K, s.N), C_ref(s.M, s.N), C(s.M, s.N);
+        fill_random(A, unsigned(s.M + s.K));
+        fill_random(B, unsigned(s.K + s.N + 1));
+        gemm_naive(A, B, C_ref);
+        c.kernel(A, B, C);
+        for (std::size_t i = 0; i < s.M; ++i) {
+            for (std::size_t j = 0; j < s.N; ++j) {
+                const double ref  = C_ref(i, j);
+                const double diff = std::abs(double(C(i, j)) - ref);
+                ASSERT_TRUE(diff / std::max(std::abs(ref), 1.0) < rel || diff < abs)
+                    << s.M << "x" << s.K << "x" << s.N << " at (" << i << "," << j
+                    << "): got " << C(i, j) << ", expected " << ref;
+            }
         }
     }
 }
 
-// ===========================================================================
-// Macro: generate test fixture + test body
-// ===========================================================================
-#define HPC_CUDA_TEST(FIXTURE, KERNEL_FUNC, T, N, SA, SB)    \
-    TEST_F(FIXTURE, N##x##N) {                                \
-        hpc::Matrix<T> A(N, N), B(N, N);                      \
-        hpc::Matrix<T> C_ref(N, N), C_got(N, N);              \
-        fill_random(A, SA); fill_random(B, SB);               \
-        hpc::gemm::gemm_naive(A, B, C_ref);                   \
-        hpc::gemm::KERNEL_FUNC(A, B, C_got);                  \
-        expect_near(C_got, C_ref, #KERNEL_FUNC "<" #T ">/N=" #N); \
-    }
+class CudaF32 : public ::testing::TestWithParam<Case<float>> {};
+class CudaF64 : public ::testing::TestWithParam<Case<double>> {};
 
-// ===========================================================================
-// Level 0 -- Naive
-// ===========================================================================
-struct CudaNaiveFloat   : CudaTest {};
-struct CudaNaiveDouble  : CudaTest {};
-HPC_CUDA_TEST(CudaNaiveFloat,  gemm_cuda_naive, float,   32, 1, 2)
-HPC_CUDA_TEST(CudaNaiveFloat,  gemm_cuda_naive, float,   64, 3, 4)
-HPC_CUDA_TEST(CudaNaiveFloat,  gemm_cuda_naive, float,  128, 5, 6)
-HPC_CUDA_TEST(CudaNaiveFloat,  gemm_cuda_naive, float,  256, 7, 8)
-HPC_CUDA_TEST(CudaNaiveDouble, gemm_cuda_naive, double,  32, 1, 2)
-HPC_CUDA_TEST(CudaNaiveDouble, gemm_cuda_naive, double,  64, 3, 4)
-HPC_CUDA_TEST(CudaNaiveDouble, gemm_cuda_naive, double, 128, 5, 6)
-HPC_CUDA_TEST(CudaNaiveDouble, gemm_cuda_naive, double, 256, 7, 8)
+TEST_P(CudaF32, MatchesNaive) { run_case(GetParam()); }
+TEST_P(CudaF64, MatchesNaive) { run_case(GetParam()); }
 
-// ===========================================================================
-// Level 1 -- Blocked
-// ===========================================================================
-struct CudaBlockedFloat  : CudaTest {};
-struct CudaBlockedDouble : CudaTest {};
-HPC_CUDA_TEST(CudaBlockedFloat,  gemm_cuda_blocked, float,   32, 1, 2)
-HPC_CUDA_TEST(CudaBlockedFloat,  gemm_cuda_blocked, float,   64, 3, 4)
-HPC_CUDA_TEST(CudaBlockedFloat,  gemm_cuda_blocked, float,  128, 5, 6)
-HPC_CUDA_TEST(CudaBlockedFloat,  gemm_cuda_blocked, float,  256, 7, 8)
-HPC_CUDA_TEST(CudaBlockedDouble, gemm_cuda_blocked, double,  32, 1, 2)
-HPC_CUDA_TEST(CudaBlockedDouble, gemm_cuda_blocked, double, 128, 5, 6)
+auto case_name = [](const auto& info) { return std::string(info.param.name); };
+INSTANTIATE_TEST_SUITE_P(Kernels, CudaF32, ::testing::ValuesIn(kF32), case_name);
+INSTANTIATE_TEST_SUITE_P(Kernels, CudaF64, ::testing::ValuesIn(kF64), case_name);
 
-TEST_F(CudaBlockedFloat, NonSquare_100x200x50) {
-    hpc::Matrix<float> A(100,50), B(50,200), C_ref(100,200), C_got(100,200);
-    fill_random(A,11); fill_random(B,12);
-    hpc::gemm::gemm_naive(A, B, C_ref);
-    hpc::gemm::gemm_cuda_blocked(A, B, C_got);
-    expect_near(C_got, C_ref, "blocked float non-square");
-}
-
-// ===========================================================================
-// Level 2 -- Register tile
-// ===========================================================================
-struct CudaRegTileFloat  : CudaTest {};
-struct CudaRegTileDouble : CudaTest {};
-HPC_CUDA_TEST(CudaRegTileFloat,  gemm_cuda_reg_tile, float,   64, 1, 2)
-HPC_CUDA_TEST(CudaRegTileFloat,  gemm_cuda_reg_tile, float,  128, 3, 4)
-HPC_CUDA_TEST(CudaRegTileFloat,  gemm_cuda_reg_tile, float,  256, 5, 6)
-HPC_CUDA_TEST(CudaRegTileFloat,  gemm_cuda_reg_tile, float,  512, 7, 8)
-HPC_CUDA_TEST(CudaRegTileDouble, gemm_cuda_reg_tile, double,  64, 1, 2)
-HPC_CUDA_TEST(CudaRegTileDouble, gemm_cuda_reg_tile, double, 256, 3, 4)
-HPC_CUDA_TEST(CudaRegTileDouble, gemm_cuda_reg_tile, double, 512, 5, 6)
-
-TEST_F(CudaRegTileFloat, NonSquare_200x300x100) {
-    hpc::Matrix<float> A(200,100), B(100,300), C_ref(200,300), C_got(200,300);
-    fill_random(A,20); fill_random(B,21);
-    hpc::gemm::gemm_naive(A, B, C_ref);
-    hpc::gemm::gemm_cuda_reg_tile(A, B, C_got);
-    expect_near(C_got, C_ref, "reg_tile float non-square");
-}
-
-// ===========================================================================
-// Level 3 -- Double-buffered register tile
-// ===========================================================================
-struct CudaDoubleBufFloat  : CudaTest {};
-struct CudaDoubleBufDouble : CudaTest {};
-HPC_CUDA_TEST(CudaDoubleBufFloat,  gemm_cuda_double_buf, float,   64, 1, 2)
-HPC_CUDA_TEST(CudaDoubleBufFloat,  gemm_cuda_double_buf, float,  128, 3, 4)
-HPC_CUDA_TEST(CudaDoubleBufFloat,  gemm_cuda_double_buf, float,  256, 5, 6)
-HPC_CUDA_TEST(CudaDoubleBufFloat,  gemm_cuda_double_buf, float,  512, 7, 8)
-HPC_CUDA_TEST(CudaDoubleBufDouble, gemm_cuda_double_buf, double,  64, 1, 2)
-HPC_CUDA_TEST(CudaDoubleBufDouble, gemm_cuda_double_buf, double, 256, 3, 4)
-HPC_CUDA_TEST(CudaDoubleBufDouble, gemm_cuda_double_buf, double, 512, 5, 6)
-
-// ===========================================================================
-// Level 4 -- Tensor Cores (WMMA) -- fp32 only, sm_70+
-// Uses relaxed tolerance because fp32->fp16 conversion introduces ~1e-3 error.
-// ===========================================================================
-struct CudaWmmaFloat : CudaTensorCoreTest {};
-
-TEST_F(CudaWmmaFloat, N64) {
-    hpc::Matrix<float> A(64,64), B(64,64), C_ref(64,64), C_got(64,64);
-    fill_random(A,1); fill_random(B,2);
-    hpc::gemm::gemm_naive(A, B, C_ref);
-    hpc::gemm::gemm_cuda_wmma(A, B, C_got);
-    expect_near(C_got, C_ref, "wmma/N=64", 1e-2, 1e-2);
-}
-TEST_F(CudaWmmaFloat, N128) {
-    hpc::Matrix<float> A(128,128), B(128,128), C_ref(128,128), C_got(128,128);
-    fill_random(A,3); fill_random(B,4);
-    hpc::gemm::gemm_naive(A, B, C_ref);
-    hpc::gemm::gemm_cuda_wmma(A, B, C_got);
-    expect_near(C_got, C_ref, "wmma/N=128", 1e-2, 1e-2);
-}
-TEST_F(CudaWmmaFloat, N256) {
-    hpc::Matrix<float> A(256,256), B(256,256), C_ref(256,256), C_got(256,256);
-    fill_random(A,5); fill_random(B,6);
-    hpc::gemm::gemm_naive(A, B, C_ref);
-    hpc::gemm::gemm_cuda_wmma(A, B, C_got);
-    expect_near(C_got, C_ref, "wmma/N=256", 1e-2, 1e-2);
-}
-TEST_F(CudaWmmaFloat, N512) {
-    hpc::Matrix<float> A(512,512), B(512,512), C_ref(512,512), C_got(512,512);
-    fill_random(A,7); fill_random(B,8);
-    hpc::gemm::gemm_naive(A, B, C_ref);
-    hpc::gemm::gemm_cuda_wmma(A, B, C_got);
-    expect_near(C_got, C_ref, "wmma/N=512", 1e-2, 1e-2);
-}
-
-// Sizes that are not multiples of 16: edge tiles must not be stored as full
-// 16x16 fragments (out-of-bounds / wrapped-row writes), and N % 8 != 0 rows
-// are not 32-byte aligned for a direct store_matrix_sync.
-TEST_F(CudaWmmaFloat, EdgeTiles) {
-    for (std::size_t n : {17, 50, 72, 100}) {
-        hpc::Matrix<float> A(n,n), B(n,n), C_ref(n,n), C_got(n,n);
-        fill_random(A, 11); fill_random(B, 12);
-        hpc::gemm::gemm_naive(A, B, C_ref);
-        hpc::gemm::gemm_cuda_wmma(A, B, C_got);
-        expect_near(C_got, C_ref, "wmma/edge tiles", 1e-2, 1e-2);
-    }
-}
-TEST_F(CudaWmmaFloat, NonSquare_40x56x24) {
-    hpc::Matrix<float> A(40,24), B(24,56), C_ref(40,56), C_got(40,56);
-    fill_random(A, 13); fill_random(B, 14);
-    hpc::gemm::gemm_naive(A, B, C_ref);
-    hpc::gemm::gemm_cuda_wmma(A, B, C_got);
-    expect_near(C_got, C_ref, "wmma/NonSquare_40x56x24", 1e-2, 1e-2);
-}
-
-// ===========================================================================
-// Level 5 -- Vectorized loads (float4/double2) + shared-memory XOR swizzle.
-// Full fp32/fp64 precision (no bf16/fp16 truncation) -- uses the same
-// tight tolerances as every non-Tensor-Core kernel above. Sizes deliberately
-// include N=100/300 (not multiples of the vector width) to exercise the
-// fallback-to-RegTile path alongside the vectorized path itself.
-// ===========================================================================
-struct CudaVectorizedFloat  : CudaTest {};
-struct CudaVectorizedDouble : CudaTest {};
-HPC_CUDA_TEST(CudaVectorizedFloat,  gemm_cuda_vectorized, float,   32, 1, 2)
-HPC_CUDA_TEST(CudaVectorizedFloat,  gemm_cuda_vectorized, float,   64, 3, 4)
-HPC_CUDA_TEST(CudaVectorizedFloat,  gemm_cuda_vectorized, float,  128, 5, 6)
-HPC_CUDA_TEST(CudaVectorizedFloat,  gemm_cuda_vectorized, float,  256, 7, 8)
-HPC_CUDA_TEST(CudaVectorizedFloat,  gemm_cuda_vectorized, float,  100, 9, 10)  // not a multiple of 4 -- fallback path
-HPC_CUDA_TEST(CudaVectorizedDouble, gemm_cuda_vectorized, double,  32, 1, 2)
-HPC_CUDA_TEST(CudaVectorizedDouble, gemm_cuda_vectorized, double, 128, 5, 6)
-HPC_CUDA_TEST(CudaVectorizedDouble, gemm_cuda_vectorized, double,  99, 9, 10)  // not a multiple of 2 -- fallback path
-
-TEST_F(CudaVectorizedFloat, NonSquare_100x200x50) {
-    hpc::Matrix<float> A(100,50), B(50,200), C_ref(100,200), C_got(100,200);
-    fill_random(A,11); fill_random(B,12);
-    hpc::gemm::gemm_naive(A, B, C_ref);
-    hpc::gemm::gemm_cuda_vectorized(A, B, C_got);
-    expect_near(C_got, C_ref, "vectorized float non-square");
-}
-
-// ===========================================================================
-// Level 6 -- Raw Tensor Cores via mma.sync + ldmatrix -- fp32 only, sm_80+.
-// Relaxed tolerance for the same reason as WMMA (fp16 conversion).
-// ===========================================================================
-struct CudaMmaLdmatrixFloat : CudaAmpereMmaTest {};
-
-TEST_F(CudaMmaLdmatrixFloat, N64) {
-    hpc::Matrix<float> A(64,64), B(64,64), C_ref(64,64), C_got(64,64);
-    fill_random(A,1); fill_random(B,2);
-    hpc::gemm::gemm_naive(A, B, C_ref);
-    hpc::gemm::gemm_cuda_mma_ldmatrix(A, B, C_got);
-    expect_near(C_got, C_ref, "mma_ldmatrix/N=64", 1e-2, 1e-2);
-}
-TEST_F(CudaMmaLdmatrixFloat, N128) {
-    hpc::Matrix<float> A(128,128), B(128,128), C_ref(128,128), C_got(128,128);
-    fill_random(A,3); fill_random(B,4);
-    hpc::gemm::gemm_naive(A, B, C_ref);
-    hpc::gemm::gemm_cuda_mma_ldmatrix(A, B, C_got);
-    expect_near(C_got, C_ref, "mma_ldmatrix/N=128", 1e-2, 1e-2);
-}
-TEST_F(CudaMmaLdmatrixFloat, N256) {
-    hpc::Matrix<float> A(256,256), B(256,256), C_ref(256,256), C_got(256,256);
-    fill_random(A,5); fill_random(B,6);
-    hpc::gemm::gemm_naive(A, B, C_ref);
-    hpc::gemm::gemm_cuda_mma_ldmatrix(A, B, C_got);
-    expect_near(C_got, C_ref, "mma_ldmatrix/N=256", 1e-2, 1e-2);
-}
-
-// ===========================================================================
-// Level 7 -- Pipelined WMMA (bigger tiles + cp.async double buffering) --
-// fp32 only, sm_70+. Sizes: N=128/256/512 exercise the fast path (exact
-// multiples of 128/128/32); N=192 is NOT a multiple of 128 and exercises
-// the fallback to gemm_cuda_wmma.
-// ===========================================================================
-struct CudaWmmaPipelinedFloat : CudaTensorCoreTest {};
-
-TEST_F(CudaWmmaPipelinedFloat, N128) {
-    hpc::Matrix<float> A(128,128), B(128,128), C_ref(128,128), C_got(128,128);
-    fill_random(A,1); fill_random(B,2);
-    hpc::gemm::gemm_naive(A, B, C_ref);
-    hpc::gemm::gemm_cuda_wmma_pipelined(A, B, C_got);
-    expect_near(C_got, C_ref, "wmma_pipelined/N=128", 1e-2, 1e-2);
-}
-TEST_F(CudaWmmaPipelinedFloat, N256) {
-    hpc::Matrix<float> A(256,256), B(256,256), C_ref(256,256), C_got(256,256);
-    fill_random(A,3); fill_random(B,4);
-    hpc::gemm::gemm_naive(A, B, C_ref);
-    hpc::gemm::gemm_cuda_wmma_pipelined(A, B, C_got);
-    expect_near(C_got, C_ref, "wmma_pipelined/N=256", 1e-2, 1e-2);
-}
-TEST_F(CudaWmmaPipelinedFloat, N512) {
-    hpc::Matrix<float> A(512,512), B(512,512), C_ref(512,512), C_got(512,512);
-    fill_random(A,5); fill_random(B,6);
-    hpc::gemm::gemm_naive(A, B, C_ref);
-    hpc::gemm::gemm_cuda_wmma_pipelined(A, B, C_got);
-    expect_near(C_got, C_ref, "wmma_pipelined/N=512", 1e-2, 1e-2);
-}
-TEST_F(CudaWmmaPipelinedFloat, N192_FallbackPath) {
-    // Not a multiple of 128 -- exercises the kernel_wmma fallback branch.
-    hpc::Matrix<float> A(192,192), B(192,192), C_ref(192,192), C_got(192,192);
-    fill_random(A,7); fill_random(B,8);
-    hpc::gemm::gemm_naive(A, B, C_ref);
-    hpc::gemm::gemm_cuda_wmma_pipelined(A, B, C_got);
-    expect_near(C_got, C_ref, "wmma_pipelined/N=192 (fallback)", 1e-2, 1e-2);
-}
-TEST_F(CudaWmmaPipelinedFloat, NonSquare_384x256x160) {
-    // 384=3*128 (M), 256=2*128 (N), 160=5*32 (K) -- exercises the fast
-    // path with M != N != K, unlike the square cases above.
-    hpc::Matrix<float> A(384,160), B(160,256), C_ref(384,256), C_got(384,256);
-    fill_random(A,9); fill_random(B,10);
-    hpc::gemm::gemm_naive(A, B, C_ref);
-    hpc::gemm::gemm_cuda_wmma_pipelined(A, B, C_got);
-    expect_near(C_got, C_ref, "wmma_pipelined/NonSquare_384x256x160", 1e-2, 1e-2);
-}
-
-// ===========================================================================
-// Reference -- cuBLAS (vendor-tuned upper bound, not part of the Level 0-7
-// ladder above): the realistic ceiling the hand-written kernels are judged
-// against.
-//
-// gemm_cuda_cublas<T>: plain SGEMM/DGEMM -- full precision, tight tolerance
-// like every other non-Tensor-Core kernel in this file.
-// gemm_cuda_cublas_tf32: TF32 Tensor Cores (10-bit mantissa) -- relaxed
-// tolerance like WMMA/mma.sync above, and gated on sm_80+ the same way
-// CudaMmaLdmatrixFloat is (TF32 tensor ops are an Ampere+ feature).
-// ===========================================================================
-struct CudaCublasFloat  : CudaTest {};
-struct CudaCublasDouble : CudaTest {};
-HPC_CUDA_TEST(CudaCublasFloat,  gemm_cuda_cublas, float,   64, 1, 2)
-HPC_CUDA_TEST(CudaCublasFloat,  gemm_cuda_cublas, float,  256, 3, 4)
-HPC_CUDA_TEST(CudaCublasFloat,  gemm_cuda_cublas, float,  512, 5, 6)
-HPC_CUDA_TEST(CudaCublasDouble, gemm_cuda_cublas, double,  64, 1, 2)
-HPC_CUDA_TEST(CudaCublasDouble, gemm_cuda_cublas, double, 256, 3, 4)
-
-struct CudaCublasTf32Float : CudaAmpereMmaTest {};
-
-TEST_F(CudaCublasTf32Float, N64) {
-    hpc::Matrix<float> A(64,64), B(64,64), C_ref(64,64), C_got(64,64);
-    fill_random(A,1); fill_random(B,2);
-    hpc::gemm::gemm_naive(A, B, C_ref);
-    hpc::gemm::gemm_cuda_cublas_tf32(A, B, C_got);
-    expect_near(C_got, C_ref, "cublas_tf32/N=64", 1e-2, 1e-2);
-}
-TEST_F(CudaCublasTf32Float, N256) {
-    hpc::Matrix<float> A(256,256), B(256,256), C_ref(256,256), C_got(256,256);
-    fill_random(A,3); fill_random(B,4);
-    hpc::gemm::gemm_naive(A, B, C_ref);
-    hpc::gemm::gemm_cuda_cublas_tf32(A, B, C_got);
-    expect_near(C_got, C_ref, "cublas_tf32/N=256", 1e-2, 1e-2);
-}
-TEST_F(CudaCublasTf32Float, N512) {
-    hpc::Matrix<float> A(512,512), B(512,512), C_ref(512,512), C_got(512,512);
-    fill_random(A,5); fill_random(B,6);
-    hpc::gemm::gemm_naive(A, B, C_ref);
-    hpc::gemm::gemm_cuda_cublas_tf32(A, B, C_got);
-    expect_near(C_got, C_ref, "cublas_tf32/N=512", 1e-2, 1e-2);
-}
-
-// gemm_cuda_cublas_fp16: dense FP16 Tensor Cores (fp16-in/fp32-accumulate)
-// via cublasGemmEx -- the ceiling for the hand-written Tensor Core kernels.
-// Gated the same way as CudaWmmaFloat (sm_70+, Tensor Cores).
-struct CudaCublasFp16Float : CudaTensorCoreTest {};
-
-TEST_F(CudaCublasFp16Float, N64) {
-    hpc::Matrix<float> A(64,64), B(64,64), C_ref(64,64), C_got(64,64);
-    fill_random(A,1); fill_random(B,2);
-    hpc::gemm::gemm_naive(A, B, C_ref);
-    hpc::gemm::gemm_cuda_cublas_fp16(A, B, C_got);
-    expect_near(C_got, C_ref, "cublas_fp16/N=64", 1e-2, 1e-2);
-}
-TEST_F(CudaCublasFp16Float, N256) {
-    hpc::Matrix<float> A(256,256), B(256,256), C_ref(256,256), C_got(256,256);
-    fill_random(A,3); fill_random(B,4);
-    hpc::gemm::gemm_naive(A, B, C_ref);
-    hpc::gemm::gemm_cuda_cublas_fp16(A, B, C_got);
-    expect_near(C_got, C_ref, "cublas_fp16/N=256", 1e-2, 1e-2);
-}
-TEST_F(CudaCublasFp16Float, N512) {
-    hpc::Matrix<float> A(512,512), B(512,512), C_ref(512,512), C_got(512,512);
-    fill_random(A,5); fill_random(B,6);
-    hpc::gemm::gemm_naive(A, B, C_ref);
-    hpc::gemm::gemm_cuda_cublas_fp16(A, B, C_got);
-    expect_near(C_got, C_ref, "cublas_fp16/N=512", 1e-2, 1e-2);
-}
-
-#undef HPC_CUDA_TEST
+}  // namespace

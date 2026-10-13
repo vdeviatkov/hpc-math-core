@@ -33,6 +33,8 @@
 
 #include "hpc/matrix.hpp"
 
+#include <cassert>
+
 namespace hpc::gemm {
 
 /**

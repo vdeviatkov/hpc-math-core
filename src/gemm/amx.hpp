@@ -63,6 +63,11 @@ void gemm_amx(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
                   "gemm_amx: T must be float or double");
     const std::size_t M = A.rows(), K = A.cols(), N = B.cols();
     assert(B.rows() == K && C.rows() == M && C.cols() == N);
+    // BLAS rejects a leading dimension of 0, which K == 0 or N == 0 implies.
+    if (K == 0)
+        C.zero();
+    if (M == 0 || N == 0 || K == 0)
+        return;
     const int m = static_cast<int>(M), n = static_cast<int>(N), k = static_cast<int>(K);
     if constexpr (std::is_same_v<T, float>)
         cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, m, n, k, 1.0f, A.data(), k,

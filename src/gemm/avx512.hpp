@@ -105,13 +105,11 @@ inline void avx512_micro_f32_4x32(const float* __restrict__ a, const float* __re
         const __m512 b1 = _mm512_loadu_ps(b + k * ldb + 16);
 
         // Broadcast A(i+r, k) — _mm512_set1_ps replicates one scalar to all 16 lanes.
-        // On Skylake/ICL this compiles to vpbroadcastd + vfmadd or the embedded-broadcast form.
         const __m512 a0 = _mm512_set1_ps(a[0 * lda + k]);
         const __m512 a1 = _mm512_set1_ps(a[1 * lda + k]);
         const __m512 a2 = _mm512_set1_ps(a[2 * lda + k]);
         const __m512 a3 = _mm512_set1_ps(a[3 * lda + k]);
 
-        // 8 FMA instructions — fills both FMA execution ports each cycle.
         c00 = _mm512_fmadd_ps(a0, b0, c00);
         c01 = _mm512_fmadd_ps(a0, b1, c01);
         c10 = _mm512_fmadd_ps(a1, b0, c10);

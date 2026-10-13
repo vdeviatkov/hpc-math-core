@@ -2,7 +2,7 @@
 
 [![CI — Build & Test](https://github.com/vdeviatkov/hpc-math-core/actions/workflows/build.yml/badge.svg)](https://github.com/vdeviatkov/hpc-math-core/actions/workflows/build.yml)
 
-Progressive GEMM optimization and benchmarking across scalar C++, SIMD, CUDA, Tensor Cores, ARM SME and Apple AMX, focused on hardware-aware performance engineering for ML systems and low-latency compute.
+Progressive GEMM optimization and benchmarking across scalar C++, SIMD, ARM SME, Apple AMX and CUDA Tensor Cores.
 
 Starting from readable scalar code, each step adds one layer of hardware exploitation — cache-friendly loop order, cache blocking, explicit SIMD (AVX2 · AVX-512 · NEON · SVE), software prefetch, CUDA (shared-memory tiling through Tensor Cores), and matrix-engine hardware (ARM SME2, Apple AMX). Every kernel is benchmarked with Google Benchmark, cross-validated against a scalar reference by a Google Test suite, and documented with memory-access diagrams and cache analysis.
 
@@ -33,62 +33,52 @@ Best kernel per family, single-threaded unless noted. Full output, speedup table
 
 ## Optimisation ladder
 
-| Level | Kernels | Technique |
-|---|---|---|
-| 0 | `gemm_naive`, `gemm_reordered` | i-j-k baseline → cache-friendly i-k-j loop order |
-| 1 | `gemm_blocked` | L2 cache tiling (tile = 64) |
-| 2 | `gemm_avx2_{naive,reordered,blocked}` | AVX2 FMA intrinsics, 4×16 f32 / 4×8 f64 register tile |
-| 3 | `gemm_avx512_{naive,reordered,blocked}` | 512-bit ZMM register tile, 4×32 f32 / 4×16 f64 |
-| 4 | `gemm_neon_*`, `gemm_sve_*` | ARM NEON Q-register tile; vector-length-agnostic SVE with predicated tails |
-| 5 | `gemm_*_blocked_prefetch` | `__builtin_prefetch` on A rows, B k-tiles and C rows; distance sweep D ∈ {2, 4, 8, 16} |
-| 6 | `gemm_cuda_{naive,blocked,reg_tile,double_buf,wmma,vectorized,mma_ldmatrix}` (CUDA Levels 0–6) | Shared-memory tiling → register tiling → `cp.async` double buffering → Tensor Cores via WMMA → `float4` loads + swizzle → raw `mma.sync`/`ldmatrix` |
-| 7 | `gemm_sme_1tile`, `gemm_sme_tiles`, `gemm_sme_blocked`, `gemm_sme` | ARM SME2 `FMOPA` outer products: one ZA tile → all ZA tiles (2×2 f32 / 2×4 f64) → GotoBLAS cache blocking → packed B; SME2 multi-vector loads |
-| 8 | `gemm_amx`, `gemm_cuda_wmma_pipelined` (CUDA Level 7) | Apple AMX through Accelerate BLAS; 128×128-tile, `cp.async`-pipelined WMMA kernel (~19× `gemm_cuda_wmma`) |
+Each family steps through the same techniques, one kernel per step.
 
-A family is compiled only where its ISA exists; elsewhere its kernels are declared `= delete`, so a wrong call is a compile-time error rather than a silently slower substitute. Benchmarks still list absent families as `SKIPPED`. Every family has been verified on real hardware except `gemm_sve_*`, for which no SVE machine was available.
+| Family | Kernels | Steps |
+|---|---|---|
+| Scalar | `gemm_naive` → `gemm_reordered` → `gemm_blocked` | i-j-k → cache-friendly i-k-j → cache tiling (tile 64) |
+| SIMD: AVX2, AVX-512, NEON, SVE | `gemm_<isa>_naive` → `_reordered` → `_blocked` | the same three steps with intrinsics, plus a register-tiled micro-kernel; SVE is vector-length agnostic with predicated tails |
+| Software prefetch | `gemm_<isa>_blocked_prefetch` | `__builtin_prefetch` for A, B and C, distance swept over {2, 4, 8, 16} |
+| ARM SME2 | `gemm_sme_1tile` → `gemm_sme_tiles` → `gemm_sme_blocked` → `gemm_sme` | `FMOPA` outer products into one ZA tile → all ZA tiles → GotoBLAS cache blocking → packed B |
+| CUDA | `gemm_cuda_*`, Levels 0–7 | shared-memory tiling → register tiling → `cp.async` double buffering → Tensor Cores via WMMA → 128-bit loads + swizzle → raw `ldmatrix`/`mma.sync` → pipelined WMMA with 128×128 tiles |
+| References | `gemm_amx` (Accelerate), `gemm_kleidiai`, `gemm_cuda_cublas*` | vendor libraries the hand-written kernels are measured against |
+
+A family is compiled only where its ISA exists; elsewhere its kernels are
+declared `= delete`, and the benchmarks list them as `SKIPPED`. Every family
+has run on real hardware except SVE, for which no machine was available.
+Files, techniques and intrinsics: [src/gemm/README.md](src/gemm/README.md).
 
 ---
 
 ## Quick start
 
-Requires CMake ≥ 3.25 and a C++20 compiler (GCC 12 / Clang 16 / Apple Clang 15 / MSVC 19.35+). CUDA 11.8+ is optional; without it the CUDA targets build against a stub.
+Requires CMake ≥ 3.25 and a C++20 compiler (GCC 12, Clang 16, Apple Clang 15 or MSVC 19.35+). CUDA 11.8+ is optional; without it the CUDA tests and benchmarks build against a stub and skip.
 
 ```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release   # -O3 -march=native -ffast-math; CUDA auto-detected
+cmake -B build -DCMAKE_BUILD_TYPE=Release   # -O3 -march=native -ffast-math; CUDA detected automatically
 cmake --build build --parallel
-ctest --test-dir build --output-on-failure  # CPU suite (size depends on ISA) + 64 CUDA tests
+ctest --test-dir build --output-on-failure
 
-./build/benchmarks/bench_gemm                 --benchmark_filter="f32"
-./build/benchmarks/cuda/bench_gemm_cuda       --benchmark_filter="N=4096"
+./build/benchmarks/bench_gemm      --benchmark_filter="f32"
+./build/benchmarks/bench_gemm_cuda --benchmark_filter="N=4096"
 ```
 
-Windows/MSVC uses a multi-config generator: drop `CMAKE_BUILD_TYPE` and pass `--config Release` to both `cmake --build` and `ctest`. See [docs/build.md](docs/build.md) for the full walkthrough.
-
-### Build options
-
-| Option | Default | Purpose |
-|---|---|---|
-| `HPC_MARCH` | `native` | `-march=` value; `x86-64-v3` for a portable AVX2 build |
-| `HPC_ENABLE_AVX512` | `OFF` | Force AVX-512 flags (MSVC, non-native `HPC_MARCH`); `-march=native` already enables AVX-512 on capable CPUs. SIGILL on CPUs without it |
-| `HPC_ENABLE_SME` | `OFF` | ARM SME2 kernels; configure-time compile-and-run probe, Apple M4-class only |
-| `HPC_ENABLE_AMX` | `ON` on Apple | Apple AMX via Accelerate.framework; no special flags, no SIGILL risk |
-| `HPC_ENABLE_KLEIDIAI` | `ON` when SME works | Fetches Arm KleidiAI for its SME2 reference GEMM (`gemm_kleidiai`, f32) |
-| `HPC_ENABLE_LTO` | `OFF` | Link-time optimisation |
-
-Why SME is opt-in while AMX is on by default, which kernels run on which machine, and the CI matrix are covered in [docs/build.md](docs/build.md).
+Options (`HPC_ENABLE_SME`, `HPC_MARCH`, …), Windows, and what runs on which
+machine: [docs/build.md](docs/build.md).
 
 ---
 
 ## Repository layout
 
 ```
-include/hpc/matrix.hpp        Matrix<T>: 64-byte aligned, row-major
-src/gemm/                     One header per kernel family (naive … amx), plus README.md
-src/cuda/gemm_kernels.cu      CUDA kernels; gemm_kernels_stub.cpp for CPU-only builds
-benchmarks/                   bench_gemm (CPU) and bench_gemm_cuda drivers
-tests/                        Google Test suites for CPU and CUDA kernels
-docs/                         Build guide, benchmark results, cache and approach notes
-.github/workflows/build.yml   CI: Linux x86, Linux ARM, macOS, CUDA-stub
+include/hpc/                  Matrix<T> (64-byte aligned, row-major) and the ISA detection macros
+src/gemm/                     One header per kernel family, plus README.md (map of kernels and techniques)
+src/cuda/                     CUDA kernels; gemm_kernels_stub.cpp for builds without CUDA
+tests/                        Correctness tests: every kernel against gemm_naive
+benchmarks/                   bench_gemm (CPU) and bench_gemm_cuda (GPU)
+docs/                         Benchmark results, build guide, cache background, articles
+.github/workflows/build.yml   CI: Linux x86, Linux ARM, macOS
 ```
 
 ---
@@ -97,11 +87,11 @@ docs/                         Build guide, benchmark results, cache and approach
 
 | Document | Contents |
 |---|---|
-| [docs/gemm-approaches.md](docs/gemm-approaches.md) | One-page cheat sheet: every family's cache technique, register width and key intrinsics |
-| [src/gemm/README.md](src/gemm/README.md) | Per-kernel loop analysis with memory-access diagrams; CUDA level-by-level design notes |
-| [docs/benchmarks.md](docs/benchmarks.md) | Full benchmark output, speedup tables and key observations for Apple M4 Max, AMD Zen 5 and RTX 5080 |
-| [docs/build.md](docs/build.md) | Platform build instructions, CMake options, SME/AMX flag rationale, ISA-skip matrix, CI |
-| [docs/cache-behavior.md](docs/cache-behavior.md) | Cache lines, reuse distance, working-set analysis, roofline model, GPU memory hierarchy |
+| [ARM SME2 GEMM: a power-of-two performance cliff](docs/articles/sme2-cache-associativity.md) | Article: why B read in place runs at half speed at N=4096, and what packing and padding recover |
+| [src/gemm/README.md](src/gemm/README.md) | Map of the kernels: files, techniques, registers and intrinsics per family. Each kernel's design is in its own header. |
+| [docs/benchmarks.md](docs/benchmarks.md) | All measurements and their analysis: Apple M4 Max, AMD Zen 5, RTX 5080 |
+| [docs/build.md](docs/build.md) | Build on Linux, macOS and Windows, CMake options, SME/AMX flags, what runs where, CI |
+| [docs/cache-behavior.md](docs/cache-behavior.md) | Background: cache lines, reuse distance, working sets, memory-bound limits, GPU memory hierarchy |
 
 ---
 

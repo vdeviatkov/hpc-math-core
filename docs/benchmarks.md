@@ -24,9 +24,9 @@ and size, speedup against the naive baseline, then key observations.
 GFLOP/s = (2 × N³) / (time_µs × 1000)
 ```
 
-A square N×N GEMM performs `2 × N³` floating-point operations. Dividing by wall-clock time in nanoseconds gives GFLOP/s.
+A square N×N GEMM performs `2 × N³` floating-point operations; dividing by the time in nanoseconds gives GFLOP/s. Example: `Sme/f32/N=1024`, 1481 µs → `2 × 1024³ / (1481 × 1000)` ≈ 1,450 GFLOP/s.
 
-Example: `Sme/f32/N=1024`, 1481 µs → `2 × 1024³ / (1481 × 1000)` ≈ 1,450 GFLOP/s.
+In `bench_gemm`, N is a compile-time constant, as at a fixed-size call site. The kernels are header templates inlined into the benchmark, so the compiler specialises their loops for that N; with N passed at run time, `gemm_blocked` f32 at N=256 measured 28 instead of 80 GFLOP/s on M4 Max. The CUDA kernels are compiled separately and are unaffected.
 
 ---
 
@@ -72,10 +72,12 @@ use CPU time instead, which is unaffected.
 
 ### ARM SME2 (`-DHPC_ENABLE_SME=ON`)
 
-> **SVL (streaming vector length):** 16 f32 / 8 f64 elements — reported live via the `svl` benchmark counter
-> **Command:** `./build/benchmarks/bench_gemm --benchmark_filter=Sme` (also runs `Sme1Tile`, `SmeTiles` and `SmeBlocked`)
+> **Command:** `./build/benchmarks/bench_gemm --benchmark_filter=Sme` (all four SME kernels; the `svl` counter reports the streaming vector length, 16 f32 / 8 f64 elements)
 
-SME computes GEMM with outer products rather than per-lane FMA: one `FMOPA` adds a whole SVL×SVL outer product into the 2-D accumulator ZA, like a GPU Tensor Core. `gemm_sme` packs A and B outside streaming mode, keeps all ZA tiles busy (2×2 za32 tiles for f32, a 32×32 C block; 2×4 za64 for f64, a 16×32 block) and uses SME2 multi-vector loads. Three simpler kernels show what each step adds: `gemm_sme_1tile` (one ZA tile, B read in place, no blocking), `gemm_sme_tiles` (all ZA tiles, B read in place, no blocking) and `gemm_sme_blocked` (`gemm_sme` without packing B). The design is described in [src/gemm/README.md](../src/gemm/README.md#algorithm-10--arm-sme2-scalable-matrix-extension).
+`gemm_sme` adds SME's outer products into the ZA tiles, with packed A and B,
+GotoBLAS cache blocking and SME2 multi-vector loads; `gemm_sme_1tile`,
+`gemm_sme_tiles` and `gemm_sme_blocked` are the steps before it. Design:
+[src/gemm/sme.hpp](../src/gemm/sme.hpp).
 
 > **Load Average during this run:** 10–16 on 16 cores. Treat ±5% as noise.
 
@@ -84,22 +86,66 @@ SME computes GEMM with outer products rather than per-lane FMA: one `FMOPA` adds
 | `gemm_sme` f64 | 84 | 315 | 397 | **410** | 407 | 404 |
 | `gemm_sme` f32 | 278 | 753 | 1,283 | **1,450** | 1,417 | 1,345 |
 
-- The four SME steps, from a separate run (load average ~5, median of 3):
-
-  | Kernel | N=256 | N=512 | N=1024 | N=2048 | N=4000 | N=4096 |
-  |---|---|---|---|---|---|---|
-  | `gemm_sme_1tile` f32 | 420 | 472 | 474 | 225 | 125 | 131 |
-  | `gemm_sme_tiles` f32 | 976 | 1,461 | 1,381 | 624 | 429 | 445 |
-  | `gemm_sme_blocked` f32 | 911 | 1,400 | 1,401 | 1,249 | 1,373 | 597 |
-  | `gemm_sme` f32 | 752 | 1,283 | 1,421 | 1,438 | 1,419 | 1,372 |
-  | `gemm_sme_1tile` f64 | 121 | 121 | 110 | 40 | 42 | 37 |
-  | `gemm_sme_tiles` f64 | 350 | 420 | 403 | 232 | 210 | 208 |
-  | `gemm_sme_blocked` f64 | 342 | 422 | 442 | 284 | 373 | 271 |
-  | `gemm_sme` f64 | 315 | 397 | 414 | 406 | 410 | 403 |
-
-  Using all ZA tiles gives 2.3–3.4× f32: with one tile, every FMOPA waits on the previous one's accumulator, so the loop runs at FMOPA latency. Without cache blocking, `gemm_sme_tiles` falls off from N=2048 because all of A is re-read for every B strip; N=4000 is as slow as N=4096, so that is not a stride effect (likely capacity). Blocking recovers it at N=4000 (3.2×), but `gemm_sme_blocked` still drops to 597 at N=4096: the rows of an unpacked B strip are 16 KB apart, and the loss is consistent with cache-set conflicts — it disappears when only B's row stride is padded by one cache line ([stride sweep and ldb test](../src/gemm/README.md#why-a-and-b-are-packed), `bench_gemm --benchmark_filter=BStride`). Packing B (`gemm_sme`) removes it, 2.3× at N=4096. Below N=1024 the kernels without B packing are faster, because they skip the copy.
-- One compiler pitfall costs ~5×. A streaming helper function without a ZA attribute (`__arm_preserves("za")` / `__arm_inout("za")`) is "private-ZA". Clang won't inline it into a ZA-owning caller. Instead it emits a lazy ZA save (`TPIDR2` + `smstart za`) around every call, and inside the k loop that drops throughput from ~1,290 to ~270 G/s.
 - f64 is ~¼ of f32, which matches the hardware: an f64 FMOPA covers 8×8 elements against 16×16 for f32.
+- One compiler pitfall costs ~5×. A streaming helper without a ZA attribute (`__arm_inout("za")` etc.) is "private-ZA": Clang won't inline it into a ZA-owning caller and wraps every call in a lazy ZA save (`TPIDR2` + `smstart za`). Inside the k loop that dropped throughput from ~1,290 to ~270 G/s f32.
+
+#### The four SME steps
+
+Separate run, load average ~5, median of 3:
+
+| Kernel | N=256 | N=512 | N=1024 | N=2048 | N=4000 | N=4096 |
+|---|---|---|---|---|---|---|
+| `gemm_sme_1tile` f32 | 420 | 472 | 474 | 225 | 125 | 131 |
+| `gemm_sme_tiles` f32 | 976 | 1,461 | 1,381 | 624 | 429 | 445 |
+| `gemm_sme_blocked` f32 | 911 | 1,400 | 1,401 | 1,249 | 1,373 | 597 |
+| `gemm_sme` f32 | 752 | 1,283 | 1,421 | 1,438 | 1,419 | 1,372 |
+| `gemm_sme_1tile` f64 | 121 | 121 | 110 | 40 | 42 | 37 |
+| `gemm_sme_tiles` f64 | 350 | 420 | 403 | 232 | 210 | 208 |
+| `gemm_sme_blocked` f64 | 342 | 422 | 442 | 284 | 373 | 271 |
+| `gemm_sme` f64 | 315 | 397 | 414 | 406 | 410 | 403 |
+
+- One tile → all tiles: 2.3–3.4× f32, 2.9–5.8× f64. With one tile every FMOPA waits for the previous one's accumulator, and at large N each loaded vector feeds a single FMOPA.
+- All tiles → blocked: 2.0× f32 at N=2048, 3.2× at N=4000. Without blocking all of A is re-read for every B strip. N=4000 is as slow as N=4096, so this is not a stride effect; capacity is the likely cause.
+- Blocked → `gemm_sme`: within 3% at N=4000, but 2.3× f32 / 1.5× f64 at N=4096 and 1.15× f32 at N=2048: the B row stride effect below.
+- At N ≤ 512 the kernels without B packing are faster (+30% f32 at N=256 for `gemm_sme_tiles`): everything fits in cache, and `gemm_sme` pays for the copy.
+
+#### SME: B row stride
+
+> **Command:** `./build/benchmarks/bench_gemm --benchmark_filter=BStride --benchmark_repetitions=3 --benchmark_enable_random_interleaving=true --benchmark_report_aggregates_only=true`
+
+The same blocked kernel with B read in place (`gemm_sme_blocked`) and packed
+(`gemm_sme`); GFLOP/s, median of 3 interleaved runs, load average ~5. Why a
+power-of-two row stride is expected to hurt: [sme.hpp](../src/gemm/sme.hpp),
+"Packing". First, N around powers of two (all matrices square, B row stride
+= N·sizeof(T); the f64 strides are twice the f32 ones):
+
+| N | B row stride (f32) | f32 in place | f32 packed | diff | f64 in place | f64 packed | diff |
+|---|---|---|---|---|---|---|---|
+| 1984 | 7,936 B | 1,565 | 1,517 | +3% | 407 | 418 | −3% |
+| 2016 | 8,064 B | 1,556 | 1,541 | +1% | 410 | 419 | −2% |
+| **2048** | **2¹³ B** | 1,196 | 1,432 | **−17%** | 281 | 407 | **−31%** |
+| 2080 | 8,320 B | 1,493 | 1,483 | +1% | 398 | 404 | −2% |
+| 4000 | 16,000 B | 1,365 | 1,406 | −3% | 380 | 409 | −7% |
+| 4032 | 16,128 B | 1,354 | 1,399 | −3% | 380 | 408 | −7% |
+| 4064 | 16,256 B | 1,303 | 1,399 | −7% | 364 | 411 | −11% |
+| **4096** | **2¹⁴ B** | 608 | 1,344 | **−55%** | 268 | 398 | **−33%** |
+| 4128 | 16,512 B | 1,260 | 1,304 | −3% | 362 | 395 | −8% |
+
+Then the 4096×4096 problem with B in a wider buffer, so only its row stride
+(ldb elements) changes and the work stays the same:
+
+| ldb | B row stride (f32) | f32 in place | f32 packed | diff | f64 in place | f64 packed | diff |
+|---|---|---|---|---|---|---|---|
+| **4096** | **2¹⁴ B** | 608 | 1,344 | **−55%** | 268 | 398 | **−33%** |
+| 4097 | 16,388 B | 1,145 | 1,365 | −16% | 367 | 407 | −10% |
+| 4128 (+128 B) | 16,512 B | 1,339 | 1,386 | −3% | 376 | 407 | −8% |
+| 4160 (+256 B) | 16,640 B | 1,332 | 1,390 | −4% | 376 | 406 | −7% |
+
+- The collapse is confined to the exact powers of two; 32 columns either side, in place is within 11% of packed.
+- Padding each row by one cache line (ldb = 4128) recovers most of the loss with the same N, work and pages touched, so the loss follows the byte stride. That is what cache-set conflicts predict. It does not reach packed strips: a repeat run (5 repetitions, interleaved) measured ldb = 4128 at −8% f32 / −6% f64 and ldb = 4160 at −7% / −9%, so padded B stays 3–9% behind packed B.
+- ldb = 4097 is a control, not a fix: its 32-float row segments are no longer 128 B aligned, so each spans two cache lines, and the −16% mixes that cost with the stride effect.
+- Where the time goes, by phase (packing vs compute): [experiments/sme-b-layout](experiments/sme-b-layout/README.md). With a padded stride, packing B costs ~2 ms and saves 11–14 ms of compute at N=4096.
+- Not established: which cache level is responsible. A pointer chase from a P-core keeps only 8 of 1,024 lines spaced 16 KB apart in L1 and fewer than 1,024 in L2 (24 ns per load, against 0.78 ns at 128 B apart), but the SME unit reads through L2 and its own path is not visible to that test; no hardware counters were collected. Nor is the cause of the 3–11% that in place still loses away from powers of two (TLB reach, prefetching and address footprint were not separated).
 
 ### Matrix engines, single core
 
@@ -123,7 +169,7 @@ Same machine and run as above. Every row uses one core, so this is the like-for-
 
 > **Command:** `./build/benchmarks/bench_gemm --benchmark_filter=Amx` (`HPC_ENABLE_AMX` defaults ON on Apple)
 
-`gemm_amx` calls Accelerate's BLAS (`cblas_sgemm`/`cblas_dgemm`), Apple's route to its AMX coprocessor (unrelated to Intel AMX — see [src/gemm/README.md](../src/gemm/README.md#algorithm-11--apple-amx-via-accelerateframework)). Accelerate may use several cores, so these numbers are not single-core.
+`gemm_amx` calls Accelerate's BLAS (`cblas_sgemm`/`cblas_dgemm`), Apple's route to its AMX coprocessor (unrelated to Intel AMX; see [src/gemm/amx.hpp](../src/gemm/amx.hpp)). Accelerate may use several cores, so these numbers are not single-core.
 
 | Kernel | N=64 | N=256 | N=512 | N=1024 | N=2048 | N=4096 |
 |---|---|---|---|---|---|---|
@@ -191,7 +237,7 @@ f32
 
 Cache-access pattern dominates at large N. `gemm_naive` runs at nearly the same GFLOP/s for f32 and f64 at every size: it waits on cache misses from the column-stride walk of B, where element width doesn't matter. Switching to i-k-j (`gemm_reordered`) makes B and C sequential so every cache line is fully consumed: at N=4096 that is 25× faster than naive for f64 and 52× for f32 (twice the elements per cache line → twice the bandwidth).
 
-Explicit SIMD beats auto-vectorisation mainly by staying flat. `gemm_reordered` and `gemm_blocked` carry no NEON intrinsics — the compiler vectorises the sequential inner j-loop under `-ffast-math`, reaching ~86 GFLOP/s f32 at small N. Adding an explicit 4×4 Q-register tile on top of L2 blocking changes the *shape* of the curve:
+Explicit SIMD beats auto-vectorisation mainly by staying flat. `gemm_reordered` and `gemm_blocked` carry no NEON intrinsics — the compiler vectorises the sequential inner j-loop under `-ffast-math`, reaching ~86 GFLOP/s f32 at small N. That figure relies on N being a compile-time constant ([Deriving GFLOP/s](#deriving-gflops)); with N passed at run time `gemm_blocked` f32 runs at 28 GFLOP/s at N=256. Adding an explicit 4×16 f32 register tile (4 rows × 4 Q registers) on top of L2 blocking changes the *shape* of the curve:
 
 | Kernel | f32 N=256 | f32 N=512 | f32 N=1024 |
 |---|---|---|---|
@@ -226,9 +272,8 @@ Peak per family on this machine:
 
 Zen 5 has a full-width 512-bit AVX-512 datapath (unlike Zen 4's double-pumped
 256-bit), so this is the first machine in this repo where `gemm_avx512_*`
-runs on native-width hardware. NEON/SVE/SME/AMX are absent and report
-`SKIPPED`; 119 of the CPU test suite's cases compile here (scalar + AVX2 +
-AVX-512) and all pass.
+runs on native-width hardware. NEON, SVE, SME and AMX are absent and report
+`SKIPPED`; the scalar, AVX2 and AVX-512 tests all pass.
 
 ### GFLOP/s by kernel and size
 
@@ -326,93 +371,19 @@ size take 1,945 s of the 2,165 s sweep (90%).
 
 ## NVIDIA RTX 5080 — CUDA
 
-> On machines **without a CUDA device** all rows print `SKIPPED: 'No CUDA device available'`.
-> The binary compiles and links on CPU-only machines (Apple M, CI) via a stub library.
-> On a machine with a CUDA GPU the stub is replaced by the real `.cu` kernel library.
-
-Eight kernels, one per level (0–7), plus cuBLAS references:
-
-| Kernel | Strategy | Key technique |
-|---|---|---|
-| `CudaNaive` | 1 thread → 1 C(i,j), no shared memory | Baseline: exposes raw global-memory bandwidth |
-| `CudaBlocked` | TILE×TILE thread block → TILE×TILE sub-tile of C | Shared-memory tiling (TILE=16); 16× fewer global loads vs naive |
-| `CudaRegTile` | 128×128 block, 8×8 register tile/thread | Register blocking on top of shared-memory tiling |
-| `CudaDoubleBuf` | `CudaRegTile` + ping-pong shared buffers | `cp.async` (Ampere+) overlaps the next tile's load with the current tile's compute |
-| `CudaVectorized` | `CudaRegTile` shape + 128-bit loads | `float4`/`double2` global↔shared loads, XOR shared-memory swizzle instead of padding |
-| `CudaWmma` | 64×64 block, 4×4 warps, 16×16×16 Tensor Core tile | `wmma::load_matrix_sync`/`wmma::mma_sync`, fp32→fp16 on the fly (sm_70+) |
-| `CudaMmaLdmatrix` | 64×64 block, 4×4 warps, two 16×8×16 tiles/warp | Raw `ldmatrix.sync`+`mma.sync.m16n8k16` PTX, one level below WMMA (sm_80+) |
-| `CudaWmmaPipelined` | 128×128 block, 8 warps × 8 fragments (32×64/warp) | Same `wmma::` API as `CudaWmma`, but bigger tiles + cp.async double-buffered shared memory (sm_70+; async benefit needs sm_80+) — see [§ Level 7](#level-7--pipelined-wmma-bigger-tiles--cpasync-double-buffering) |
-
-Every kernel passes the `hpc_tests_cuda` suite on an NVIDIA RTX 5080 (Blackwell, sm_120, CUDA 13.2). Per-kernel design notes: [`src/gemm/README.md` § Algorithm 9](../src/gemm/README.md#algorithm-9--cuda-kernels-cudahpp--srccudagemm_kernelscu).
-
-### Level 7 — Pipelined WMMA (bigger tiles + cp.async double buffering)
-
-`gemm_cuda_wmma` (Level 4) and `gemm_cuda_mma_ldmatrix` (Level 6) reach ~5–6 TFLOP/s on RTX 5080, while cuBLAS's dense-FP16 path reaches ~120 TFLOP/s compute-only on the same Tensor Cores ([§ Reference cuBLAS](#reference-cublas--the-achievable-ceiling)). `gemm_cuda_wmma_pipelined` closes most of that gap, still on the `wmma::` C++ API:
-
-1. Bigger thread-block tile: 128×128 (vs 64×64) with BK=32 (vs 16) — more work per shared-memory round trip and `__syncthreads()` pair.
-2. Bigger per-warp tile: each of 8 warps owns a 32×64 region (8 fragments instead of 1), loading each A/B fragment once per k-sub-step and reusing it — register blocking at fragment granularity.
-3. cp.async double buffering (Ampere+): the next k-tile's copy overlaps the current tile's MMAs.
-4. Padded shared-memory leading dimensions (+8 halves) to remove bank conflicts — see [§ Removing the bank conflicts](#removing-the-bank-conflicts) below.
-
-cp.async constrains the layout: A and B are converted to fp16 in global memory first, `As` keeps A's row-major layout, and M, N must be multiples of 128 and K of 32 (otherwise it falls back to `gemm_cuda_wmma`). The design, line by line, is in [`src/gemm/README.md`](../src/gemm/README.md#level-7--gemm_cuda_wmma_pipelined--pipelined-tensor-cores-via-wmma-fp32-only-sm_70).
-
-Result — measured on RTX 5080, compute-only (pre-staged device buffers, no per-call transfer/malloc/conversion):
-
-| Kernel | N=4096 | N=8192 | N=16384 | vs `CudaWmma` |
-|---|---|---|---|---|
-| `CudaWmma` (Level 4, 64×64 tiles, single-buffered) | ~5 TFLOP/s | — | — | 1.0× |
-| `CudaWmmaPipelined` (Level 7, 128×128 tiles, cp.async) | 97.2 TFLOP/s | 101.5 TFLOP/s | 100.5 TFLOP/s | **~19×** |
-| `gemm_cuda_cublas_fp16` (vendor reference) | 108.7 TFLOP/s | 117.0 TFLOP/s | 120.5 TFLOP/s | ~23× |
-
-About 19× the Level 4 kernel and 83% of cuBLAS's dense-FP16 throughput at N=16384.
-
-### Removing the bank conflicts
-
-Without padding, this kernel measures 80.8 TFLOP/s, 68% of cuBLAS. Nsight Compute shows why, and the remedy is three constants.
-
-Unpadded, both shared tiles conflict heavily. A `wmma::load_matrix_sync` fragment reads 16 rows of 16 halves, and the bank a row starts in is `(row × ld × 2 / 4) % 32`:
-
-| Tile | `ld` | Row stride | Distinct bank-starts over 16 rows | Conflict |
-|---|---|---|---|---|
-| `As` unpadded | 32 halves | 64 B | 2 | 8-way |
-| `Bs` unpadded | 128 halves | 256 B — exactly 2 bank cycles, so *every* row starts in the same bank | 1 | 16-way |
-| `As` **+8 pad** | 40 halves | 80 B | 8 | **2-way** |
-| `Bs` **+8 pad** | 136 halves | 272 B | 8 | **2-way** |
-
-Padding by 8 halves, not the usual 1: `wmma::load_matrix_sync` requires the leading dimension to be a multiple of 8 `__half` elements, and `cp.async` requires a 16-byte-aligned destination. A `+1` pad violates both (it fails with `cudaErrorMisalignedAddress`, which is why `gemm_cuda_wmma` has no padding). 8 halves = 16 bytes satisfies both. `+16` would be *worse* (4-way); `+24` is equal but costs more memory.
-
-An XOR swizzle — the usual zero-memory-cost alternative, and what `gemm_cuda_vectorized` uses — is not applicable here: `load_matrix_sync` takes a plain `(pointer, ld)` pair and cannot express a permuted layout. Swizzling requires hand-mapped `mma.sync`/`ldmatrix` addressing, which is `gemm_cuda_mma_ldmatrix`'s job.
-
-Measured, N=4096 compute-only:
-
-| Metric | Unpadded | Padded (+8) |
-|---|---|---|
-| Shared-load bank conflicts | 285,879,068 | **519,545** |
-| …as a share of load wavefronts | 85% | **1.0%** |
-| Shared-load wavefronts | 336,210,716 | **50,851,193** |
-| L1/TEX throughput | 87.9% | **31.8%** |
-| Tensor pipe utilisation | 68.0% | **86.1%** |
-| Warp stalls — MIO throttle | 26.3% | **3.9%** |
-| Warp stalls — short scoreboard | 13.6% | **3.2%** |
-| Registers per thread | 126 | 126 |
-| **Throughput** | 80.8 TFLOP/s | 100.5 TFLOP/s |
-
-The kernel had been moving 6.7× more shared-memory load traffic than the algorithm requires; afterwards it is within 1% of the theoretical minimum wavefront count. Shared memory per block rises 32 → 37 KB, dropping the shared-memory occupancy limit from 3 blocks/SM to 2 — free here, because 126 registers/thread already capped it at 2.
-
-What now limits this kernel: register pressure. Occupancy is 33.3% (`Block Limit Registers: 2`), and Nsight estimates ~67% headroom from occupancy alone. Beyond that, closing the last 17% to cuBLAS would need deeper multi-stage pipelining (3-4 stages, not 2) and split-K for very large K — the territory CUTLASS exists to handle generically.
-
----
-
-### GFLOP/s by kernel and size
-
-> **Machine:** AMD Ryzen 9 9950X host + **NVIDIA GeForce RTX 5080** (Blackwell, sm_120), Ubuntu 24.04, CUDA 13.2, GCC 13.3, C++20.
+> **Machine:** AMD Ryzen 9 9950X host + **NVIDIA GeForce RTX 5080** (Blackwell, sm_120), Ubuntu 24.04, CUDA 13.2, GCC 13.3, C++20
 > **Build:** `cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_COMPILER=/usr/local/cuda-13.2/bin/nvcc` → native `sm_120` SASS (verified with `cuobjdump --list-elf`)
-> **Run:** `./build/benchmarks/cuda/bench_gemm_cuda --benchmark_format=console` — 123 s for the full GPU sweep
+> **Run:** `./build/benchmarks/bench_gemm_cuda` — 123 s for the full GPU sweep
 > **Date:** 2026-09-24. All CUDA tests passed with no skips.
 
-All figures GFLOP/s. Rows through `CudaCublasTf32` are end-to-end
-(`cudaMalloc` + H2D + kernel + D2H timed every iteration); the
-`*ComputeOnly` rows time only the kernel against device-resident buffers.
+What each level adds: [src/gemm/cuda.hpp](../src/gemm/cuda.hpp). Rows
+without a suffix are end to end (`cudaMalloc`, host-to-device copies, kernel
+and copy back on every iteration); `*ComputeOnly` rows time only the GEMM
+call on device-resident buffers. `CudaWmma`, `CudaMmaLdmatrix` and
+`CudaWmmaPipelined` multiply in fp16 (counter `precision=16`), so their
+GFLOP/s is not like-for-like with the fp32 rows.
+
+### GFLOP/s by kernel and size
 
 float (f32)
 
@@ -434,13 +405,12 @@ float (f32)
 | `CudaWmmaPipelinedComputeOnly` | — | — | — | — | 97,161 | 101,474 | **100,481** |
 
 `CudaWmma` was measured before its edge-tile store fix (commit `13add97`).
-Re-measured afterwards in interleaved before/after runs, it reaches
-~6.0 TFLOP/s at N=4096 (5,988–6,025 vs 5,279–5,307 GFLOP/s); N=1024 is
-unchanged. The other rows are unaffected.
+In interleaved before/after runs it reaches ~6.0 TFLOP/s at N=4096 since
+(5,988–6,025 vs 5,279–5,307 GFLOP/s); N=1024 is unchanged.
 
-double (f64) — consumer Blackwell has a heavily reduced FP64 datapath,
-so everything here is an order of magnitude below the f32 column and the
-Tensor Core kernels do not apply.
+double (f64). Consumer Blackwell has a heavily reduced FP64 datapath, so
+everything is an order of magnitude below f32, and the Tensor Core kernels
+do not apply.
 
 | Kernel | N=64 | N=256 | N=512 | N=1024 | N=4096 |
 |---|---|---|---|---|---|
@@ -451,88 +421,79 @@ Tensor Core kernels do not apply.
 | `CudaVectorized` | 2 | 34 | 128 | 460 | 725 |
 | `CudaCublas` (ref) | 11 | 178 | 284 | 467 | 686 |
 
-In f64 the order inverts: `CudaBlocked` (Level 1) is the fastest kernel at
-every size ≥512, ahead of the register-tiled kernels and of cuBLAS. Not
-profiled; the likely reason is that with FP64 throughput this limited, every
-kernel is bound by the FP64 pipe, so the extra staging of the higher levels
-buys nothing.
+### Level by level, f32, N=4096 end to end
 
-### Linux vs Windows on identical hardware
+| Level | Kernel | GFLOP/s | ×Naive | Note |
+|---|---|---|---|---|
+| 0 | `CudaNaive` | 2,608 | 1.0× | Coalesced B loads and L1/L2 reuse make this baseline strong. |
+| 1 | `CudaBlocked` | 2,422 | 0.93× | One output per thread: two `__syncthreads()` per k-tile for 16 FMAs. In f64 it is the fastest kernel from N=512, every kernel there being bound by the FP64 pipe (not profiled). |
+| 2 | `CudaRegTile` | 6,583 | 2.52× | 64 outputs per thread; the largest single step. |
+| 3 | `CudaDoubleBuf` | 6,671 | 2.56× | The fastest FMA kernel. |
+| 4 | `CudaWmma` | 5,266 | 2.02× | Below Levels 2–3 at this size: 64×64 tiles, one fragment per warp and a single buffer leave too little work per synchronisation. |
+| 5 | `CudaVectorized` | 5,690 | 2.18× | Slower than Level 2. Not profiled; the swizzle's index arithmetic on every shared-memory read is the likely cost, while A's transposed scatter-store stays scalar. |
+| 6 | `CudaMmaLdmatrix` | 5,685 | 2.18× | 8% above Level 4 with the same tile sizes and single buffering: dropping to PTX alone does not remove the bottleneck. |
+| 7 | `CudaWmmaPipelined` | 9,000 | 3.45× | Ahead of both end-to-end cuBLAS rows (8,285 / 8,735) only because every kernel is transfer-bound at this size; compute-only, cuBLAS FP16 leads. |
 
-The earlier run of this suite used the same GPU and the same CUDA 13.2 under
-Windows/MSVC. Comparing f32, against the pre-padding version of
-`gemm_cuda_wmma_pipelined` so both columns run identical source:
+### Compute-only, against cuBLAS
 
-| Kernel | Windows | Linux | Δ |
-|---|---|---|---|
-| `CudaNaive` (end-to-end, N=4096) | 2,481 | 2,608 | +5% |
-| `CudaRegTile` (end-to-end, N=4096) | 5,728 | 6,583 | +15% |
-| `CudaDoubleBuf` (end-to-end, N=4096) | 5,744 | 6,671 | +16% |
-| `CudaWmmaPipelined` (end-to-end, N=4096) | 7,121 | 9,003 | **+26%** |
-| `CudaCublasFp16ComputeOnly` (N=16384) | 117,827 | 118,228 | +0.3% |
-| `CudaWmmaPipelinedComputeOnly` (N=16384) | 82,383 | 80,773 | −2% |
-
-End-to-end gains 5-26%; compute-only is flat to within ±2%. Same silicon
-running the same arithmetic, so the difference is not in the kernels — it is
-the driver and transfer path, where Linux avoids Windows' WDDM overhead on
-allocation and host↔device copies. Any benchmark in this suite that includes
-transfers is measuring the OS as much as the GPU.
-
-The current kernel is faster than both columns — the shared-memory padding
-described above lifted the Linux compute-only figure from 80,773 to 100,481.
-Those numbers are not in this table because no Windows run exists for the
-padded kernel, and comparing different source across two operating systems
-would measure nothing.
-
-One consequence of the transfer-bound regime: at N=4096 end-to-end,
-`CudaWmmaPipelined` (9,000) beats both cuBLAS references (8,285 / 8,735).
-That is not a claim that the hand-written kernel is better than cuBLAS — at
-that size every kernel is transfer-bound and cuBLAS has no room to show its
-advantage. The compute-only rows are the honest comparison, and there cuBLAS
-FP16 leads 120,499 to 100,481 (the hand-written kernel reaching 83.4%
-of it).
-
-`CudaWmma`, `CudaMmaLdmatrix` and `CudaWmmaPipelined` compute in fp16 (`precision=16` counter), so their GFLOP/s is not like-for-like with the fp32 FMA kernels. At N=4096 end-to-end `CudaWmma`/`CudaMmaLdmatrix` land below `CudaRegTile`/`CudaDoubleBuf` — small 64×64 tiles, no pipelining — while `CudaWmmaPipelined` passes every other kernel and keeps climbing with N (29.1 TFLOP/s end-to-end at N=16384, ~100 compute-only).
-
-### Speedup vs `CudaNaive`, N=4096
-
-| Kernel | GFLOP/s | ×CudaNaive |
-|---|---|---|
-| `CudaNaive` | 2,608 (2.61 TFLOP/s) | 1.0× |
-| `CudaBlocked` (TILE=16) | 2,422 (2.42 TFLOP/s) | 0.93× |
-| `CudaWmma` (Tensor Cores, fp16) | 5,266 (5.27 TFLOP/s) | 2.02× |
-| `CudaVectorized` (float4 + swizzle) | 5,690 (5.69 TFLOP/s) | 2.18× |
-| `CudaMmaLdmatrix` (raw mma.sync, fp16) | 5,685 (5.69 TFLOP/s) | 2.18× |
-| `CudaRegTile` (block=128) | 6,583 (6.58 TFLOP/s) | 2.52× |
-| `CudaDoubleBuf` (cp.async) | 6,671 (6.67 TFLOP/s) | 2.56× |
-| `CudaWmmaPipelined` (Level 7 — 128×128 tiles + cp.async) | 9,000 (9.00 TFLOP/s) | 3.45× |
-
-`CudaBlocked` remains the one kernel slower than the naive baseline: shared-memory
-tiling with one output element per thread pays `__syncthreads()` overhead without
-enough arithmetic per thread to amortise it. Every level above it recovers, and the
-ladder is monotonic from `CudaWmma` onward.
-
----
-
-### Reference cuBLAS — the achievable ceiling
-
-`gemm_cuda_cublas`/`gemm_cuda_cublas_tf32`/`gemm_cuda_cublas_fp16` measure what NVIDIA's own production GEMM (cuBLAS) achieves on this GPU — the realistic ceiling for the hand-written kernels. `CudaWmma`/`CudaMmaLdmatrix` (~5 TFLOP/s; small 64×64 tiles, single-buffered) are far below it; `gemm_cuda_wmma_pipelined` ([§ Level 7](#level-7--pipelined-wmma-bigger-tiles--cpasync-double-buffering) above) closes most of the gap.
-
-Two measurement modes are provided:
-- End-to-end (no suffix): `cudaMalloc` + H2D + compute + D2H every iteration, like every other row. At N ≥ 8192 the GB-scale transfers dominate.
-- Compute-only (`*ComputeOnly`): buffers allocated and filled once outside the timed loop; only the GEMM call is timed. This is the fair comparison against cuBLAS.
-
-Compute-only, TFLOP/s (ascending):
+TFLOP/s, ascending:
 
 | Path | Precision | N=4096 | N=8192 | N=16384 |
 |---|---|---|---|---|
-| `cublasSgemm` | FP32, SIMT cores — no Tensor Cores | 37.7 | 38.6 | 39.1 |
+| `cublasSgemm` | FP32 on the SIMT cores | 37.7 | 38.6 | 39.1 |
 | `cublasGemmEx` TF32 | TF32 Tensor Cores, 10-bit mantissa | 51.8 | 58.4 | 59.7 |
-| **`gemm_cuda_wmma_pipelined`** | **dense FP16 Tensor Cores, hand-written** | **97.2** | **101.5** | **100.5** |
-| `cublasGemmEx` FP16 | dense FP16 Tensor Cores, fp32 accumulate | 108.7 | 117.0 | **120.5** |
+| **`gemm_cuda_wmma_pipelined`** | **FP16 Tensor Cores, hand-written** | **97.2** | **101.5** | **100.5** |
+| `cublasGemmEx` FP16 | FP16 Tensor Cores, fp32 accumulate | 108.7 | 117.0 | **120.5** |
 
-Reaching 100+ TFLOP/s on this GPU requires dense FP16 Tensor Cores. Plain FP32 on the SIMT cores (the ceiling for every non-Tensor-Core kernel above) tops out around 39 TFLOP/s. TF32 Tensor Cores give roughly 1.5× that (~60 TFLOP/s). Dense FP16 Tensor Cores (fp16-in, fp32-accumulate) reach ~120 TFLOP/s via cuBLAS, because FP16 elements are half the width of TF32's through the same tensor pipe.
+- 100+ TFLOP/s on this GPU needs dense FP16 Tensor Cores: plain FP32, the ceiling for every non-Tensor-Core kernel, tops out at ~39 TFLOP/s, and TF32 at ~60.
+- `gemm_cuda_wmma_pipelined` reaches 83% of cuBLAS FP16 at N=16384, about 19× `gemm_cuda_wmma` (~5 TFLOP/s, end to end at N=4096; not measured compute-only).
 
-`gemm_cuda_wmma_pipelined` reaches ~100 TFLOP/s at N=16384, 83% of cuBLAS FP16. The remaining ~20 TFLOP/s is limited first by register pressure (126 registers/thread caps occupancy at 33%), then by what CUTLASS handles generically: deeper multi-stage pipelining and split-K for very large K.
+### Level 7: shared-memory bank conflicts
+
+Without padding its shared-memory tiles, `gemm_cuda_wmma_pipelined` measured
+80.8 TFLOP/s, 68% of cuBLAS. Padding each row by 8 halves (why 8, and why
+not a swizzle: the `kPipeAsLd` comment in
+[gemm_kernels.cu](../src/cuda/gemm_kernels.cu)) changed, per Nsight Compute
+at N=4096 compute-only:
+
+| Metric | Unpadded | Padded (+8) |
+|---|---|---|
+| Shared-load bank conflicts | 285,879,068 | **519,545** |
+| …as a share of load wavefronts | 85% | **1.0%** |
+| Shared-load wavefronts | 336,210,716 | **50,851,193** |
+| L1/TEX throughput | 87.9% | **31.8%** |
+| Tensor pipe utilisation | 68.0% | **86.1%** |
+| Warp stalls — MIO throttle | 26.3% | **3.9%** |
+| Warp stalls — short scoreboard | 13.6% | **3.2%** |
+| Registers per thread | 126 | 126 |
+| **Throughput** | 80.8 TFLOP/s | 100.5 TFLOP/s |
+
+The kernel had been moving 6.7× more shared-memory traffic than it needs;
+afterwards it is within 1% of the minimum wavefront count. Shared memory
+per block grows from 32 to 37 KB, lowering the shared-memory occupancy
+limit from 3 to 2 blocks per SM, which costs nothing: 126 registers per
+thread already cap it at 2. That register pressure (occupancy 33%, ~67%
+headroom per Nsight) is what limits the kernel now; beyond it, the last
+17% to cuBLAS would take a deeper pipeline (3–4 stages) and split-K.
+
+### Linux vs Windows on identical hardware
+
+An earlier run used the same GPU and CUDA 13.2 under Windows/MSVC. f32, with
+the version of `gemm_cuda_wmma_pipelined` from before the padding above, so
+both columns run the same source:
+
+| Kernel | Windows | Linux | Δ |
+|---|---|---|---|
+| `CudaNaive` (end to end, N=4096) | 2,481 | 2,608 | +5% |
+| `CudaRegTile` (end to end, N=4096) | 5,728 | 6,583 | +15% |
+| `CudaDoubleBuf` (end to end, N=4096) | 5,744 | 6,671 | +16% |
+| `CudaWmmaPipelined` (end to end, N=4096) | 7,121 | 9,003 | **+26%** |
+| `CudaCublasFp16ComputeOnly` (N=16384) | 117,827 | 118,228 | +0.3% |
+| `CudaWmmaPipelinedComputeOnly` (N=16384) | 82,383 | 80,773 | −2% |
+
+End to end gains 5–26%, compute-only is flat within ±2%: the difference is
+the driver and transfer path, where Linux avoids Windows' WDDM overhead on
+allocation and host↔device copies. Any benchmark here that includes
+transfers measures the OS as much as the GPU.
 
 ---

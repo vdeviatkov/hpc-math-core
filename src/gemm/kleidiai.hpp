@@ -59,6 +59,10 @@ template <>
 inline void gemm_kleidiai<float>(const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C) {
     const std::size_t M = A.rows(), K = A.cols(), N = B.cols();
     assert(B.rows() == K && C.rows() == M && C.cols() == N);
+    if (K == 0)
+        C.zero();
+    if (M == 0 || N == 0 || K == 0)
+        return;
 
     const std::size_t mr = kai_get_mr_matmul_clamp_f32_f32p2vlx1_f32p2vlx1biasf32_sme2_mopa();
     const std::size_t nr = kai_get_nr_matmul_clamp_f32_f32p2vlx1_f32p2vlx1biasf32_sme2_mopa();

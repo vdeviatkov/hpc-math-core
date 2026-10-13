@@ -1,25 +1,19 @@
-# =============================================================================
-# hpc-math-core — .gitignore
-# =============================================================================
+# Git only treats `#` as a comment at the start of a line, so every comment
+# here sits on its own line.
 
-# ---------------------------------------------------------------------------
-# CMake build artefacts
-# ---------------------------------------------------------------------------
+# Build directories (CMake, CLion) and FetchContent sources
 build/
 out/
-cmake-build-*/          # CLion default build directories
+cmake-build-*/
+_deps/
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
 CTestTestfile.cmake
-CPackConfig.cmake
-CPackSourceConfig.cmake
-install_manifest.txt
-_deps/                  # FetchContent download/source/build directories
+Testing/
+compile_commands.json
 
-# ---------------------------------------------------------------------------
 # Compiled output
-# ---------------------------------------------------------------------------
 *.o
 *.obj
 *.a
@@ -30,107 +24,37 @@ _deps/                  # FetchContent download/source/build directories
 *.dll
 *.exe
 *.out
-*.app
-
-# ---------------------------------------------------------------------------
-# Generated / cached files
-# ---------------------------------------------------------------------------
-*.d             # dependency files
-*.pch           # precompiled headers
+*.d
+*.pch
 *.gch
 
-# ---------------------------------------------------------------------------
-# Benchmark & profiling output
-# ---------------------------------------------------------------------------
-*.json          # benchmark --benchmark_out results
+# Benchmark and profiler output (--benchmark_out in the repo root, perf,
+# valgrind, Nsight). Only root-level JSON: recorded experiment data under
+# docs/ is committed.
+/*.json
 perf.data
 perf.data.old
-*.perf
-*.folded
-*.flamegraph
 callgrind.out.*
-massif.out.*
 cachegrind.out.*
+massif.out.*
+*.ncu-rep
+*.nsys-rep
 
-# ---------------------------------------------------------------------------
-# Test output
-# ---------------------------------------------------------------------------
-Testing/
-LastTest.log
-CTestCostData.txt
-
-# ---------------------------------------------------------------------------
-# IDE / editor metadata
-# ---------------------------------------------------------------------------
-
-# JetBrains (CLion, etc.)
+# Editors and IDEs
 .idea/
-*.iml
-cmake-build-debug/
-cmake-build-release/
-cmake-build-relwithdebinfo/
-cmake-build-minsizerel/
-
-# VS Code
 .vscode/
 *.code-workspace
-
-# Xcode
 *.xcodeproj/
 *.xcworkspace/
-DerivedData/
-*.pbxuser
-!default.pbxuser
-*.mode1v3
-!default.mode1v3
-*.mode2v3
-!default.mode2v3
-*.perspectivev3
-!default.perspectivev3
 xcuserdata/
-
-# Vim / Neovim
+DerivedData/
+.cache/
 *.swp
 *.swo
 *~
-.netrwhist
-tags
-.ccls-cache/
 
-# Emacs
-\#*\#
-.\#*
-*.elc
-
-# ---------------------------------------------------------------------------
-# macOS
-# ---------------------------------------------------------------------------
+# OS metadata
 .DS_Store
-.AppleDouble
-.LSOverride
-Icon\r
 ._*
-.Spotlight-V100
-.Trashes
-.fseventsd
-
-# ---------------------------------------------------------------------------
-# Linux
-# ---------------------------------------------------------------------------
-.nfs*
-
-# ---------------------------------------------------------------------------
-# Windows
-# ---------------------------------------------------------------------------
 Thumbs.db
-ehthumbs.db
 Desktop.ini
-$RECYCLE.BIN/
-
-# ---------------------------------------------------------------------------
-# Clang tooling
-# ---------------------------------------------------------------------------
-# Do NOT ignore .clang-format or .clang-tidy — they are project config files
-# that belong in source control.
-compile_commands.json   # generated; re-created by cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-
