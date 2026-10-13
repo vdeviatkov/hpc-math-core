@@ -1,0 +1,31 @@
+{
+  "date": "2026-10-12",
+  "machine": "Apple M4 Max (Mac16,5), 12 P-cores in two clusters of 6 + 4 E-cores, 64 GB, macOS 26.3.1",
+  "sysctl": {
+    "hw.perflevel0.l1dcachesize": 131072,
+    "hw.perflevel0.l1icachesize": 196608,
+    "hw.perflevel0.l2cachesize": 16777216,
+    "hw.perflevel0.cpusperl2": 6,
+    "hw.perflevel1.l1dcachesize": 65536,
+    "hw.perflevel1.l2cachesize": 4194304,
+    "hw.cachelinesize": 128,
+    "hw.pagesize": 16384,
+    "hw.optional.arm.sme_max_svl_b": 64,
+    "hw.optional.arm.FEAT_SME2": 1,
+    "hw.optional.arm.FEAT_SME_F64F64": 1
+  },
+  "load_average_1min": "5-6 (desktop machine, other work running)",
+  "compiler": "Apple clang 17.0.0 (clang-1700.4.4.1)",
+  "flags": "-O3 -DNDEBUG -mcpu=apple-m4 -ffast-math -funroll-loops (CMake Release, HPC_ENABLE_SME=ON)",
+  "commands": {
+    "latency.csv": "./build/benchmarks/cache_chase sizes",
+    "tlb.csv": "./build/benchmarks/cache_chase tlb",
+    "fmopa.csv": "./build/benchmarks/sme_fmopa"
+  },
+  "base_commit": "77e86bf",
+  "base_commit_note": "cache_chase.cpp and sme_fmopa.cpp were added after base_commit; the hashes identify the exact sources.",
+  "sha256": {
+    "benchmarks/experiments/cache_chase.cpp": "8282a308353e8e56f4812826c630ba27d67fbbb55df5cc0398d1a6ae3586f7e0",
+    "benchmarks/experiments/sme_fmopa.cpp": "a412cea4f50d452aad9d88699945ed90ba918cf10a5f1e49f43faacb2665130b"
+  }
+}

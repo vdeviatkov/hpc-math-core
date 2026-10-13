@@ -87,6 +87,7 @@ docs/                         Benchmark results, build guide, cache background, 
 
 | Document | Contents |
 |---|---|
+| [Matrix multiplication on Apple M4's SME2 unit](docs/articles/sme2-gemm.md) | Article: the SME2 GEMM step by step, from outer products to 1.45 TFLOP/s, with the machine measured down to its TLBs |
 | [A power-of-two stride halves SME2 GEMM throughput on Apple M4](docs/articles/sme2-cache-associativity.md) | Article: L2 set conflicts at a 16 KiB row stride, located and measured, and the two fixes |
 | [src/gemm/README.md](src/gemm/README.md) | Map of the kernels: files, techniques, registers and intrinsics per family. Each kernel's design is in its own header. |
 | [docs/benchmarks.md](docs/benchmarks.md) | All measurements and their analysis: Apple M4 Max, AMD Zen 5, RTX 5080 |

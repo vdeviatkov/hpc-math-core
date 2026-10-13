@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="520" viewBox="0 0 1000 520" role="img">
+<title>Four SME2 kernels, one optimisation each</title>
+<rect width="1000" height="520" fill="white"/>
+<g font-family="Arial, sans-serif" fill="#172635">
+<text x="500" y="34" font-size="23" text-anchor="middle">Four SME2 kernels, one optimisation each</text>
+<text x="500" y="61" font-size="14" text-anchor="middle">Apple M4 Max · FP32 · single thread · median of 3</text>
+<text x="495.0" y="99" font-size="17" text-anchor="middle"></text>
+<path d="M 100 410.0 H 890" stroke="#dce2e8"/>
+<text x="90" y="415.0" font-size="12" text-anchor="end">0</text>
+<path d="M 100 351.6 H 890" stroke="#dce2e8"/>
+<text x="90" y="356.6" font-size="12" text-anchor="end">400</text>
+<path d="M 100 293.2 H 890" stroke="#dce2e8"/>
+<text x="90" y="298.2" font-size="12" text-anchor="end">800</text>
+<path d="M 100 234.8 H 890" stroke="#dce2e8"/>
+<text x="90" y="239.8" font-size="12" text-anchor="end">1200</text>
+<path d="M 100 176.39999999999998 H 890" stroke="#dce2e8"/>
+<text x="90" y="181.39999999999998" font-size="12" text-anchor="end">1600</text>
+<path d="M 100 118.0 H 890" stroke="#dce2e8"/>
+<text x="90" y="123.0" font-size="12" text-anchor="end">2000</text>
+<path d="M 100 121.358 H 890" stroke="#7a8794" stroke-dasharray="6 5"/>
+<text x="890" y="113.358" font-size="13" text-anchor="end">FMOPA peak, 1,977</text>
+<text x="100.0" y="433" font-size="12" text-anchor="middle">256</text>
+<text x="258.0" y="433" font-size="12" text-anchor="middle">512</text>
+<text x="416.0" y="433" font-size="12" text-anchor="middle">1024</text>
+<text x="574.0" y="433" font-size="12" text-anchor="middle">2048</text>
+<text x="732.0" y="433" font-size="12" text-anchor="middle">4000</text>
+<text x="890.0" y="433" font-size="12" text-anchor="middle">4096</text>
+<polyline points="100.0,348.68 258.0,341.088 416.0,340.796 574.0,377.15 732.0,391.75 890.0,390.874" fill="none" stroke="#8c96a3" stroke-width="3"/>
+<circle cx="100.0" cy="348.68" r="4" fill="#8c96a3"/>
+<circle cx="258.0" cy="341.088" r="4" fill="#8c96a3"/>
+<circle cx="416.0" cy="340.796" r="4" fill="#8c96a3"/>
+<circle cx="574.0" cy="377.15" r="4" fill="#8c96a3"/>
+<circle cx="732.0" cy="391.75" r="4" fill="#8c96a3"/>
+<circle cx="890.0" cy="390.874" r="4" fill="#8c96a3"/>
+<polyline points="100.0,267.504 258.0,196.694 416.0,208.374 574.0,318.896 732.0,347.366 890.0,345.03" fill="none" stroke="#245ea8" stroke-width="3"/>
+<circle cx="100.0" cy="267.504" r="4" fill="#245ea8"/>
+<circle cx="258.0" cy="196.694" r="4" fill="#245ea8"/>
+<circle cx="416.0" cy="208.374" r="4" fill="#245ea8"/>
+<circle cx="574.0" cy="318.896" r="4" fill="#245ea8"/>
+<circle cx="732.0" cy="347.366" r="4" fill="#245ea8"/>
+<circle cx="890.0" cy="345.03" r="4" fill="#245ea8"/>
+<polyline points="100.0,276.994 258.0,205.60000000000002 416.0,205.454 574.0,227.646 732.0,209.542 890.0,322.838" fill="none" stroke="#2f9e6e" stroke-width="3"/>
+<circle cx="100.0" cy="276.994" r="4" fill="#2f9e6e"/>
+<circle cx="258.0" cy="205.60000000000002" r="4" fill="#2f9e6e"/>
+<circle cx="416.0" cy="205.454" r="4" fill="#2f9e6e"/>
+<circle cx="574.0" cy="227.646" r="4" fill="#2f9e6e"/>
+<circle cx="732.0" cy="209.542" r="4" fill="#2f9e6e"/>
+<circle cx="890.0" cy="322.838" r="4" fill="#2f9e6e"/>
+<polyline points="100.0,300.20799999999997 258.0,222.68200000000002 416.0,202.534 574.0,200.05200000000002 732.0,202.826 890.0,209.688" fill="none" stroke="#be4d14" stroke-width="3"/>
+<circle cx="100.0" cy="300.20799999999997" r="4" fill="#be4d14"/>
+<circle cx="258.0" cy="222.68200000000002" r="4" fill="#be4d14"/>
+<circle cx="416.0" cy="202.534" r="4" fill="#be4d14"/>
+<circle cx="574.0" cy="200.05200000000002" r="4" fill="#be4d14"/>
+<circle cx="732.0" cy="202.826" r="4" fill="#be4d14"/>
+<circle cx="890.0" cy="209.688" r="4" fill="#be4d14"/>
+<text x="495.0" y="463" font-size="14" text-anchor="middle">N (square matrices; categories, not to scale)</text>
+<text transform="translate(23 270) rotate(-90)" text-anchor="middle" font-size="14">GFLOP/s</text>
+<path d="M 90.0 494 h 35" stroke="#8c96a3" stroke-width="3"/>
+<text x="135.0" y="499" font-size="14" text-anchor="start">one ZA tile</text>
+<path d="M 305.0 494 h 35" stroke="#245ea8" stroke-width="3"/>
+<text x="350.0" y="499" font-size="14" text-anchor="start">all four tiles</text>
+<path d="M 520.0 494 h 35" stroke="#2f9e6e" stroke-width="3"/>
+<text x="565.0" y="499" font-size="14" text-anchor="start">+ cache blocking</text>
+<path d="M 735.0 494 h 35" stroke="#be4d14" stroke-width="3"/>
+<text x="780.0" y="499" font-size="14" text-anchor="start">+ packed B</text>
+</g></svg>

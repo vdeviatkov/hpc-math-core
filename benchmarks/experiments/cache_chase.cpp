@@ -1,15 +1,24 @@
 /**
  * @file cache_chase.cpp
- * @brief Pointer chase: load latency over L cache lines spaced `stride` bytes.
+ * @brief Pointer chases that measure the CPU core's caches and TLBs.
  *
- *   ./build/benchmarks/cache_chase > chase.csv
+ *   ./build/benchmarks/cache_chase [stride|sizes|tlb] > out.csv
  *
- * Each line holds a pointer to the next one, visited in a random cyclic
- * order, so every load depends on the previous one and the hardware
- * prefetcher cannot help. The latency step as L grows shows how many lines
- * at that stride a cache level keeps. Two strides: 16,384 B (a power of two)
- * and 16,512 B (one 128-byte line more). This measures the CPU core's load
- * path; it runs on any machine.
+ * Each 128-byte line holds a pointer to the next one, visited in a random
+ * cyclic order, so every load depends on the previous one and the hardware
+ * prefetcher cannot help; the result is load-to-use latency. Best of 5 runs.
+ *
+ *   stride  (default) L lines spaced 16,384 B (a power of two) or 16,512 B
+ *           apart: how many lines at that stride each cache level keeps.
+ *   sizes   L lines packed into a contiguous working set of 8 KiB … 1 GiB:
+ *           latency of L1, L2, the system cache and DRAM.
+ *   tlb     P lines, one per 16 KiB page, against the same number of lines
+ *           packed densely. The line inside each page rotates so the lines
+ *           spread over all cache sets; the difference between the two is
+ *           the cost of translation once P pages exceed a TLB's reach.
+ *
+ * This measures the CPU core's load path and runs on any 64-bit machine;
+ * the page-based mode assumes 16 KiB pages (Apple Silicon).
  */
 
 #include <algorithm>
@@ -19,44 +28,80 @@
 #include <cstring>
 #include <numeric>
 #include <random>
+#include <string>
 #include <vector>
 
-int main() {
+namespace {
+
+constexpr std::size_t kLine = 128, kPage = 16384;
+
+/// ns per dependent load over the given line addresses, visited in random order.
+double chase(std::vector<char*> lines, std::mt19937& rng) {
+    std::shuffle(lines.begin(), lines.end(), rng);
+    for (std::size_t i = 0; i < lines.size(); ++i)
+        *reinterpret_cast<char**>(lines[i]) = lines[(i + 1) % lines.size()];
+    char* p = lines[0];
+    for (std::size_t i = 0; i < 8 * lines.size(); ++i)  // warm-up
+        p = *reinterpret_cast<char**>(p);
+    double best = 1e9;
+    for (int rep = 0; rep < 5; ++rep) {
+        constexpr long kLoads = 4'000'000;
+        const auto t0 = std::chrono::steady_clock::now();
+        for (long i = 0; i < kLoads; ++i)
+            p = *reinterpret_cast<char**>(p);
+        const std::chrono::duration<double, std::nano> dt = std::chrono::steady_clock::now() - t0;
+        best = std::min(best, dt.count() / kLoads);
+    }
+    if (p == nullptr)  // keeps the chase observable
+        std::abort();
+    return best;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+    const std::string mode = argc > 1 ? argv[1] : "stride";
     constexpr std::size_t kArena = std::size_t(1) << 30;
-    auto* arena = static_cast<char*>(std::aligned_alloc(1 << 14, kArena));
+    auto* arena = static_cast<char*>(std::aligned_alloc(kPage, kArena));
     if (arena == nullptr)
         return 1;
-    std::memset(arena, 0, kArena);
+    std::memset(arena, 0, kArena);  // fault every page in
     std::mt19937 rng(1);
 
-    std::printf("stride_bytes,lines,ns_per_load\n");
-    for (const std::size_t stride : {16384, 16512}) {
-        for (const std::size_t lines :
-             {8, 16, 64, 256, 384, 448, 512, 576, 640, 704, 768, 896, 1024, 1536, 2048}) {
-            std::vector<std::size_t> idx(lines);
-            std::iota(idx.begin(), idx.end(), 0);
-            std::shuffle(idx.begin(), idx.end(), rng);
-            for (std::size_t i = 0; i < lines; ++i)
-                *reinterpret_cast<char**>(arena + idx[i] * stride) =
-                    arena + idx[(i + 1) % lines] * stride;
-
-            char* p = arena + idx[0] * stride;
-            for (std::size_t i = 0; i < 8 * lines; ++i)  // warm-up
-                p = *reinterpret_cast<char**>(p);
-            double best = 1e9;
-            for (int rep = 0; rep < 5; ++rep) {
-                constexpr long kLoads = 4'000'000;
-                const auto t0 = std::chrono::steady_clock::now();
-                for (long i = 0; i < kLoads; ++i)
-                    p = *reinterpret_cast<char**>(p);
-                const std::chrono::duration<double, std::nano> dt =
-                    std::chrono::steady_clock::now() - t0;
-                best = std::min(best, dt.count() / kLoads);
+    if (mode == "stride") {
+        std::printf("stride_bytes,lines,ns_per_load\n");
+        for (const std::size_t stride : {16384, 16512})
+            for (const std::size_t n :
+                 {8, 16, 64, 256, 384, 448, 512, 576, 640, 704, 768, 896, 1024, 1536, 2048}) {
+                std::vector<char*> lines(n);
+                for (std::size_t i = 0; i < n; ++i)
+                    lines[i] = arena + i * stride;
+                std::printf("%zu,%zu,%.2f\n", stride, n, chase(lines, rng));
             }
-            if (p == nullptr)  // keeps the chase observable
-                return 1;
-            std::printf("%zu,%zu,%.2f\n", stride, lines, best);
+    } else if (mode == "sizes") {
+        std::printf("working_set_bytes,ns_per_load\n");
+        for (std::size_t bytes = 8 << 10; bytes <= kArena; bytes *= 2) {
+            std::vector<char*> lines(bytes / kLine);
+            for (std::size_t i = 0; i < lines.size(); ++i)
+                lines[i] = arena + i * kLine;
+            std::printf("%zu,%.2f\n", bytes, chase(lines, rng));
         }
+    } else if (mode == "tlb") {
+        std::printf("pages,ns_one_line_per_page,ns_dense\n");
+        for (const std::size_t pages :
+             {16, 64, 128, 136, 144, 152, 160, 176, 192, 256, 512, 1024, 2048, 2560, 3072, 3328,
+              3584, 3840, 4096, 6144, 8192, 16384, 32768, 65536}) {
+            std::vector<char*> spread(pages), dense(pages);
+            for (std::size_t i = 0; i < pages; ++i) {
+                spread[i] = arena + i * kPage + (i % (kPage / kLine)) * kLine;
+                dense[i]  = arena + i * kLine;
+            }
+            const double s = chase(spread, rng);
+            std::printf("%zu,%.2f,%.2f\n", pages, s, chase(dense, rng));
+        }
+    } else {
+        std::fprintf(stderr, "usage: %s [stride|sizes|tlb]\n", argv[0]);
+        return 2;
     }
     std::free(arena);
 }

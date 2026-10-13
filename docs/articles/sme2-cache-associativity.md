@@ -5,7 +5,9 @@ permalink: /articles/sme2-cache-associativity.html
 ---
 # A power-of-two stride halves SME2 GEMM throughput on Apple M4
 
-*Apple M4 Max, one thread, FP32.*
+*Apple M4 Max, one thread, FP32. How the kernel is built, and the
+machine's caches, TLBs and SME unit:
+[Matrix multiplication on Apple M4's SME2 unit](sme2-gemm.md).*
 
 A matrix multiplication written for ARM's Scalable Matrix Extension (SME2)
 reached **1,365 GFLOP/s at N = 4000 and 608 GFLOP/s at N = 4096**. The larger
@@ -158,11 +160,11 @@ roughly 400 rows at this stride, which only the 16 MiB L2 can.
 A pointer chase on a CPU core, one dependent load per line, confirms the
 L2's capacity at this stride independently of SME:
 
-| Lines, 16 KiB apart | 8 | 16 | 512 | 576 | 640 | 768 | 1,024 |
-|---|--:|--:|--:|--:|--:|--:|--:|
-| ns per load | 0.76 | 5.0 | 8.4 | 8.1 | 9.2 | 10.8 | 23.7 |
+| Lines, 16 KiB apart | 8 | 16 | 512 | 576 | 768 | 1,024 |
+|---|--:|--:|--:|--:|--:|--:|
+| ns per load | 0.76 | 6.1 | 8.2 | 10.1 | 12.5 | 23.3 |
 
-Only 8 lines stay in L1 (0.76 ns); up to about 576 stay in L2 (~8 ns);
+Only 8 lines stay in L1 (0.76 ns); up to about 512 stay in L2 (~8 ns);
 beyond that loads go further out. The SME kernel breaks a little earlier,
 between 384 and 448 rows, because its A strips and C tiles occupy the same
 L2 sets. The two measurements agree on the structure: a power-of-two stride

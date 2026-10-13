@@ -86,20 +86,21 @@ best of 5 runs, ns per load.
 
 | L lines | 16,384 B apart | 16,512 B apart |
 |---:|--:|--:|
-| 8 | 0.76 | 0.74 |
-| 16 | 5.00 | 0.76 |
-| 256 | 7.86 | 2.28 |
-| 512 | 8.35 | 2.78 |
-| 576 | 8.09 | 2.87 |
-| 640 | 9.20 | 2.87 |
-| 768 | 10.77 | 2.96 |
-| 1024 | 23.69 | 3.06 |
-| 2048 | 36.27 | 7.59 |
+| 8 | 0.76 | 0.76 |
+| 16 | 6.07 | 0.76 |
+| 256 | 8.61 | 2.29 |
+| 512 | 8.23 | 2.80 |
+| 576 | 10.09 | 2.86 |
+| 640 | 9.76 | 2.89 |
+| 768 | 12.46 | 2.97 |
+| 1024 | 23.26 | 3.06 |
+| 2048 | 36.28 | 7.49 |
 
-16 KiB apart, only 8 lines stay in L1 (0.76 ns) and about 576 in L2
+16 KiB apart, only 8 lines stay in L1 (0.76 ns) and about 512 in L2
 (~8 ns). 128 bytes more of stride, all 1,024 lines stay in L1; the 2–3 ns
-from 256 lines on, against 0.76 ns, is consistent with first-level TLB
-misses, as every line sits on its own 16 KiB page.
+from 256 lines on, against 0.76 ns, is the first-level TLB missing, as
+every line sits on its own 16 KiB page and that TLB holds 128 pages
+([machine data](../sme2-machine/README.md)).
 
 ## Conditions
 

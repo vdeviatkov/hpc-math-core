@@ -1,0 +1,395 @@
+---
+title: "Matrix Multiplication on Apple M4's SME2 Unit: From Outer Products to 1.45 TFLOP/s"
+description: "How an SME2 GEMM on Apple M4 Max goes from 474 to 1,450 GFLOP/s on one core: the hardware measured down to TLBs, outer products, all four ZA tiles, GotoBLAS blocking and packing, each step with data."
+permalink: /articles/sme2-gemm.html
+---
+# Matrix multiplication on Apple M4's SME2 unit: from outer products to 1.45 TFLOP/s
+
+*Apple M4 Max, one thread unless stated. Every number in this article was
+measured on that machine; the code is in
+[hpc-math-core](https://github.com/vdeviatkov/hpc-math-core).*
+
+Apple's M4 is the first Apple chip that exposes its matrix unit through a
+public instruction set: ARM's Scalable Matrix Extension, SME2. This article
+builds a single-precision matrix multiplication (GEMM) for it from scratch
+and measures what each design decision is worth, from the instruction up to
+the caches and the TLB.
+
+**Key results**
+
+- The SME unit does one 16 × 16 FP32 outer product (512 flops) every
+  0.26 ns, but each result takes 1.04 ns to feed the next: **1.98 TFLOP/s
+  peak, reachable only with four independent accumulators**. There is one
+  unit per CPU cluster, not per core.
+- Four steps take the kernel from **474 to 1,450 GFLOP/s** (73% of peak):
+  use all four accumulator tiles (2.9×), block for the caches GotoBLAS-style
+  (up to 3.2× at large N), and pack the B operand (up to 2.3× at
+  power-of-two sizes).
+- The result reaches 84–88% of Apple's own Accelerate library on the same
+  core and beats Arm's KleidiAI micro-kernel at N = 4096 (1,345 vs 1,023
+  GFLOP/s), because KleidiAI does no cache blocking.
+
+## The machine
+
+The test machine is a 16-core M4 Max: 12 performance cores in two clusters
+of six, plus four efficiency cores. What macOS reports for a performance
+core (`sysctl hw`), and what had to be measured:
+
+| | Size | Latency | Source |
+|---|---|---|---|
+| Cache line | 128 B | | sysctl |
+| Page | 16 KiB | | sysctl |
+| L1 data cache, per core | 128 KiB | 0.76 ns | sysctl, measured |
+| L2 cache, per 6-core cluster | 16 MiB | 6.7–6.9 ns | sysctl, measured |
+| System-level cache, then DRAM | | 43 ns at 32 MiB, ~100–110 ns from 64 MiB | measured |
+| First-level data TLB | 128 entries = 2 MiB | +3.6 ns on a miss | measured |
+| Second-level TLB | 3,072 entries = 48 MiB | +10 ns page walk on a miss | measured |
+| SME streaming vector length | 512 bits = 16 FP32 | | sysctl |
+
+Latencies come from a dependent pointer chase in random order, which
+defeats the prefetcher. The TLB sizes come from the same chase with one
+line per page, compared against the same lines packed densely: latency
+rises from 136 pages on (128 entries) and jumps again between 3,072 and
+3,328 pages. Method and raw data:
+[machine measurements](https://github.com/vdeviatkov/hpc-math-core/tree/main/docs/experiments/sme2-machine).
+
+### The SME unit
+
+SME instructions do not run in the CPU core's own vector pipelines. They
+run on a matrix unit shared by a cluster, which the core drives in a
+separate *streaming mode*. A loop of outer-product instructions (`FMOPA`)
+on constant inputs, with no memory traffic, measures it directly:
+
+| | Accumulator tiles in use | ns per FMOPA | GFLOP/s |
+|---|--:|--:|--:|
+| FP32 (16 × 16 tile, 512 flops per FMOPA) | 1 | 1.036 | 494 |
+| | 2 | 0.518 | 989 |
+| | 4 | 0.259 | **1,977** |
+| FP64 (8 × 8 tile, 128 flops per FMOPA) | 1 | 1.035 | 124 |
+| | 4 | 0.259 | **495** |
+| | 8 | 0.258 | 495 |
+
+An FMOPA's result is ready for the next FMOPA on the same tile after
+1.04 ns, while the unit accepts a new FMOPA every 0.26 ns. A kernel that
+accumulates into a single tile therefore runs at a quarter of peak; four
+independent tiles fill the pipeline. FP64 has the same issue rate with a
+quarter of the work per instruction.
+
+Running the same loop on several threads shows how the unit is shared:
+
+| Threads | 1 | 2 | 4 | 6 | 8 | 12 |
+|---|--:|--:|--:|--:|--:|--:|
+| Total GFLOP/s | 1,977 | 1,954 | 2,448 | 3,670 | 3,999 | 4,205 |
+
+Two threads that land on the same cluster get no more than one: they share
+its SME unit. Spread across both performance clusters, the total
+approaches twice the single-thread figure. One thread per cluster is all
+SME can use.
+
+## Outer products instead of dot products
+
+A conventional SIMD GEMM computes C with vector FMAs: broadcast `A(i,k)`,
+multiply it by a row segment of B, add into a row segment of C. Each FMA
+instruction does 2 × lanes flops: 8 for NEON's 4 FP32 lanes.
+
+SME computes an **outer product**. FMOPA takes a column vector `a` and a
+row vector `b`, 16 FP32 values each, and adds every product `a[r]·b[c]`
+into a 16 × 16 tile of ZA, a two-dimensional accumulator array:
+
+```text
+ZA[t][r][c] += a[r] * b[c]          for r, c in 0..15      (512 flops, one instruction)
+```
+
+With `a` taken from column `k` of A and `b` from row `k` of B, `K` such
+instructions produce a 16 × 16 block of `C = A·B`. Two vectors loaded yield
+256 multiply-adds, against 16 for an FMA on the same two vectors: the
+outer product reuses every element 16 times inside the instruction. That
+is why one core's SME unit does 64 times the work per instruction of its
+NEON pipes.
+
+ZA holds 64 × 64 bytes: four 16 × 16 FP32 tiles, or eight 8 × 8 FP64
+tiles. The streaming mode imposes rules a kernel has to design around:
+
+- **No gather loads.** A column of a row-major A is not contiguous, and
+  streaming mode cannot gather it. A must be rearranged before the kernel
+  reads it.
+- **Mode switches cost.** Entering and leaving streaming mode (`smstart`,
+  `smstop`) saves and restores state, so the switch belongs around large
+  blocks of work, not inside loops.
+- **ZA is shared state.** A function that uses ZA without declaring it
+  makes the compiler save and restore ZA around every call (below, this
+  costs 5×).
+
+In C++, Clang's ACLE intrinsics express all of this:
+`__arm_locally_streaming` makes a function enter and leave streaming mode,
+`__arm_new("za")` gives it fresh ZA state, and `svmopa_za32_m(tile, pg, pg,
+a, b)` is one FMOPA.
+
+### What peak demands from memory
+
+One step of the kernel developed below loads two A vectors and two B
+vectors (256 bytes) and issues four FMOPAs (2,048 flops): 8 flops per
+byte. At the 1.98 TFLOP/s peak that is **247 GB/s of operand traffic** from
+wherever the operands live. The rest of this article is about keeping that
+traffic in a cache close enough to deliver it.
+
+## Step 1: one accumulator tile — 474 GFLOP/s
+
+The simplest SME GEMM accumulates each 16 × 16 block of C in one tile:
+
+```text
+for each 16-column block j of C:
+    for each 16-row block i of C:
+        zero tile 0
+        for k in 0 .. K-1:
+            a = A[i .. i+15, k]        // contiguous after packing A, see step 4
+            b = B[k, j .. j+15]        // contiguous in row-major B
+            FMOPA tile 0 += a ⊗ b
+        store tile 0 to C[i .. i+15, j .. j+15]
+```
+
+It peaks at **474 GFLOP/s** (N = 1024), 96% of the 494 GFLOP/s a single
+dependent FMOPA chain allows: the kernel is entirely latency bound. Every
+FMOPA waits for the previous one on the same tile, while three quarters of
+the unit's issue slots stay empty.
+
+## Step 2: all four tiles — 1,461 GFLOP/s
+
+Four tiles accumulate a 32 × 32 block of C as a 2 × 2 grid of 16 × 16
+tiles. Each step loads two A vectors and two B vectors and issues four
+independent FMOPAs:
+
+```cpp
+for (std::int64_t k = 0; k < kc; ++k) {
+    const auto a  = svld1_x2(pn, a_strip + k * mr);   // A rows 0-15 and 16-31, one instruction
+    const auto b  = svld1_x2(pb0, b_strip + k * ldb); // B columns 0-15 and 16-31
+    const auto a0 = svget2(a, 0), a1 = svget2(a, 1);
+    mopa<T, 0>(pt, a0, svget2(b, 0));   // tile 0: C rows 0-15,  columns 0-15
+    mopa<T, 1>(pt, a0, svget2(b, 1));   // tile 1: C rows 0-15,  columns 16-31
+    mopa<T, 2>(pt, a1, svget2(b, 0));   // tile 2: C rows 16-31, columns 0-15
+    mopa<T, 3>(pt, a1, svget2(b, 1));   // tile 3: C rows 16-31, columns 16-31
+}
+```
+
+Four independent chains fill the FMOPA pipeline, and each loaded vector
+now feeds two FMOPAs instead of one, halving the bytes per flop. SME2's
+multi-vector load `svld1_x2` fetches two consecutive vectors in one
+instruction. (A four-vector `svld1_x4`, loading two k steps at once,
+measured within noise of it: the loop is limited by FMOPA issue and operand
+delivery, not by load instructions.)
+
+For FP64 the micro-tile is 2 × 4 tiles (16 × 32 elements, all eight FP64
+tiles): eight FMOPAs per 384 bytes loaded instead of four per 256 bytes,
+2.7 flops per byte instead of 2. That layout measured 9% faster than 2 × 2
+at N = 4096.
+
+| N | 256 | 512 | 1024 | 2048 | 4000 | 4096 |
+|---|--:|--:|--:|--:|--:|--:|
+| one tile, GFLOP/s | 420 | 472 | 474 | 225 | 125 | 131 |
+| four tiles, GFLOP/s | 976 | **1,461** | 1,381 | 624 | 429 | 445 |
+
+![Four SME2 kernels: one tile, all tiles, cache blocking, packed B](assets/sme2-ladder.svg)
+
+The gain is 2.3–3.4×, but from N = 2048 both kernels collapse. Without
+blocking, every 32-column strip of B is streamed against all of A, so all
+of A (16 MiB at N = 2048) is re-read once per strip and can no longer stay
+in the 16 MiB L2. The kernel needs a structure that bounds what each loop
+touches.
+
+## Step 3: GotoBLAS blocking — 1,373 GFLOP/s at N = 4000
+
+Kazushige Goto's design, used by GotoBLAS, OpenBLAS, BLIS and most vendor
+libraries ([Goto and van de Geijn,
+2008](https://dl.acm.org/doi/10.1145/1356052.1356053)), splits the
+multiplication into blocks sized for each level of the memory hierarchy and
+orders the loops so that each block is reused many times while it is
+cached:
+
+```text
+for jc in 0 .. N step Nc:                  Nc = 4096 columns of B and C
+  for pc in 0 .. K step Kc:                Kc = 1024
+    B panel = B[pc .. pc+Kc, jc .. jc+Nc]  (16 MiB, FP32)
+    for ic in 0 .. M step Mc:              Mc = 128
+      A block = A[ic .. ic+Mc, pc .. pc+Kc] (512 KiB)
+      macro-kernel (streaming mode):
+        for jr in 0 .. Nc step 32:         one B strip, Kc × 32 = 128 KiB
+          for ir in 0 .. Mc step 32:       one A strip, 32 × Kc = 128 KiB
+            load C[ic+ir .. +32, jc+jr .. +32] into ZA (or zero it when pc = 0)
+            for k in 0 .. Kc-1:  4 FMOPAs  (the step-2 micro-kernel)
+            store ZA to C
+```
+
+Each loop level fixes one operand while the levels inside it reuse it:
+
+| Loop | Iterations at N = 4096 | Held fixed | Size | Reused by | Lives in |
+|---|--:|---|--:|---|---|
+| `k` | 1,024 | C micro-tile | 4 KiB | every k step | ZA |
+| `ir` | 4 | B strip | 128 KiB = 8 pages | 4 A strips | L2 |
+| `jr` | 128 | A block | 512 KiB = 32 pages | 128 B strips | L2 |
+| `ic` | 32 | B panel | 16 MiB = 1,024 pages | 32 A blocks | L2 and system cache |
+| `pc` | 4 | (splits K) | | | |
+| `jc` | 1 | (splits N) | | | |
+
+The orders matter:
+
+- **`k` innermost** keeps C in ZA for 1,024 steps; C crosses memory once per
+  `pc` block instead of once per step.
+- **`ir` inside `jr`**: a B strip is reused after one A strip (128 KiB) has
+  passed through, an A strip after about 640 KiB. Swapping them would put
+  the whole 16 MiB panel between two uses of the same A strip.
+- **`ic` inside `pc`** means each B panel is packed once and serves every A
+  block. A, the small operand, is the one repacked more often: each element
+  of A is packed `N / Nc` times, each element of B once.
+- **Large `Kc`** amortises the round trip of C through ZA (once per `Kc`
+  steps); **`Nc`** caps the B panel at the 16 MiB L2.
+
+Classic GotoBLAS sizes the B micro-panel for L1. Here the blocks are sized
+for L2, because the SME unit is a cluster resource and its operands come
+from L2: the [follow-up article](sme2-cache-associativity.md) shows SME
+loads conflicting in L2 sets, at a capacity hundreds of times what one L1
+set holds. A sweep over Mc = 64–512, Kc = 256–2048 and
+Nc = 512–4096 picked the values above; large `Kc` and `Nc` win, and Nc =
+4096 instead of 2048 adds 5% at N ≥ 4096.
+
+The blocks also fit the core's TLBs, which the packing code runs through:
+an A block (32 pages) and a B strip (8 pages) stay within the 128-entry
+first-level TLB, and a B panel (1,024 pages) within the 3,072-entry
+second-level TLB.
+
+| N | 256 | 512 | 1024 | 2048 | 4000 | 4096 |
+|---|--:|--:|--:|--:|--:|--:|
+| four tiles, GFLOP/s | 976 | 1,461 | 1,381 | 624 | 429 | 445 |
+| + blocking, GFLOP/s | 911 | 1,400 | 1,401 | 1,249 | **1,373** | 597 |
+
+Blocking holds throughput flat to N = 4000 (3.2× over unblocked) but
+leaves a hole at exactly N = 4096, and one at 2048. That is the B layout,
+the subject of the last step.
+
+## Step 4: packing A and B — 1,438 GFLOP/s, no cliff
+
+### Packing A: a transpose
+
+FMOPA needs a 32-element column segment of A as one contiguous vector
+pair. In row-major A those 32 values are a full row apart, and streaming
+mode has no gather. So before the macro-kernel runs, each A block is
+copied into **strips**: 32 rows of the block, stored column by column, so
+step k of the micro-kernel reads 32 contiguous floats (128 bytes, one cache
+line):
+
+```text
+strip[k * 32 + r] = A(i0 + r, pc + k)      r in 0..31, k in 0..Kc-1
+```
+
+The copy is a transpose. It is done with NEON 4 × 4 in-register
+transposes (`vtrn1q_f32`, `vtrn2q_f32`, then swapping 64-bit halves with
+`vcombine_f32`), which doubled packing bandwidth over a scalar loop and
+made the whole GEMM about 10% faster. Packing runs before the macro-kernel
+enters streaming mode, in the core's own NEON pipes; the SME unit only
+ever sees packed data, and the mode switch happens once per 128 × 1024 ×
+4096 block.
+
+### Packing B: control over the stride
+
+B's 32-element row segments are already contiguous, so the kernel can read
+B in place. But consecutive rows of a strip are then `N × 4` bytes apart,
+16 KiB at N = 4096. At that power-of-two stride the 1,024 rows of a strip
+map to a handful of L2 cache sets and evict each other before the next A
+strip reuses them; throughput halves (608 GFLOP/s). Packing copies each
+strip into 1,024 contiguous 128-byte rows, which fill all sets evenly
+whatever N is. The [follow-up
+article](sme2-cache-associativity.md) traces that cliff in detail.
+
+| N | 256 | 512 | 1024 | 2048 | 4000 | 4096 |
+|---|--:|--:|--:|--:|--:|--:|
+| blocking, B in place, GFLOP/s | 911 | 1,400 | 1,401 | 1,249 | 1,373 | 597 |
+| blocking, B packed, GFLOP/s | 752 | 1,283 | **1,421** | **1,438** | **1,419** | **1,372** |
+
+### What packing costs
+
+Timing each phase of the full multiplication at N = 4096 (median of 15):
+packing A takes 2.95 ms and packing B 2.07 ms of a 102 ms call, about 5%
+together, and the compute takes 96 ms whatever B's original stride was.
+At small N the copy shows: below N = 1024 the unpacked kernels are faster
+(976 vs 752 GFLOP/s at N = 256), because the whole problem fits in L2
+anyway. Packing is an investment that pays off once data stops fitting.
+
+## Engineering details that decide the result
+
+- **Declare ZA usage on every helper.** A streaming helper function without
+  `__arm_inout("za")` or `__arm_preserves("za")` is "private-ZA": Clang will
+  not inline it into the kernel and wraps every call in a lazy save of the
+  ZA state. Inside the k loop that took the kernel from about 1,290 to
+  270 GFLOP/s.
+- **Compile for the CPU, not the architecture.** `-march=armv9-a+sme2`
+  compiles, but the resulting binary dies with `SIGILL`: Clang sizes the ZA
+  save area with a non-streaming SVE instruction, which Apple's cores do not
+  implement. `-mcpu=apple-m4` avoids it. Since only running the binary
+  reveals this, the build compiles and runs a small SME program to choose
+  the flags.
+- **Pad edges in the packing, not in the kernel.** Packing fills partial
+  strips with zeros, so every FMOPA runs on full vectors with an all-true
+  predicate; only the loads and stores of C into ZA are predicated at the
+  matrix edges.
+
+## Where it stands
+
+One thread, GFLOP/s; `gemm_sme` from a separate run than the step tables
+above, Accelerate restricted to one thread with `VECLIB_MAXIMUM_THREADS=1`:
+
+| | N = 256 | 512 | 1024 | 2048 | 4096 | % of FMOPA peak |
+|---|--:|--:|--:|--:|--:|--:|
+| NEON, blocked, register-tiled | 96 | 97 | 94 | — | 73 | — |
+| `gemm_sme`, FP32 | 753 | 1,283 | **1,450** | 1,417 | 1,345 | 73% |
+| Arm KleidiAI, FP32 | 1,060 | 1,511 | 1,643 | 1,408 | 1,023 | 83% |
+| Apple Accelerate, FP32 | 1,705 | 1,719 | 1,649 | 1,687 | 1,590 | 87% |
+| `gemm_sme`, FP64 | 315 | 397 | **410** | 407 | 404 | 83% |
+| Apple Accelerate, FP64 | 460 | 421 | 434 | 394 | 396 | 93% |
+
+- SME is **15× the best NEON kernel** on the same core.
+- `gemm_sme` reaches 84–88% of Accelerate for N ≥ 1024 in FP32, and in
+  FP64 it is within 6% from N = 512 and ahead at N ≥ 2048. Accelerate's lead is largest at small N, where
+  `gemm_sme`'s fixed costs (allocating and packing buffers, entering
+  streaming mode) are not amortised.
+- KleidiAI uses the same 2 × 2-tile micro-kernel, written in assembly by
+  Arm, and packs both operands, but has no cache blocking: it leads at
+  N ≤ 1024 and falls to 1,023 GFLOP/s at N = 4096.
+- With every core, Accelerate reaches 3.1–3.3 TFLOP/s FP32: about twice
+  one thread, as expected from two SME units.
+
+## Takeaways
+
+1. **Measure the instruction first.** FMOPA's latency-to-throughput ratio
+   of four sets the minimum number of independent accumulators, and the
+   single-tile kernel landing at 96% of the single-chain ceiling proves the
+   diagnosis.
+2. **Count bytes per flop.** The micro-kernel's shape (2 × 2 tiles for
+   FP32, 2 × 4 for FP64) is chosen to maximise reuse of each loaded vector,
+   because peak needs ~250 GB/s of operands.
+3. **Block for the cache the unit actually uses.** The SME unit is fed from
+   the cluster's L2, so GotoBLAS's blocks are sized for L2 and the TLBs, not
+   L1.
+4. **Pack both operands.** A must be transposed for the hardware; B is
+   packed to make performance independent of the caller's layout. Together
+   the copies cost about 5% and remove a 2× cliff.
+
+## Reproduce
+
+```bash
+git clone https://github.com/vdeviatkov/hpc-math-core && cd hpc-math-core
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DHPC_ENABLE_SME=ON   # Apple M4 or later
+cmake --build build --parallel
+ctest --test-dir build
+
+./build/benchmarks/bench_gemm --benchmark_filter='Sme|KleidiAI'   # the kernels
+VECLIB_MAXIMUM_THREADS=1 ./build/benchmarks/bench_gemm --benchmark_filter=Amx
+./build/benchmarks/sme_fmopa                                       # FMOPA latency and throughput
+./build/benchmarks/cache_chase sizes                               # cache latencies
+./build/benchmarks/cache_chase tlb                                 # TLB sizes
+```
+
+The kernels are in
+[`src/gemm/sme.hpp`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/sme.hpp),
+all four as templates over FP32 and FP64. Full benchmark tables:
+[docs/benchmarks.md](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/benchmarks.md).
+Benchmarks are medians of repeated runs on a desktop machine under
+moderate load; each experiment's folder records its conditions.
