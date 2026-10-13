@@ -6,6 +6,13 @@
   <title>{{ page.title | default: site.title | escape }} — Vladyslav Deviatkov</title>
   <meta name="description" content="{{ page.description | default: site.description | escape }}">
   <link rel="canonical" href="{{ page.url | absolute_url }}">
+  <meta property="og:type" content="{% if page.url contains '/articles/' %}article{% else %}website{% endif %}">
+  <meta property="og:site_name" content="{{ site.title | escape }}">
+  <meta property="og:title" content="{{ page.title | default: site.title | escape }}">
+  <meta property="og:description" content="{{ page.description | default: site.description | escape }}">
+  <meta property="og:url" content="{{ page.url | absolute_url }}">
+  <meta name="twitter:card" content="summary">
+  <meta name="author" content="Vladyslav Deviatkov">
   <style>
     :root { color-scheme: light; }
     * { box-sizing: border-box; }
@@ -26,6 +33,13 @@
     th { background: #f3f5f8; }
     blockquote { border-left: 3px solid #185cac; margin-left: 0; padding-left: 20px; }
     footer { border-top: 1px solid #e0e5eb; margin-top: 48px; color: #586574; font-size: 14px; }
+    .lead { font-size: 21px; color: #3a4754; }
+    .posts { list-style: none; padding: 0; margin: 28px 0; }
+    .posts li { border: 1px solid #e0e5eb; border-radius: 8px; padding: 22px 26px; margin-bottom: 18px; }
+    .posts .meta { font-size: 14px; color: #586574; margin: 0 0 6px; }
+    .posts h3 { margin: 0 0 8px; font-size: 22px; }
+    .posts h3 a { text-decoration: none; }
+    .posts p { margin: 0; }
     @media (max-width: 600px) { body { font-size: 16px; } header, main, footer { padding: 18px; } h2 { font-size: 25px; } }
   </style>
 </head>

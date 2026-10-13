@@ -81,25 +81,28 @@ shuffled repetitions. B in place with `ldb = N + 32` against packed.
 
 ## Chase: the CPU core's view
 
-`cache_chase`: a dependent pointer chase over L lines in random order,
-best of 5 runs, ns per load.
+`cache_chase stride`: a dependent pointer chase over L lines in random
+order, best of 5, in cycles of the core clock measured in the same run
+(3.99 GHz):
 
 | L lines | 16,384 B apart | 16,512 B apart |
 |---:|--:|--:|
-| 8 | 0.76 | 0.76 |
-| 16 | 6.07 | 0.76 |
-| 256 | 8.61 | 2.29 |
-| 512 | 8.23 | 2.80 |
-| 576 | 10.09 | 2.86 |
-| 640 | 9.76 | 2.89 |
-| 768 | 12.46 | 2.97 |
-| 1024 | 23.26 | 3.06 |
-| 2048 | 36.28 | 7.49 |
+| 8 | 3.0 | 3.0 |
+| 16 | 24.2 | 3.0 |
+| 256 | 34.4 | 9.1 |
+| 448 | 32.7 | 11.4 |
+| 512 | 41.0 | 11.1 |
+| 640 | 41.7 | 11.5 |
+| 768 | 52.0 | 11.8 |
+| 1024 | 100.0 | 12.1 |
+| 2048 | 144.1 | 30.0 |
 
-16 KiB apart, only 8 lines stay in L1 (0.76 ns) and about 512 in L2
-(~8 ns). 128 bytes more of stride, all 1,024 lines stay in L1; the 2–3 ns
-from 256 lines on, against 0.76 ns, is the first-level TLB missing, as
-every line sits on its own 16 KiB page and that TLB holds 128 pages
+16 KiB apart, only 8 lines stay in L1 (3 cycles) and roughly 450–600 in
+L2 (~32 cycles, including a TLB miss per load); the step's position moved
+between 448 and 640 lines across three runs on this busy machine. 128 bytes
+more of stride, all 1,024 lines stay in L1; the 9–12 cycles from 256 lines
+on, against 3, are first-level TLB misses, as every line sits on its own
+16 KiB page and that TLB holds 128 pages
 ([machine data](../sme2-machine/README.md)).
 
 ## Conditions

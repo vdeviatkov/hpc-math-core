@@ -17,9 +17,13 @@
  *           spread over all cache sets; the difference between the two is
  *           the cost of translation once P pages exceed a TLB's reach.
  *
- * This measures the CPU core's load path and runs on any 64-bit machine;
- * the page-based mode assumes 16 KiB pages (Apple Silicon).
+ * Latencies are reported in ns and in cycles of the core's clock, measured
+ * at the start of the run (core_clock.hpp). This measures the CPU core's
+ * load path; it needs an AArch64 core, and the tlb mode assumes 16 KiB
+ * pages (Apple Silicon).
  */
+
+#include "core_clock.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -67,27 +71,31 @@ int main(int argc, char** argv) {
         return 1;
     std::memset(arena, 0, kArena);  // fault every page in
     std::mt19937 rng(1);
+    const double ghz = hpc::experiments::core_ghz();
+    std::fprintf(stderr, "core clock: %.3f GHz\n", ghz);
 
     if (mode == "stride") {
-        std::printf("stride_bytes,lines,ns_per_load\n");
+        std::printf("stride_bytes,lines,ns_per_load,cycles\n");
         for (const std::size_t stride : {16384, 16512})
             for (const std::size_t n :
                  {8, 16, 64, 256, 384, 448, 512, 576, 640, 704, 768, 896, 1024, 1536, 2048}) {
                 std::vector<char*> lines(n);
                 for (std::size_t i = 0; i < n; ++i)
                     lines[i] = arena + i * stride;
-                std::printf("%zu,%zu,%.2f\n", stride, n, chase(lines, rng));
+                const double ns = chase(lines, rng);
+                std::printf("%zu,%zu,%.2f,%.1f\n", stride, n, ns, ns * ghz);
             }
     } else if (mode == "sizes") {
-        std::printf("working_set_bytes,ns_per_load\n");
+        std::printf("working_set_bytes,ns_per_load,cycles\n");
         for (std::size_t bytes = 8 << 10; bytes <= kArena; bytes *= 2) {
             std::vector<char*> lines(bytes / kLine);
             for (std::size_t i = 0; i < lines.size(); ++i)
                 lines[i] = arena + i * kLine;
-            std::printf("%zu,%.2f\n", bytes, chase(lines, rng));
+            const double ns = chase(lines, rng);
+            std::printf("%zu,%.2f,%.1f\n", bytes, ns, ns * ghz);
         }
     } else if (mode == "tlb") {
-        std::printf("pages,ns_one_line_per_page,ns_dense\n");
+        std::printf("pages,ns_one_line_per_page,ns_dense,cycles_one_line_per_page,cycles_dense\n");
         for (const std::size_t pages :
              {16, 64, 128, 136, 144, 152, 160, 176, 192, 256, 512, 1024, 2048, 2560, 3072, 3328,
               3584, 3840, 4096, 6144, 8192, 16384, 32768, 65536}) {
@@ -96,8 +104,8 @@ int main(int argc, char** argv) {
                 spread[i] = arena + i * kPage + (i % (kPage / kLine)) * kLine;
                 dense[i]  = arena + i * kLine;
             }
-            const double s = chase(spread, rng);
-            std::printf("%zu,%.2f,%.2f\n", pages, s, chase(dense, rng));
+            const double s = chase(spread, rng), d = chase(dense, rng);
+            std::printf("%zu,%.2f,%.2f,%.1f,%.1f\n", pages, s, d, s * ghz, d * ghz);
         }
     } else {
         std::fprintf(stderr, "usage: %s [stride|sizes|tlb]\n", argv[0]);

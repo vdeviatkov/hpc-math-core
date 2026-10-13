@@ -11,3 +11,11 @@ defaults:
       path: ""
     values:
       layout: article
+# Project docs and raw experiment data are linked on GitHub, where their
+# relative links into the source tree resolve; only the articles and the
+# index are published.
+exclude:
+  - benchmarks.md
+  - build.md
+  - cache-behavior.md
+  - experiments/

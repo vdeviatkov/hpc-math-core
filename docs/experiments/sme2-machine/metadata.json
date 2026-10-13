@@ -23,9 +23,11 @@
     "fmopa.csv": "./build/benchmarks/sme_fmopa"
   },
   "base_commit": "77e86bf",
-  "base_commit_note": "cache_chase.cpp and sme_fmopa.cpp were added after base_commit; the hashes identify the exact sources.",
+  "base_commit_note": "cache_chase.cpp, sme_fmopa.cpp and core_clock.hpp were added after base_commit; the hashes identify the exact sources.",
   "sha256": {
-    "benchmarks/experiments/cache_chase.cpp": "8282a308353e8e56f4812826c630ba27d67fbbb55df5cc0398d1a6ae3586f7e0",
-    "benchmarks/experiments/sme_fmopa.cpp": "a412cea4f50d452aad9d88699945ed90ba918cf10a5f1e49f43faacb2665130b"
-  }
+    "benchmarks/experiments/cache_chase.cpp": "ec7865248af130308bfdf4de61d54ebc204946a902d217520de9d21a0db10cad",
+    "benchmarks/experiments/sme_fmopa.cpp": "f06fd7eaf462bd63b04b4eaf2bcbc7328bc777be38e29ce39b8bf3402ba2daf9",
+    "benchmarks/experiments/core_clock.hpp": "e5c621ed85a68fdc817c18114c8e885f16461daa01fa8735adc34543f34cde43"
+  },
+  "core_clock_ghz": "3.94-3.99, measured at the start of each run (core_clock.hpp)"
 }

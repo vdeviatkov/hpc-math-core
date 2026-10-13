@@ -1,6 +1,8 @@
 ---
 title: "Matrix Multiplication on Apple M4's SME2 Unit: From Outer Products to 1.45 TFLOP/s"
 description: "How an SME2 GEMM on Apple M4 Max goes from 474 to 1,450 GFLOP/s on one core: the hardware measured down to TLBs, outer products, all four ZA tiles, GotoBLAS blocking and packing, each step with data."
+date: 2026-10-12
+series_part: 1
 permalink: /articles/sme2-gemm.html
 ---
 # Matrix multiplication on Apple M4's SME2 unit: from outer products to 1.45 TFLOP/s
@@ -17,11 +19,11 @@ the caches and the TLB.
 
 **Key results**
 
-- The SME unit does one 16 × 16 FP32 outer product (512 flops) every
-  0.26 ns, but each result takes 1.04 ns to feed the next: **1.98 TFLOP/s
+- The SME unit completes one 16 × 16 FP32 outer product (512 flops) per
+  cycle, but each result takes 4 cycles to feed the next: **1.96 TFLOP/s
   peak, reachable only with four independent accumulators**. There is one
   unit per CPU cluster, not per core.
-- Four steps take the kernel from **474 to 1,450 GFLOP/s** (73% of peak):
+- Four steps take the kernel from **474 to 1,450 GFLOP/s** (74% of peak):
   use all four accumulator tiles (2.9×), block for the caches GotoBLAS-style
   (up to 3.2× at large N), and pack the B operand (up to 2.3× at
   power-of-two sizes).
@@ -35,22 +37,26 @@ The test machine is a 16-core M4 Max: 12 performance cores in two clusters
 of six, plus four efficiency cores. What macOS reports for a performance
 core (`sysctl hw`), and what had to be measured:
 
-| | Size | Latency | Source |
-|---|---|---|---|
+| | Size | Load latency, cycles | Source |
+|---|---|--:|---|
+| P-core clock | 3.94–3.99 GHz | | measured |
 | Cache line | 128 B | | sysctl |
 | Page | 16 KiB | | sysctl |
-| L1 data cache, per core | 128 KiB | 0.76 ns | sysctl, measured |
-| L2 cache, per 6-core cluster | 16 MiB | 6.7–6.9 ns | sysctl, measured |
-| System-level cache, then DRAM | | 43 ns at 32 MiB, ~100–110 ns from 64 MiB | measured |
-| First-level data TLB | 128 entries = 2 MiB | +3.6 ns on a miss | measured |
-| Second-level TLB | 3,072 entries = 48 MiB | +10 ns page walk on a miss | measured |
+| L1 data cache, per core | 128 KiB | 3 | sysctl, measured |
+| L2 cache, per 6-core cluster | 16 MiB | 26–27 | sysctl, measured |
+| System-level cache | | ~150 (32 MiB working set) | measured |
+| DRAM | 64 GB | 380–440 | measured |
+| First-level data TLB | 128 entries = 2 MiB | +14 on a miss | measured |
+| Second-level TLB | 3,072 entries = 48 MiB | +39 for a page walk | measured |
 | SME streaming vector length | 512 bits = 16 FP32 | | sysctl |
 
-Latencies come from a dependent pointer chase in random order, which
-defeats the prefetcher. The TLB sizes come from the same chase with one
-line per page, compared against the same lines packed densely: latency
-rises from 136 pages on (128 entries) and jumps again between 3,072 and
-3,328 pages. Method and raw data:
+macOS reports neither the clock nor the TLBs, so both are measured. A
+chain of dependent integer adds runs at exactly one add per cycle, which
+gives the clock. Latencies come from a dependent pointer chase in random
+order, which defeats the prefetcher. The TLB sizes come from the same chase
+with one line per page, compared against the same lines packed densely:
+latency rises from 136 pages on (128 entries) and jumps again between
+3,072 and 3,328 pages. Method and raw data:
 [machine measurements](https://github.com/vdeviatkov/hpc-math-core/tree/main/docs/experiments/sme2-machine).
 
 ### The SME unit
@@ -60,17 +66,18 @@ run on a matrix unit shared by a cluster, which the core drives in a
 separate *streaming mode*. A loop of outer-product instructions (`FMOPA`)
 on constant inputs, with no memory traffic, measures it directly:
 
-| | Accumulator tiles in use | ns per FMOPA | GFLOP/s |
+| | Accumulator tiles in use | Cycles per FMOPA | GFLOP/s |
 |---|--:|--:|--:|
-| FP32 (16 × 16 tile, 512 flops per FMOPA) | 1 | 1.036 | 494 |
-| | 2 | 0.518 | 989 |
-| | 4 | 0.259 | **1,977** |
-| FP64 (8 × 8 tile, 128 flops per FMOPA) | 1 | 1.035 | 124 |
-| | 4 | 0.259 | **495** |
-| | 8 | 0.258 | 495 |
+| FP32 (16 × 16 tile, 512 flops per FMOPA) | 1 | 4.09 | 494 |
+| | 2 | 2.04 | 990 |
+| | 4 | 1.03 | **1,963** |
+| FP64 (8 × 8 tile, 128 flops per FMOPA) | 1 | 4.09 | 124 |
+| | 4 | 1.01 | **500** |
+| | 8 | 1.02 | 497 |
 
 An FMOPA's result is ready for the next FMOPA on the same tile after
-1.04 ns, while the unit accepts a new FMOPA every 0.26 ns. A kernel that
+**4 cycles**, while the unit accepts **one new FMOPA per cycle**: 512 FP32
+flops per cycle, 1.96 TFLOP/s at this clock. A kernel that
 accumulates into a single tile therefore runs at a quarter of peak; four
 independent tiles fill the pipeline. FP64 has the same issue rate with a
 quarter of the work per instruction.
@@ -79,7 +86,7 @@ Running the same loop on several threads shows how the unit is shared:
 
 | Threads | 1 | 2 | 4 | 6 | 8 | 12 |
 |---|--:|--:|--:|--:|--:|--:|
-| Total GFLOP/s | 1,977 | 1,954 | 2,448 | 3,670 | 3,999 | 4,205 |
+| Total GFLOP/s | 1,963 | 1,954 | 2,830 | 3,912 | 4,007 | 4,203 |
 
 Two threads that land on the same cluster get no more than one: they share
 its SME unit. Spread across both performance clusters, the total
@@ -129,8 +136,8 @@ a, b)` is one FMOPA.
 
 One step of the kernel developed below loads two A vectors and two B
 vectors (256 bytes) and issues four FMOPAs (2,048 flops): 8 flops per
-byte. At the 1.98 TFLOP/s peak that is **247 GB/s of operand traffic** from
-wherever the operands live. The rest of this article is about keeping that
+byte. At one FMOPA per cycle that is **64 bytes of operands every cycle**,
+about 250 GB/s, from wherever the operands live. The rest of this article is about keeping that
 traffic in a cache close enough to deliver it.
 
 ## Step 1: one accumulator tile — 474 GFLOP/s
@@ -333,28 +340,38 @@ anyway. Packing is an investment that pays off once data stops fitting.
 
 ## Where it stands
 
-One thread, GFLOP/s; `gemm_sme` from a separate run than the step tables
-above, Accelerate restricted to one thread with `VECLIB_MAXIMUM_THREADS=1`:
+GFLOP/s by matrix size. `gemm_sme` is single-threaded, so the fair
+comparison is with Accelerate restricted to one thread
+(`VECLIB_MAXIMUM_THREADS=1`); Accelerate's default, multi-threaded figures
+are listed separately. Peak is 1,963 GFLOP/s FP32 and 500 FP64 for one SME
+unit, twice that for two. `gemm_sme` comes from a separate run than the
+step tables above.
 
-| | N = 256 | 512 | 1024 | 2048 | 4096 | % of FMOPA peak |
+| One thread | N = 256 | 512 | 1024 | 2048 | 4096 | best, % of one unit's peak |
 |---|--:|--:|--:|--:|--:|--:|
-| NEON, blocked, register-tiled | 96 | 97 | 94 | — | 73 | — |
-| `gemm_sme`, FP32 | 753 | 1,283 | **1,450** | 1,417 | 1,345 | 73% |
-| Arm KleidiAI, FP32 | 1,060 | 1,511 | 1,643 | 1,408 | 1,023 | 83% |
-| Apple Accelerate, FP32 | 1,705 | 1,719 | 1,649 | 1,687 | 1,590 | 87% |
-| `gemm_sme`, FP64 | 315 | 397 | **410** | 407 | 404 | 83% |
-| Apple Accelerate, FP64 | 460 | 421 | 434 | 394 | 396 | 93% |
+| NEON, blocked, register-tiled, FP32 | 96 | 97 | 94 | — | 73 | — |
+| `gemm_sme`, FP32 | 753 | 1,283 | **1,450** | 1,417 | 1,345 | 74% |
+| Arm KleidiAI, FP32 | 1,060 | 1,511 | 1,643 | 1,408 | 1,023 | 84% |
+| Apple Accelerate, FP32 | 1,705 | 1,719 | 1,649 | 1,687 | 1,590 | 88% |
+| `gemm_sme`, FP64 | 315 | 397 | **410** | 407 | 404 | 82% |
+| Apple Accelerate, FP64 | 460 | 421 | 434 | 394 | 396 | 92% |
+
+| All cores (Accelerate's default) | N = 256 | 512 | 1024 | 2048 | 4096 | best, % of two units' peak |
+|---|--:|--:|--:|--:|--:|--:|
+| Apple Accelerate, FP32 | 1,724 | 2,906 | 3,296 | 3,202 | 3,156 | 84% |
+| Apple Accelerate, FP64 | 467 | 823 | 860 | 804 | 813 | 86% |
 
 - SME is **15× the best NEON kernel** on the same core.
-- `gemm_sme` reaches 84–88% of Accelerate for N ≥ 1024 in FP32, and in
-  FP64 it is within 6% from N = 512 and ahead at N ≥ 2048. Accelerate's lead is largest at small N, where
-  `gemm_sme`'s fixed costs (allocating and packing buffers, entering
-  streaming mode) are not amortised.
+- On one thread, `gemm_sme` reaches 84–88% of Accelerate for N ≥ 1024 in
+  FP32, and in FP64 it is within 6% from N = 512 and ahead at N ≥ 2048.
+  Accelerate's lead is largest at small N, where `gemm_sme`'s fixed costs
+  (allocating and packing buffers, entering streaming mode) are not
+  amortised.
 - KleidiAI uses the same 2 × 2-tile micro-kernel, written in assembly by
   Arm, and packs both operands, but has no cache blocking: it leads at
   N ≤ 1024 and falls to 1,023 GFLOP/s at N = 4096.
-- With every core, Accelerate reaches 3.1–3.3 TFLOP/s FP32: about twice
-  one thread, as expected from two SME units.
+- With all cores, Accelerate roughly doubles its one-thread throughput,
+  as two SME units predict.
 
 ## Takeaways
 

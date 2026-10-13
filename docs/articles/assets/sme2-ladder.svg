@@ -17,8 +17,8 @@
 <text x="90" y="181.39999999999998" font-size="12" text-anchor="end">1600</text>
 <path d="M 100 118.0 H 890" stroke="#dce2e8"/>
 <text x="90" y="123.0" font-size="12" text-anchor="end">2000</text>
-<path d="M 100 121.358 H 890" stroke="#7a8794" stroke-dasharray="6 5"/>
-<text x="890" y="113.358" font-size="13" text-anchor="end">FMOPA peak, 1,977</text>
+<path d="M 100 123.40199999999999 H 890" stroke="#7a8794" stroke-dasharray="6 5"/>
+<text x="890" y="115.40199999999999" font-size="13" text-anchor="end">FMOPA peak, 1,963</text>
 <text x="100.0" y="433" font-size="12" text-anchor="middle">256</text>
 <text x="258.0" y="433" font-size="12" text-anchor="middle">512</text>
 <text x="416.0" y="433" font-size="12" text-anchor="middle">1024</text>

@@ -10,9 +10,12 @@
  * No memory is touched inside the loop. FP32 uses up to the 4 za32 tiles
  * (16 × 16, 512 flops per FMOPA), FP64 up to the 8 za64 tiles (8 × 8, 128
  * flops). The same loop then runs on 1 … 12 threads at once to show how
- * many SME units the threads share. Best of 5 runs; stdout gets CSV rows.
+ * many SME units the threads share. Best of 5 runs; stdout gets CSV rows,
+ * with times also in cycles of the core clock measured at the start
+ * (core_clock.hpp).
  */
 
+#include "core_clock.hpp"
 #include "hpc/isa.hpp"
 
 #include <algorithm>
@@ -65,16 +68,21 @@ double time_threads(int threads, Fn fn) {
     return best;
 }
 
+double g_ghz = 0;
+
 void report(const char* type, int tiles, int threads, int flops_per_fmopa, double seconds) {
     const double fmopas = double(kIters) * tiles * threads;
-    std::printf("%s,%d,%d,%.3f,%.1f\n", type, tiles, threads, seconds * 1e9 / (double(kIters) * tiles),
+    const double ns     = seconds * 1e9 / (double(kIters) * tiles);
+    std::printf("%s,%d,%d,%.3f,%.2f,%.1f\n", type, tiles, threads, ns, ns * g_ghz,
                 fmopas * flops_per_fmopa / seconds / 1e9);
 }
 
 }  // namespace
 
 int main() {
-    std::printf("type,tiles,threads,ns_per_fmopa_per_thread,gflops_total\n");
+    g_ghz = hpc::experiments::core_ghz();
+    std::fprintf(stderr, "core clock: %.3f GHz\n", g_ghz);
+    std::printf("type,tiles,threads,ns_per_fmopa_per_thread,cycles_per_fmopa_per_thread,gflops_total\n");
     float f[64];
     double d[64];
     report("f32", 1, 1, 512, time_threads(1, [&] { fmopa_f32<0>(kIters, f); }));

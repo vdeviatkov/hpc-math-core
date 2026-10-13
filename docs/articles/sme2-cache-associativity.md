@@ -1,6 +1,8 @@
 ---
 title: "A Power-of-Two Stride Halves SME2 GEMM Throughput on Apple M4"
 description: "An SME2 matrix multiplication on Apple M4 Max runs at half speed when B's rows are 16 KiB apart. The cause is L2 set conflicts; padding or packing B fixes it, and packing wins."
+date: 2026-10-12
+series_part: 2
 permalink: /articles/sme2-cache-associativity.html
 ---
 # A power-of-two stride halves SME2 GEMM throughput on Apple M4
@@ -158,17 +160,19 @@ Up to 384 rows the power-of-two stride costs at most 14%; between 384 and
 roughly 400 rows at this stride, which only the 16 MiB L2 can.
 
 A pointer chase on a CPU core, one dependent load per line, confirms the
-L2's capacity at this stride independently of SME:
+L2's capacity at this stride independently of SME (cycles per load at
+3.99 GHz):
 
-| Lines, 16 KiB apart | 8 | 16 | 512 | 576 | 768 | 1,024 |
-|---|--:|--:|--:|--:|--:|--:|
-| ns per load | 0.76 | 6.1 | 8.2 | 10.1 | 12.5 | 23.3 |
+| Lines, 16 KiB apart | 8 | 16 | 448 | 512 | 768 | 1,024 | 2,048 |
+|---|--:|--:|--:|--:|--:|--:|--:|
+| cycles per load | 3 | 24 | 33 | 41 | 52 | 100 | 144 |
 
-Only 8 lines stay in L1 (0.76 ns); up to about 512 stay in L2 (~8 ns);
-beyond that loads go further out. The SME kernel breaks a little earlier,
-between 384 and 448 rows, because its A strips and C tiles occupy the same
-L2 sets. The two measurements agree on the structure: a power-of-two stride
-leaves this data a few hundred lines of a 131,072-line L2.
+Only 8 lines stay in L1 (3 cycles); roughly 450–600 stay in L2 (~32
+cycles; the step moved within that range across three runs); beyond that,
+loads go further out. The SME kernel breaks in the same range, between 384
+and 448 rows, a little earlier because its A strips and C tiles occupy the
+same L2 sets. The two measurements agree on the structure: a power-of-two
+stride leaves this data a few hundred lines of a 131,072-line L2.
 
 ## Fix 1: pad the leading dimension
 

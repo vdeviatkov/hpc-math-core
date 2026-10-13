@@ -19,72 +19,83 @@ cluster, 16 KiB pages, and a 64-byte (512-bit) maximum streaming vector
 length. macOS reports no TLB sizes and nothing about the SME unit beyond
 its features.
 
+## Core clock
+
+macOS does not report the clock either. Each program measures it first: a
+chain of dependent integer adds runs at exactly one add per cycle, so its
+time per add is one cycle (`core_clock.hpp`). The P-core ran at
+**3.94–3.99 GHz** in these runs; cycle counts below use the clock measured
+in the same run.
+
 ## Load latency by working set
 
 A dependent pointer chase in random order, one load per 128-byte line,
-best of 5, ns per load:
+best of 5:
 
 | Working set | 8 KiB – 128 KiB | 256 KiB – 2 MiB | 4 MiB | 8 MiB | 16 MiB | 32 MiB | 64 MiB | 1 GiB |
 |---|--:|--:|--:|--:|--:|--:|--:|--:|
-| ns per load | 0.76 | 6.7–6.9 | 8.2 | 9.0 | 17.1 | 43.3 | 95.8 | 110.6 |
+| cycles | 3 | 26–27 | 32 | 36 | 66 | 151 | 377 | 437 |
+| ns | 0.76 | 6.7–6.9 | 8.1 | 9.0 | 16.9 | 38.3 | 95.8 | 110.9 |
 
-L1 up to 128 KiB, L2 from there to a few MiB. From 4 MiB the working set
-exceeds the first-level TLB's 2 MiB reach (below), adding translation to
-each L2 hit. At 16 MiB the data no longer fits in the L2 it shares with the
-cluster, at 32 MiB it is served by the system-level cache, and from 64 MiB
-by DRAM at ~100–110 ns.
+L1 up to 128 KiB (3 cycles), L2 from there to a few MiB (26–27 cycles).
+From 4 MiB the working set exceeds the first-level TLB's 2 MiB reach
+(below), adding translation to each L2 hit. At 16 MiB the data no longer
+fits in the L2 it shares with the cluster, at 32 MiB it is served by the
+system-level cache, and from 64 MiB by DRAM at 380–440 cycles.
 
 ## TLBs
 
 `cache_chase tlb` touches P lines, one per 16 KiB page, with the line inside
 each page rotating so that the lines spread over all cache sets, and
-compares that with the same P lines packed densely. ns per load:
+compares that with the same P lines packed densely. Cycles per load:
 
 | Pages | 128 | 136 | 160 | 192 | 256 – 1,024 | 2,048 | 3,072 | 3,328 | 8,192 |
 |---|--:|--:|--:|--:|--:|--:|--:|--:|--:|
-| one line per page | 0.76 | 1.00 | 1.58 | 3.65 | 4.32 | 8.16 | 8.72 | 16.51 | 17.13 |
-| same lines, dense | 0.76 | 0.76 | 0.76 | 0.76 | 0.76 | 6.76 | 6.79 | 6.62 | 6.79 |
+| one line per page | 3.0 | 3.9 | 6.2 | 14.3 | 17.0 | 32.1 | 34.6 | 65.1 | 66.7 |
+| same lines, dense | 3.0 | 3.0 | 3.0 | 3.0 | 3.0 | 26.2 | 26.6 | 26.2 | 27.2 |
 
 - **First-level data TLB: 128 entries**, 2 MiB of 16 KiB pages. Latency
-  starts rising at 136 pages; past about 192, every load misses it and
-  costs ~3.6 ns more (4.32 against 0.76 ns, data still in L1).
+  starts rising at 136 pages; from about 256, every load misses it and
+  costs **14 cycles** more (17 against 3, data still in L1).
 - **Second-level TLB: 3,072 entries**, 48 MiB. Up to 3,072 pages the
-  spread chase costs 1.4–1.9 ns over the same lines dense (both in L2); at
-  3,328 it costs 9.9 ns more: a page-table walk.
+  spread chase costs 6–8 cycles over the same lines dense (both in L2); at
+  3,328 it costs **39 cycles** more: a page-table walk.
 
 ## The SME unit
 
 `sme_fmopa`: a streaming loop of FMOPAs on constant vectors into T ZA
 tiles in turn, no memory traffic; best of 5.
 
-| | tiles | ns per FMOPA | GFLOP/s |
+| | tiles | cycles per FMOPA | GFLOP/s |
 |---|--:|--:|--:|
-| FP32 (16 × 16 tiles, 512 flops) | 1 | 1.036 | 494 |
-| | 2 | 0.518 | 989 |
-| | 4 | 0.259 | 1,977 |
-| FP64 (8 × 8 tiles, 128 flops) | 1 | 1.035 | 124 |
-| | 4 | 0.259 | 495 |
-| | 8 | 0.258 | 495 |
+| FP32 (16 × 16 tiles, 512 flops) | 1 | 4.09 | 494 |
+| | 2 | 2.04 | 990 |
+| | 4 | 1.03 | 1,963 |
+| FP64 (8 × 8 tiles, 128 flops) | 1 | 4.09 | 124 |
+| | 4 | 1.01 | 500 |
+| | 8 | 1.02 | 497 |
 
-An FMOPA takes ~1.04 ns to feed its result into the next FMOPA on the same
-tile, and the unit issues one every 0.26 ns: four independent tiles are
-needed to reach peak, **1.98 TFLOP/s FP32 and 0.49 TFLOP/s FP64**.
+An FMOPA's result reaches the next FMOPA on the same tile after **4
+cycles**, and the unit issues **one FMOPA per cycle**: four independent
+tiles are needed to reach peak, 512 FP32 flops per cycle, **1.96 TFLOP/s
+FP32 and 0.50 TFLOP/s FP64** at this clock.
 
 Same 4-tile FP32 loop on several threads at once, total GFLOP/s:
 
 | Threads | 1 | 2 | 3 | 4 | 6 | 8 | 12 |
 |---|--:|--:|--:|--:|--:|--:|--:|
-| GFLOP/s | 1,977 | 1,954 | 2,121 | 2,448 | 3,670 | 3,999 | 4,205 |
+| GFLOP/s | 1,963 | 1,954 | 2,119 | 2,830 | 3,912 | 4,007 | 4,203 |
 
 Two threads together run no faster than one: the scheduler placed them on
 one cluster, and they shared its SME unit. Spread over both P-clusters the
-total approaches twice the single-thread peak: **one SME unit per
+total reaches about twice the single-thread peak: **one SME unit per
 P-cluster**, not per core.
 
 ## Conditions
 
-A desktop machine with other work running (load average 5–6). Latencies
-are best of 5 runs, so they reflect the hardware rather than the noise.
+A desktop machine with other work running (load average 5–7). Latencies
+are best of 5 runs, so they reflect the hardware rather than the noise;
+the clock is measured in the same process right before each run.
 
 ## Reproduce
 

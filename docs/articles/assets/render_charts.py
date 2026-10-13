@@ -115,7 +115,7 @@ def main():
                   "gemm_sme_tiles": ("#245ea8", "all four tiles"),
                   "gemm_sme_blocked": ("#2f9e6e", "+ cache blocking"),
                   "gemm_sme": ("#be4d14", "+ packed B")},
-          y_max=2000, reference=(1977, "FMOPA peak, 1,977"))
+          y_max=2000, reference=(1963, "FMOPA peak, 1,963"))
 
 
 if __name__ == "__main__":

@@ -11,12 +11,13 @@
     "chase.csv": "./build/benchmarks/cache_chase stride"
   },
   "base_commit": "77e86bf",
-  "base_commit_note": "kernel, Matrix and sme_b_layout as in base_commit; sme_b_stride_probe.cpp and cache_chase.cpp were added in the following commit. The hashes identify the exact sources.",
+  "base_commit_note": "kernel, Matrix and sme_b_layout as in base_commit; sme_b_stride_probe.cpp, cache_chase.cpp and core_clock.hpp were added later. The hashes identify the exact sources.",
   "sha256": {
     "src/gemm/sme.hpp": "4d4c783052574073673bf7d413e4eaac53b5a5320f1b531796fac292bea3292a",
     "include/hpc/matrix.hpp": "7f5162f46bdb1dd0e9d28ee10b6dd53f9f22881e347ed7501cf115dfe57182d3",
     "benchmarks/experiments/sme_b_layout.cpp": "1a6312e6c0ce855d4701f847d79f35b8128f46cca296cef9598c5a4ff764fb6e",
     "benchmarks/experiments/sme_b_stride_probe.cpp": "943bd5c3cea01bc45d96f3480962b4a13e097481b208a9c523b52a0ea6f3b52d",
-    "benchmarks/experiments/cache_chase.cpp": "8282a308353e8e56f4812826c630ba27d67fbbb55df5cc0398d1a6ae3586f7e0"
+    "benchmarks/experiments/cache_chase.cpp": "ec7865248af130308bfdf4de61d54ebc204946a902d217520de9d21a0db10cad",
+    "benchmarks/experiments/core_clock.hpp": "e5c621ed85a68fdc817c18114c8e885f16461daa01fa8735adc34543f34cde43"
   }
 }
