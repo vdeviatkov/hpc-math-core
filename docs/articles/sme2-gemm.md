@@ -31,6 +31,62 @@ the caches and the TLB.
   core for N ≥ 1024 and beats Arm's KleidiAI micro-kernel at N = 4096
   (1,504 vs 1,019 GFLOP/s), because KleidiAI does no cache blocking.
 
+## The idea in three pictures
+
+A conventional SIMD GEMM builds C one row segment at a time. SME2 builds
+it one square block at a time:
+
+```text
+Conventional SIMD GEMM (NEON)         SME2 outer-product GEMM
+
+  A(i,k)       scalar of A            A(i..i+15, k)   column of A, 16 values
+    ×                                   ×
+  B(k,j..j+3)  row of B, 4 values     B(k, j..j+15)   row of B, 16 values
+    │                                   │
+    ▼                                   ▼
+  vector FMA                          FMOPA
+    │                                   │
+    ▼                                   ▼
+  C(i,j..j+3)  one row segment        16 × 16 accumulator tile in ZA
+    │                                   │
+    ▼                                   ▼
+  4 multiply-adds                     256 multiply-adds
+```
+
+One FMOPA multiplies every element of a column vector `a` by every element
+of a row vector `b` and adds each product into its own accumulator:
+
+```text
+                b[0]          b[1]         …    b[15]
+       a[0]  [ +a[0]·b[0]    +a[0]·b[1]    …    +a[0]·b[15]  ]
+       a[1]  [ +a[1]·b[0]    +a[1]·b[1]    …    +a[1]·b[15]  ]
+        …    [     …             …         …        …        ]
+       a[15] [ +a[15]·b[0]   +a[15]·b[1]   …    +a[15]·b[15] ]
+
+       32 values loaded → 256 multiply-adds: each value is used 16 times
+```
+
+Repeating this for k = 0 … K−1, with `a` from column k of A and `b` from
+row k of B, leaves a finished 16 × 16 block of C in the tile.
+
+**Why one tile is not enough.** Each FMOPA reads its tile and writes it
+back, so the next FMOPA on the same tile has to wait for the previous
+result, which takes 4 cycles. The unit itself can start a new FMOPA every
+cycle. With one tile it sits idle three cycles out of four; with four
+independent tiles there is always one whose result is ready:
+
+```text
+cycle        1   2   3   4   5   6   7   8
+one tile     T0  ·   ·   ·   T0  ·   ·   ·     1 FMOPA / 4 cycles: 25% of peak
+four tiles   T0  T1  T2  T3  T0  T1  T2  T3    1 FMOPA / cycle: peak
+```
+
+ZA holds exactly four FP32 tiles. The kernel arranges them as a 2 × 2 grid
+covering a 32 × 32 block of C, which has a second benefit: each loaded
+vector feeds two FMOPAs instead of one, halving the memory traffic per
+flop. Everything after this is about keeping those four tiles fed: the
+caches, the TLBs, and the layout of A and B in memory.
+
 ## The machine
 
 The test machine is a 16-core M4 Max: 12 performance cores in two clusters
@@ -75,12 +131,12 @@ on constant inputs, with no memory traffic, measures it directly:
 | | 4 | 1.01 | **500** |
 | | 8 | 1.02 | 497 |
 
-An FMOPA's result is ready for the next FMOPA on the same tile after
-**4 cycles**, while the unit accepts **one new FMOPA per cycle**: 512 FP32
-flops per cycle, 1.96 TFLOP/s at this clock. A kernel that
-accumulates into a single tile therefore runs at a quarter of peak; four
-independent tiles fill the pipeline. FP64 has the same issue rate with a
-quarter of the work per instruction.
+This is the timeline above, measured: an FMOPA's result is ready for the
+next FMOPA on the same tile after **4 cycles**, while the unit accepts
+**one new FMOPA per cycle**: 512 FP32 flops per cycle, 1.96 TFLOP/s at this
+clock. One tile runs at a quarter of peak, two at half, four fill the
+pipeline. FP64 has the same issue rate with a quarter of the work per
+instruction.
 
 Running the same loop on several threads shows how the unit is shared:
 
@@ -95,9 +151,10 @@ SME can use.
 
 ## Outer products instead of dot products
 
-A conventional SIMD GEMM computes C with vector FMAs: broadcast `A(i,k)`,
-multiply it by a row segment of B, add into a row segment of C. Each FMA
-instruction does 2 × lanes flops: 8 for NEON's 4 FP32 lanes.
+The pictures at the top, in detail. A conventional SIMD GEMM computes C
+with vector FMAs: broadcast `A(i,k)`, multiply it by a row segment of B,
+add into a row segment of C. Each FMA instruction does 2 × lanes flops: 8
+for NEON's 4 FP32 lanes.
 
 SME computes an **outer product**. FMOPA takes a column vector `a` and a
 row vector `b`, 16 FP32 values each, and adds every product `a[r]·b[c]`

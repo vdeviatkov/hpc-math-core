@@ -1,6 +1,6 @@
 ---
 title: "A Power-of-Two Stride Halves SME2 GEMM Throughput on Apple M4"
-description: "An SME2 matrix multiplication on Apple M4 Max runs at half speed when B's rows are 16 KiB apart. The cause is L2 set conflicts; padding or packing B fixes it, and packing wins."
+description: "An SME2 matrix multiplication on Apple M4 Max runs at a third of its speed when B's rows are 16 KiB apart. Controlled experiments point to L2 set conflicts; padding or packing B fixes it, and packing wins."
 date: 2026-10-12
 series_part: 2
 permalink: /articles/sme2-cache-associativity.html
@@ -21,10 +21,11 @@ cliff to its cause and measures both fixes.
 - The slowdown follows the **byte distance between rows of B**, not the
   matrix size: keeping N = 4096 and padding each row of B by 128 bytes
   restores 3.1× throughput with the same arithmetic.
-- At a 16 KiB row stride, the B rows the kernel reuses all map to a handful
-  of **L2 cache sets**. The kernel collapses between 576 and 640 rows per
-  reused strip, far past the 8 rows an L1 set can hold; the CPU core's own
-  loads show the same L2 limit.
+- At a 16 KiB row stride, the B rows the kernel reuses compete for a small
+  part of the cache. The kernel collapses between 576 and 640 rows per
+  reused strip, far past the 8 rows an L1 set can hold, and the CPU core's
+  own loads hit the same limit: the evidence points to **L2 set
+  conflicts**.
 - **Packing B** into contiguous strips removes the cliff for any stride. It
   costs about 3% of the runtime and cuts compute time by 8–9% even when
   the stride is already padded.
@@ -116,11 +117,37 @@ start on a cache-line boundary, so each one spans two lines.
 
 ## Why 16 KiB is special: rows competing for one cache set
 
-A set-associative cache stores each line in one set chosen from address
-bits just above the line offset, and each set holds a fixed number of lines
-(its ways). Rows `s` bytes apart, with `s` a multiple of the 128-byte line,
-step through the sets `s / 128` at a time and so occupy only
-`S / gcd(s / 128, S)` of a cache's `S` sets. For a cache indexed this way
+A set-associative cache stores each line in one set chosen from its
+address, and each set holds a fixed number of lines (its ways). In the
+simplest scheme, modulo indexing, the set is taken directly from the
+address bits just above the line offset: with 128-byte lines and 128
+sets, a line's set is its line number modulo 128. In such a cache (an
+illustrative model, not Apple's documented L2 mapping), the rows of one B
+strip land like this:
+
+```text
+B in place, rows 16 KiB apart          B packed, rows 128 B apart
+(16,384 B = 128 lines per row)         (one line per row)
+
+  row 0     ──►  set 0                   row 0     ──►  set 0
+  row 1     ──►  set 0                   row 1     ──►  set 1
+  row 2     ──►  set 0                   row 2     ──►  set 2
+  row 3     ──►  set 0                   row 3     ──►  set 3
+   …                                      …
+  row 2047  ──►  set 0                   row 2047  ──►  set 127
+
+  2,048 rows share one set's ways        16 rows per set, every set used
+```
+
+Every in-place row starts exactly 128 lines after the previous one, so in
+this model all of them compete for the few ways of a single set, while
+the rest of the cache stays unused. Packed rows walk through the sets one
+by one. Padding B by one line per row (16,512 B, 129 lines) also spreads
+the rows: each one moves one set further.
+
+More generally, rows `s` bytes apart, with `s` a multiple of the 128-byte
+line, step through the sets `s / 128` at a time and so occupy only
+`S / gcd(s / 128, S)` of a cache's `S` sets. For a modulo-indexed cache
 with 128 sets:
 
 | Row stride | Stride in lines | Sets the strip's rows use |
@@ -135,12 +162,20 @@ At a power-of-two stride every row of the strip lands in the same few sets.
 Once the strip has more rows than those sets have ways, it evicts itself
 before the next A strip comes back for it: **conflict misses** in a cache
 that has plenty of total capacity. One line more of stride spreads the rows
-over every set, which is exactly what the padding experiment shows. An
+over every set, which matches what the padding experiment shows. An
 8 KiB stride gives the rows twice as many sets as 16 KiB, but a
-2,048-row strip overflows those too, which is why N = 2048 loses almost as
-much as N = 4096.
+2,048-row strip overflows those too, which is consistent with N = 2048
+losing almost as much as N = 4096.
 
-## The conflicts are in L2
+This calculation illustrates the conflict mechanism for a conventional
+modulo-indexed cache. Modern processors can instead hash higher address
+bits into the set index, and Apple does not document the set-indexing
+function of M4's L2. The table is therefore a model of the mechanism, not
+a reconstruction of the M4 Max's physical cache organization. The evidence
+for conflicts on this machine is the controlled stride and working-set
+experiments: the padding test above and the capacity measurements below.
+
+## Locating the conflicts: L2, not L1
 
 Which cache? The number of rows a strip can have before the conflict bites
 measures the capacity of the conflicting sets, so the next experiment
@@ -163,7 +198,7 @@ Up to 576 rows the power-of-two stride costs 5–26%; between 576 and 640
 rows it breaks, and from there it degrades with every row added, to a
 third of the padded throughput at the 2,048 rows `gemm_sme` uses. An 8-way
 L1 set would overflow at the 9th row. The conflicting structure holds
-roughly 600 rows at this stride, which only the 16 MiB L2 can.
+roughly 600 rows at this stride, a capacity on the scale of L2, not L1.
 
 A pointer chase on a CPU core, one dependent load per line, confirms the
 L2's capacity at this stride independently of SME (cycles per load at
@@ -179,6 +214,14 @@ beyond that, loads go further out. The SME kernel breaks in the same
 range, between 576 and 640 rows. The two measurements agree on the
 structure: a power-of-two stride leaves this data a few hundred lines of a
 131,072-line L2.
+
+What this does and does not prove: the matching capacity thresholds, in
+two independent experiments, strongly suggest that L2 conflicts cause the
+throughput collapse. Neither measurement reveals individual cache-set
+mappings, and neither replaces hardware performance counters; what they
+establish is a capacity scale consistent with L2 rather than L1. The
+mechanism is inferred from controlled measurements, not observed
+directly.
 
 ## Fix 1: pad the leading dimension
 
@@ -221,6 +264,28 @@ The copy is cheap because each element of B is copied once, while the
 compute reads it once per A strip: 32 times per A block, `M / 32` times in
 all. At these sizes it pays for
 itself several times over.
+
+## Limitations
+
+The experiments support the conclusions above strongly, which is a reason
+to be precise about what they do not establish:
+
+- **The L2 mapping and replacement policy are not established.** The
+  set-index function, the number of ways, and how lines are chosen for
+  eviction are undocumented, and nothing here measures them. The cache
+  model above explains the mechanism; it does not describe M4's L2.
+- **One machine.** All results come from one M4 Max system, under the
+  load conditions recorded with the data. Other Apple chips, or other M4
+  variants, may break at different thresholds.
+- **One kernel configuration.** The thresholds belong to these matrix
+  shapes, this micro-kernel and these block sizes. With the earlier
+  blocking (Mc = 128, Kc = 1024) the kernel broke between 384 and 448
+  rows instead of between 576 and 640; other shapes and blocks may move
+  them again.
+- **Inferred, not counted.** The case for L2 conflicts rests on throughput
+  and latency thresholds matching across experiments. No hardware
+  performance counters were read, so cache misses were not counted
+  directly.
 
 ## Rules of thumb
 
