@@ -298,12 +298,32 @@ Throughput rises with the A block up to 8 MiB (Mc × Kc × 4 bytes:
 1024 × 2048 or 512 × 4096) and falls once it reaches 16 MiB, the size of
 L2, and beyond. Of the two 8 MiB shapes, 1024 × 2048 wins: with
 Kc = 4096 each B strip is twice as long (512 KiB) and serves half as many
-A strips (16). FP64 elements are twice as large, so FP64 uses Mc = 512 for the
-same 8 MiB A block. Against the first sizing, measured old and new
+A strips (16). FP64 elements are twice as large, so FP64 uses Mc = 512
+for the same 8 MiB A block. Against the first sizing, measured old and new
 alternately, the complete kernel gains 4% at N = 2048 and 10–12% at
 N = 4000 and 4096 in FP32 and up to 7% in FP64. At N = 256, where one
 block covers the whole problem, it gains 10%; at N = 512–1024 it is
 unchanged within noise.
+
+The optimum also depends on the matrix size, so for each size there is a
+best Mc, Kc and Nc, and a kernel can choose them per call from M, N and K.
+The same sweep at each N, best sizes against the fixed choice:
+
+| N | Best for this N (Mc, Kc, Nc) | GFLOP/s | Fixed (1024, 2048, 4096) | Gain |
+|---|---|--:|--:|--:|
+| 512 | 512, 1024, 2048 | 1,360 | 1,344 | +1.2% |
+| 1024 | 512, 4096, 4096 | 1,435 | 1,400 | +2.5% |
+| 2048 | 512, 4096, 2048 | 1,496 | 1,488 | +0.5% |
+| 4096 | 1024, 2048, 4096 | 1,517 | 1,517 | — |
+
+Below N = 4096 the winner has Mc = 512, a smaller A block than the
+fixed choice. Tuning block sizes empirically is an established practice:
+ATLAS, for example, searches them for each machine when it is installed.
+For square matrices on this machine the per-size optimum buys at most
+2.5% in FP32 and 1.3% in FP64, about the run-to-run noise, so `gemm_sme`
+keeps one fixed set chosen for the large sizes, where blocking matters
+most. The sweep covered square matrices only; strongly non-square shapes
+may have optima further from the fixed set.
 
 ## Step 4: packing A and B — 1,532 GFLOP/s, no cliff
 
