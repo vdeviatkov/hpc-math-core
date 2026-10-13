@@ -7,57 +7,57 @@
 <text x="264.5" y="99" font-size="17" text-anchor="middle">N near 2048</text>
 <path d="M 82 410.0 H 447" stroke="#dce2e8"/>
 <text x="72" y="415.0" font-size="12" text-anchor="end">0</text>
-<path d="M 82 337.0 H 447" stroke="#dce2e8"/>
-<text x="72" y="342.0" font-size="12" text-anchor="end">400</text>
-<path d="M 82 264.0 H 447" stroke="#dce2e8"/>
-<text x="72" y="269.0" font-size="12" text-anchor="end">800</text>
-<path d="M 82 191.0 H 447" stroke="#dce2e8"/>
-<text x="72" y="196.0" font-size="12" text-anchor="end">1200</text>
-<path d="M 82 118.0 H 447" stroke="#dce2e8"/>
-<text x="72" y="123.0" font-size="12" text-anchor="end">1600</text>
+<path d="M 82 345.1111111111111 H 447" stroke="#dce2e8"/>
+<text x="72" y="350.1111111111111" font-size="12" text-anchor="end">400</text>
+<path d="M 82 280.22222222222223 H 447" stroke="#dce2e8"/>
+<text x="72" y="285.22222222222223" font-size="12" text-anchor="end">800</text>
+<path d="M 82 215.33333333333334 H 447" stroke="#dce2e8"/>
+<text x="72" y="220.33333333333334" font-size="12" text-anchor="end">1200</text>
+<path d="M 82 150.44444444444446 H 447" stroke="#dce2e8"/>
+<text x="72" y="155.44444444444446" font-size="12" text-anchor="end">1600</text>
 <text x="82.0" y="433" font-size="12" text-anchor="middle">1984</text>
 <text x="203.66666666666669" y="433" font-size="12" text-anchor="middle">2016</text>
 <text x="325.33333333333337" y="433" font-size="12" text-anchor="middle">2048</text>
 <text x="447.0" y="433" font-size="12" text-anchor="middle">2080</text>
-<polyline points="82.0,124.38749999999999 203.66666666666669,126.02999999999997 325.33333333333337,191.73 447.0,137.52750000000003" fill="none" stroke="#245ea8" stroke-width="3"/>
-<circle cx="82.0" cy="124.38749999999999" r="4" fill="#245ea8"/>
-<circle cx="203.66666666666669" cy="126.02999999999997" r="4" fill="#245ea8"/>
-<circle cx="325.33333333333337" cy="191.73" r="4" fill="#245ea8"/>
-<circle cx="447.0" cy="137.52750000000003" r="4" fill="#245ea8"/>
-<polyline points="82.0,133.14749999999998 203.66666666666669,128.76749999999998 325.33333333333337,148.65999999999997 447.0,139.35250000000002" fill="none" stroke="#be4d14" stroke-width="3"/>
-<circle cx="82.0" cy="133.14749999999998" r="4" fill="#be4d14"/>
-<circle cx="203.66666666666669" cy="128.76749999999998" r="4" fill="#be4d14"/>
-<circle cx="325.33333333333337" cy="148.65999999999997" r="4" fill="#be4d14"/>
-<circle cx="447.0" cy="139.35250000000002" r="4" fill="#be4d14"/>
+<polyline points="82.0,155.3111111111111 203.66666666666669,154.98666666666668 325.33333333333337,306.82666666666665 447.0,172.8311111111111" fill="none" stroke="#245ea8" stroke-width="3"/>
+<circle cx="82.0" cy="155.3111111111111" r="4" fill="#245ea8"/>
+<circle cx="203.66666666666669" cy="154.98666666666668" r="4" fill="#245ea8"/>
+<circle cx="325.33333333333337" cy="306.82666666666665" r="4" fill="#245ea8"/>
+<circle cx="447.0" cy="172.8311111111111" r="4" fill="#245ea8"/>
+<polyline points="82.0,156.7711111111111 203.66666666666669,157.74444444444444 325.33333333333337,169.10000000000002 447.0,176.39999999999998" fill="none" stroke="#be4d14" stroke-width="3"/>
+<circle cx="82.0" cy="156.7711111111111" r="4" fill="#be4d14"/>
+<circle cx="203.66666666666669" cy="157.74444444444444" r="4" fill="#be4d14"/>
+<circle cx="325.33333333333337" cy="169.10000000000002" r="4" fill="#be4d14"/>
+<circle cx="447.0" cy="176.39999999999998" r="4" fill="#be4d14"/>
 <text x="264.5" y="463" font-size="14" text-anchor="middle">N = ldb (categories, not to scale)</text>
 <text x="749.5" y="99" font-size="17" text-anchor="middle">N near 4096</text>
 <path d="M 567 410.0 H 932" stroke="#dce2e8"/>
 <text x="557" y="415.0" font-size="12" text-anchor="end">0</text>
-<path d="M 567 337.0 H 932" stroke="#dce2e8"/>
-<text x="557" y="342.0" font-size="12" text-anchor="end">400</text>
-<path d="M 567 264.0 H 932" stroke="#dce2e8"/>
-<text x="557" y="269.0" font-size="12" text-anchor="end">800</text>
-<path d="M 567 191.0 H 932" stroke="#dce2e8"/>
-<text x="557" y="196.0" font-size="12" text-anchor="end">1200</text>
-<path d="M 567 118.0 H 932" stroke="#dce2e8"/>
-<text x="557" y="123.0" font-size="12" text-anchor="end">1600</text>
+<path d="M 567 345.1111111111111 H 932" stroke="#dce2e8"/>
+<text x="557" y="350.1111111111111" font-size="12" text-anchor="end">400</text>
+<path d="M 567 280.22222222222223 H 932" stroke="#dce2e8"/>
+<text x="557" y="285.22222222222223" font-size="12" text-anchor="end">800</text>
+<path d="M 567 215.33333333333334 H 932" stroke="#dce2e8"/>
+<text x="557" y="220.33333333333334" font-size="12" text-anchor="end">1200</text>
+<path d="M 567 150.44444444444446 H 932" stroke="#dce2e8"/>
+<text x="557" y="155.44444444444446" font-size="12" text-anchor="end">1600</text>
 <text x="567.0" y="433" font-size="12" text-anchor="middle">4000</text>
 <text x="658.25" y="433" font-size="12" text-anchor="middle">4032</text>
 <text x="749.5" y="433" font-size="12" text-anchor="middle">4064</text>
 <text x="840.75" y="433" font-size="12" text-anchor="middle">4096</text>
 <text x="932.0" y="433" font-size="12" text-anchor="middle">4128</text>
-<polyline points="567.0,160.8875 658.25,162.895 749.5,172.20250000000001 840.75,299.03999999999996 932.0,180.05" fill="none" stroke="#245ea8" stroke-width="3"/>
-<circle cx="567.0" cy="160.8875" r="4" fill="#245ea8"/>
-<circle cx="658.25" cy="162.895" r="4" fill="#245ea8"/>
-<circle cx="749.5" cy="172.20250000000001" r="4" fill="#245ea8"/>
-<circle cx="840.75" cy="299.03999999999996" r="4" fill="#245ea8"/>
-<circle cx="932.0" cy="180.05" r="4" fill="#245ea8"/>
-<polyline points="567.0,153.40499999999997 658.25,154.6825 749.5,154.6825 840.75,164.72 932.0,172.02" fill="none" stroke="#be4d14" stroke-width="3"/>
-<circle cx="567.0" cy="153.40499999999997" r="4" fill="#be4d14"/>
-<circle cx="658.25" cy="154.6825" r="4" fill="#be4d14"/>
-<circle cx="749.5" cy="154.6825" r="4" fill="#be4d14"/>
-<circle cx="840.75" cy="164.72" r="4" fill="#be4d14"/>
-<circle cx="932.0" cy="172.02" r="4" fill="#be4d14"/>
+<polyline points="567.0,167.64000000000001 658.25,168.45111111111112 749.5,170.56 840.75,332.1333333333333 932.0,190.02666666666667" fill="none" stroke="#245ea8" stroke-width="3"/>
+<circle cx="567.0" cy="167.64000000000001" r="4" fill="#245ea8"/>
+<circle cx="658.25" cy="168.45111111111112" r="4" fill="#245ea8"/>
+<circle cx="749.5" cy="170.56" r="4" fill="#245ea8"/>
+<circle cx="840.75" cy="332.1333333333333" r="4" fill="#245ea8"/>
+<circle cx="932.0" cy="190.02666666666667" r="4" fill="#245ea8"/>
+<polyline points="567.0,164.23333333333332 658.25,161.9622222222222 749.5,162.61111111111111 840.75,165.69333333333333 932.0,177.53555555555556" fill="none" stroke="#be4d14" stroke-width="3"/>
+<circle cx="567.0" cy="164.23333333333332" r="4" fill="#be4d14"/>
+<circle cx="658.25" cy="161.9622222222222" r="4" fill="#be4d14"/>
+<circle cx="749.5" cy="162.61111111111111" r="4" fill="#be4d14"/>
+<circle cx="840.75" cy="165.69333333333333" r="4" fill="#be4d14"/>
+<circle cx="932.0" cy="177.53555555555556" r="4" fill="#be4d14"/>
 <text x="749.5" y="463" font-size="14" text-anchor="middle">N = ldb (categories, not to scale)</text>
 <text transform="translate(23 270) rotate(-90)" text-anchor="middle" font-size="14">GFLOP/s</text>
 <path d="M 270 494 h 35" stroke="#245ea8" stroke-width="3"/>

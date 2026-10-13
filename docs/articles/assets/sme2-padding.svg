@@ -7,36 +7,36 @@
 <text x="495.0" y="99" font-size="17" text-anchor="middle">Only B&#x27;s leading dimension changes</text>
 <path d="M 100 410.0 H 890" stroke="#dce2e8"/>
 <text x="90" y="415.0" font-size="12" text-anchor="end">0</text>
-<path d="M 100 337.0 H 890" stroke="#dce2e8"/>
-<text x="90" y="342.0" font-size="12" text-anchor="end">400</text>
-<path d="M 100 264.0 H 890" stroke="#dce2e8"/>
-<text x="90" y="269.0" font-size="12" text-anchor="end">800</text>
-<path d="M 100 191.0 H 890" stroke="#dce2e8"/>
-<text x="90" y="196.0" font-size="12" text-anchor="end">1200</text>
-<path d="M 100 118.0 H 890" stroke="#dce2e8"/>
-<text x="90" y="123.0" font-size="12" text-anchor="end">1600</text>
+<path d="M 100 345.1111111111111 H 890" stroke="#dce2e8"/>
+<text x="90" y="350.1111111111111" font-size="12" text-anchor="end">400</text>
+<path d="M 100 280.22222222222223 H 890" stroke="#dce2e8"/>
+<text x="90" y="285.22222222222223" font-size="12" text-anchor="end">800</text>
+<path d="M 100 215.33333333333334 H 890" stroke="#dce2e8"/>
+<text x="90" y="220.33333333333334" font-size="12" text-anchor="end">1200</text>
+<path d="M 100 150.44444444444446 H 890" stroke="#dce2e8"/>
+<text x="90" y="155.44444444444446" font-size="12" text-anchor="end">1600</text>
 <text x="100.0" y="433" font-size="12" text-anchor="middle">4096</text>
 <text x="363.3333333333333" y="433" font-size="12" text-anchor="middle">4097</text>
 <text x="626.6666666666666" y="433" font-size="12" text-anchor="middle">4128</text>
 <text x="890.0" y="433" font-size="12" text-anchor="middle">4160</text>
-<polyline points="100.0,299.03999999999996 363.3333333333333,201.03750000000002 626.6666666666666,165.6325 890.0,166.91" fill="none" stroke="#245ea8" stroke-width="3"/>
-<circle cx="100.0" cy="299.03999999999996" r="4" fill="#245ea8"/>
-<text x="100.0" y="320.03999999999996" font-size="13" text-anchor="middle">608</text>
-<circle cx="363.3333333333333" cy="201.03750000000002" r="4" fill="#245ea8"/>
-<text x="363.3333333333333" y="222.03750000000002" font-size="13" text-anchor="middle">1145</text>
-<circle cx="626.6666666666666" cy="165.6325" r="4" fill="#245ea8"/>
-<text x="626.6666666666666" y="186.6325" font-size="13" text-anchor="middle">1339</text>
-<circle cx="890.0" cy="166.91" r="4" fill="#245ea8"/>
-<text x="890.0" y="187.91" font-size="13" text-anchor="middle">1332</text>
-<polyline points="100.0,164.72 363.3333333333333,160.8875 626.6666666666666,157.055 890.0,156.325" fill="none" stroke="#be4d14" stroke-width="3"/>
-<circle cx="100.0" cy="164.72" r="4" fill="#be4d14"/>
-<text x="100.0" y="152.72" font-size="13" text-anchor="middle">1344</text>
-<circle cx="363.3333333333333" cy="160.8875" r="4" fill="#be4d14"/>
-<text x="363.3333333333333" y="148.8875" font-size="13" text-anchor="middle">1365</text>
-<circle cx="626.6666666666666" cy="157.055" r="4" fill="#be4d14"/>
-<text x="626.6666666666666" y="145.055" font-size="13" text-anchor="middle">1386</text>
-<circle cx="890.0" cy="156.325" r="4" fill="#be4d14"/>
-<text x="890.0" y="144.325" font-size="13" text-anchor="middle">1390</text>
+<polyline points="100.0,332.1333333333333 363.3333333333333,201.8688888888889 626.6666666666666,172.34444444444443 890.0,166.9911111111111" fill="none" stroke="#245ea8" stroke-width="3"/>
+<circle cx="100.0" cy="332.1333333333333" r="4" fill="#245ea8"/>
+<text x="100.0" y="353.1333333333333" font-size="13" text-anchor="middle">480</text>
+<circle cx="363.3333333333333" cy="201.8688888888889" r="4" fill="#245ea8"/>
+<text x="363.3333333333333" y="222.8688888888889" font-size="13" text-anchor="middle">1283</text>
+<circle cx="626.6666666666666" cy="172.34444444444443" r="4" fill="#245ea8"/>
+<text x="626.6666666666666" y="193.34444444444443" font-size="13" text-anchor="middle">1465</text>
+<circle cx="890.0" cy="166.9911111111111" r="4" fill="#245ea8"/>
+<text x="890.0" y="187.9911111111111" font-size="13" text-anchor="middle">1498</text>
+<polyline points="100.0,165.69333333333333 363.3333333333333,162.28666666666666 626.6666666666666,158.0688888888889 890.0,161.47555555555553" fill="none" stroke="#be4d14" stroke-width="3"/>
+<circle cx="100.0" cy="165.69333333333333" r="4" fill="#be4d14"/>
+<text x="100.0" y="153.69333333333333" font-size="13" text-anchor="middle">1506</text>
+<circle cx="363.3333333333333" cy="162.28666666666666" r="4" fill="#be4d14"/>
+<text x="363.3333333333333" y="150.28666666666666" font-size="13" text-anchor="middle">1527</text>
+<circle cx="626.6666666666666" cy="158.0688888888889" r="4" fill="#be4d14"/>
+<text x="626.6666666666666" y="146.0688888888889" font-size="13" text-anchor="middle">1553</text>
+<circle cx="890.0" cy="161.47555555555553" r="4" fill="#be4d14"/>
+<text x="890.0" y="149.47555555555553" font-size="13" text-anchor="middle">1532</text>
 <text x="495.0" y="463" font-size="14" text-anchor="middle">ldb in elements (categories, not to scale)</text>
 <text transform="translate(23 270) rotate(-90)" text-anchor="middle" font-size="14">GFLOP/s</text>
 <path d="M 270 494 h 35" stroke="#245ea8" stroke-width="3"/>

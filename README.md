@@ -18,9 +18,9 @@ Best kernel per family, single-threaded unless noted. Full output, speedup table
 | ARM NEON (`gemm_neon_blocked`) | Apple M4 Max | 97 GFLOP/s | 36 GFLOP/s |
 | AVX2 (`gemm_avx2_blocked`) | AMD Zen 5, GCC | 152 GFLOP/s | 75 GFLOP/s |
 | AVX-512 (`gemm_avx512_blocked`) | AMD Zen 5, GCC | **219 GFLOP/s** | **106 GFLOP/s** |
-| ARM SME2 (`gemm_sme`) | Apple M4 Max | **1.45 TFLOP/s** | **410 GFLOP/s** |
+| ARM SME2 (`gemm_sme`) | Apple M4 Max | **1.53 TFLOP/s** | **436 GFLOP/s** |
 | Apple AMX via Accelerate (`gemm_amx`) ¹ | Apple M4 Max | 3.3 TFLOP/s | 860 GFLOP/s |
-| Accelerate / KleidiAI, 1 core (reference) | Apple M4 Max | 1.72 / 1.64 TFLOP/s | 434 GFLOP/s / — |
+| Accelerate / KleidiAI, 1 core (reference) | Apple M4 Max | 1.72 / 1.66 TFLOP/s | 456 GFLOP/s / — |
 | CUDA, FMA (`gemm_cuda_double_buf`) ² | NVIDIA RTX 5080 | 6.7 TFLOP/s | 0.7 TFLOP/s |
 | CUDA, Tensor Cores (`gemm_cuda_wmma_pipelined`) ³ | NVIDIA RTX 5080 | **100 TFLOP/s** | — |
 | cuBLAS dense-FP16 reference ³ | NVIDIA RTX 5080 | 120 TFLOP/s | — |
@@ -87,7 +87,7 @@ docs/                         Benchmark results, build guide, cache background, 
 
 | Document | Contents |
 |---|---|
-| [Matrix multiplication on Apple M4's SME2 unit](docs/articles/sme2-gemm.md) | Article: the SME2 GEMM step by step, from outer products to 1.45 TFLOP/s, with the machine measured down to its TLBs |
+| [Matrix multiplication on Apple M4's SME2 unit](docs/articles/sme2-gemm.md) | Article: the SME2 GEMM step by step, from outer products to 1.5 TFLOP/s, with the machine measured down to its TLBs |
 | [A power-of-two stride halves SME2 GEMM throughput on Apple M4](docs/articles/sme2-cache-associativity.md) | Article: L2 set conflicts at a 16 KiB row stride, located and measured, and the two fixes |
 | [src/gemm/README.md](src/gemm/README.md) | Map of the kernels: files, techniques, registers and intrinsics per family. Each kernel's design is in its own header. |
 | [docs/benchmarks.md](docs/benchmarks.md) | All measurements and their analysis: Apple M4 Max, AMD Zen 5, RTX 5080 |

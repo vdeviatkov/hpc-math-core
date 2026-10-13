@@ -79,72 +79,75 @@ GotoBLAS cache blocking and SME2 multi-vector loads; `gemm_sme_1tile`,
 `gemm_sme_tiles` and `gemm_sme_blocked` are the steps before it. Design:
 [src/gemm/sme.hpp](../src/gemm/sme.hpp).
 
-> **Load Average during this run:** 10–16 on 16 cores. Treat ±5% as noise.
+> **Load Average during this run:** 5–10 on 16 cores. Median of 5 interleaved repetitions; treat ±5% as noise.
 
 | Kernel | N=64 | N=256 | N=512 | N=1024 | N=2048 | N=4096 |
 |---|---|---|---|---|---|---|
-| `gemm_sme` f64 | 84 | 315 | 397 | **410** | 407 | 404 |
-| `gemm_sme` f32 | 278 | 753 | 1,283 | **1,450** | 1,417 | 1,345 |
+| `gemm_sme` f64 | 83 | 323 | 398 | 408 | 413 | **424** |
+| `gemm_sme` f32 | 267 | 839 | 1,332 | 1,385 | 1,465 | **1,504** |
 
 - f64 is ~¼ of f32, which matches the hardware: an f64 FMOPA covers 8×8 elements against 16×16 for f32.
 - One compiler pitfall costs ~5×. A streaming helper without a ZA attribute (`__arm_inout("za")` etc.) is "private-ZA": Clang won't inline it into a ZA-owning caller and wraps every call in a lazy ZA save (`TPIDR2` + `smstart za`). Inside the k loop that dropped throughput from ~1,290 to ~270 G/s f32.
 
 #### The four SME steps
 
-Separate run, load average ~5, median of 3:
+Block sizes Mc = 1024 (f32) / 512 (f64), Kc = 2048, Nc = 4096 (the current
+ones; see `sme.hpp`). Separate run, load average ~6–7, median of 3:
 
 | Kernel | N=256 | N=512 | N=1024 | N=2048 | N=4000 | N=4096 |
 |---|---|---|---|---|---|---|
-| `gemm_sme_1tile` f32 | 420 | 472 | 474 | 225 | 125 | 131 |
-| `gemm_sme_tiles` f32 | 976 | 1,461 | 1,381 | 624 | 429 | 445 |
-| `gemm_sme_blocked` f32 | 911 | 1,400 | 1,401 | 1,249 | 1,373 | 597 |
-| `gemm_sme` f32 | 752 | 1,283 | 1,421 | 1,438 | 1,419 | 1,372 |
-| `gemm_sme_1tile` f64 | 121 | 121 | 110 | 40 | 42 | 37 |
-| `gemm_sme_tiles` f64 | 350 | 420 | 403 | 232 | 210 | 208 |
-| `gemm_sme_blocked` f64 | 342 | 422 | 442 | 284 | 373 | 271 |
-| `gemm_sme` f64 | 315 | 397 | 414 | 406 | 410 | 403 |
+| `gemm_sme_1tile` f32 | 420 | 472 | 464 | 220 | 125 | 131 |
+| `gemm_sme_tiles` f32 | 975 | 1,447 | 1,319 | 617 | 427 | 446 |
+| `gemm_sme_blocked` f32 | 989 | 1,460 | 1,333 | 633 | 1,468 | 489 |
+| `gemm_sme` f32 | 835 | 1,322 | 1,365 | 1,452 | 1,532 | 1,519 |
+| `gemm_sme_1tile` f64 | 121 | 121 | 105 | 40 | 42 | 38 |
+| `gemm_sme_tiles` f64 | 352 | 418 | 401 | 227 | 204 | 205 |
+| `gemm_sme_blocked` f64 | 351 | 420 | 423 | 243 | 422 | 225 |
+| `gemm_sme` f64 | 322 | 396 | 404 | 413 | 436 | 421 |
 
-- One tile → all tiles: 2.3–3.4× f32, 2.9–5.8× f64. With one tile every FMOPA waits for the previous one's accumulator, and at large N each loaded vector feeds a single FMOPA.
-- All tiles → blocked: 2.0× f32 at N=2048, 3.2× at N=4000. Without blocking all of A is re-read for every B strip. N=4000 is as slow as N=4096, so this is not a stride effect; capacity is the likely cause.
-- Blocked → `gemm_sme`: within 3% at N=4000, but 2.3× f32 / 1.5× f64 at N=4096 and 1.15× f32 at N=2048: the B row stride effect below.
-- At N ≤ 512 the kernels without B packing are faster (+30% f32 at N=256 for `gemm_sme_tiles`): everything fits in cache, and `gemm_sme` pays for the copy.
+- One tile → all tiles: 2.3–3.4× f32, 2.9–5.7× f64. With one tile every FMOPA waits for the previous one's accumulator, and at large N each loaded vector feeds a single FMOPA.
+- All tiles → blocked: 3.4× f32 / 2.1× f64 at N=4000. Without blocking all of A is re-read for every B strip. N=4000 is as slow as N=4096 without blocking, so this is not a stride effect; capacity is the likely cause.
+- Blocked → `gemm_sme`: +4% at N=4000, but 2.3× f32 at N=2048 and 3.1× at N=4096 (1.7× / 1.9× f64): the B row stride effect below. With 2,048-row strips an 8 KiB stride (N=2048) hurts as much as a 16 KiB one.
+- At N ≤ 512 the kernels without B packing are faster (+18% f32 at N=256): everything fits in cache, and `gemm_sme` pays for the copy.
+- Against the previous block sizes (Mc = 128, Kc = 1024), measured interleaved: `gemm_sme` f32 +4% at N=2048, +10% at N=4000, +12% at N=4096, unchanged within noise at N=512–1024; f64 +2–7% at N ≥ 2048. All tables in this section use the current sizes.
 
 #### SME: B row stride
 
 > **Command:** `./build/benchmarks/bench_gemm --benchmark_filter=BStride --benchmark_repetitions=3 --benchmark_enable_random_interleaving=true --benchmark_report_aggregates_only=true`
 
 The same blocked kernel with B read in place (`gemm_sme_blocked`) and packed
-(`gemm_sme`); GFLOP/s, median of 3 interleaved runs, load average ~5. Why a
-power-of-two row stride is expected to hurt: [sme.hpp](../src/gemm/sme.hpp),
-"Packing". First, N around powers of two (all matrices square, B row stride
-= N·sizeof(T); the f64 strides are twice the f32 ones):
+(`gemm_sme`), current block sizes (2,048-row B strips); GFLOP/s, median of 3
+interleaved runs, load average 5–10. Why a power-of-two row stride is
+expected to hurt: [sme.hpp](../src/gemm/sme.hpp), "Packing". First, N around
+powers of two (all matrices square, B row stride = N·sizeof(T); the f64
+strides are twice the f32 ones):
 
 | N | B row stride (f32) | f32 in place | f32 packed | diff | f64 in place | f64 packed | diff |
 |---|---|---|---|---|---|---|---|
-| 1984 | 7,936 B | 1,565 | 1,517 | +3% | 407 | 418 | −3% |
-| 2016 | 8,064 B | 1,556 | 1,541 | +1% | 410 | 419 | −2% |
-| **2048** | **2¹³ B** | 1,196 | 1,432 | **−17%** | 281 | 407 | **−31%** |
-| 2080 | 8,320 B | 1,493 | 1,483 | +1% | 398 | 404 | −2% |
-| 4000 | 16,000 B | 1,365 | 1,406 | −3% | 380 | 409 | −7% |
-| 4032 | 16,128 B | 1,354 | 1,399 | −3% | 380 | 408 | −7% |
-| 4064 | 16,256 B | 1,303 | 1,399 | −7% | 364 | 411 | −11% |
-| **4096** | **2¹⁴ B** | 608 | 1,344 | **−55%** | 268 | 398 | **−33%** |
-| 4128 | 16,512 B | 1,260 | 1,304 | −3% | 362 | 395 | −8% |
+| 1984 | 7,936 B | 1,570 | 1,561 | +1% | 427 | 432 | −1% |
+| 2016 | 8,064 B | 1,572 | 1,555 | +1% | 421 | 425 | −1% |
+| **2048** | **2¹³ B** | 636 | 1,485 | **−57%** | 242 | 416 | **−42%** |
+| 2080 | 8,320 B | 1,462 | 1,440 | +2% | 404 | 414 | −2% |
+| 4000 | 16,000 B | 1,494 | 1,515 | −1% | 423 | 438 | −3% |
+| 4032 | 16,128 B | 1,489 | 1,529 | −3% | 320 | 439 | −27% |
+| 4064 | 16,256 B | 1,476 | 1,525 | −3% | 235 | 435 | −46% |
+| **4096** | **2¹⁴ B** | 480 | 1,506 | **−68%** | 223 | 428 | **−48%** |
+| 4128 | 16,512 B | 1,356 | 1,433 | −5% | 226 | 419 | −46% |
 
 Then the 4096×4096 problem with B in a wider buffer, so only its row stride
 (ldb elements) changes and the work stays the same:
 
 | ldb | B row stride (f32) | f32 in place | f32 packed | diff | f64 in place | f64 packed | diff |
 |---|---|---|---|---|---|---|---|
-| **4096** | **2¹⁴ B** | 608 | 1,344 | **−55%** | 268 | 398 | **−33%** |
-| 4097 | 16,388 B | 1,145 | 1,365 | −16% | 367 | 407 | −10% |
-| 4128 (+128 B) | 16,512 B | 1,339 | 1,386 | −3% | 376 | 407 | −8% |
-| 4160 (+256 B) | 16,640 B | 1,332 | 1,390 | −4% | 376 | 406 | −7% |
+| **4096** | **2¹⁴ B** | 480 | 1,506 | **−68%** | 223 | 428 | **−48%** |
+| 4097 | 16,388 B | 1,283 | 1,527 | −16% | 302 | 432 | −30% |
+| 4128 (+128 B) | 16,512 B | 1,465 | 1,553 | −6% | 232 | 429 | −46% |
+| 4160 (+256 B) | 16,640 B | 1,498 | 1,532 | −2% | 319 | 434 | −26% |
 
-- The collapse is confined to the exact powers of two; 32 columns either side, in place is within 11% of packed.
-- Padding each row by one cache line (ldb = 4128) recovers most of the loss with the same N, work and pages touched, so the loss follows the byte stride. That is what cache-set conflicts predict. It does not reach packed strips: a repeat run (5 repetitions, interleaved) measured ldb = 4128 at −8% f32 / −6% f64 and ldb = 4160 at −7% / −9%, so padded B stays 3–9% behind packed B.
-- ldb = 4097 is a control, not a fix: its 32-float row segments are no longer 128 B aligned, so each spans two cache lines, and the −16% mixes that cost with the stride effect.
-- Where the conflict happens, and the cost of each fix: [experiments/sme-b-stride](experiments/sme-b-stride/README.md). With rows 16 KiB apart the macro-kernel matches a padded stride up to 384 rows per strip and breaks between 384 and 448, and the core's pointer chase at that stride holds roughly 450–600 lines in L2 against 8 in L1: the conflicts are in L2. With a padded stride, packing B costs ~2 ms and saves 11–14 ms of compute at N=4096; the remaining in-place cost grows with N (0% at 1024, 9–10% at 4096).
+- f32: the collapse is confined to the exact powers of two; 32 columns either side, in place is within 5% of packed. Padding each row by one cache line (ldb = 4128) recovers 3.1× with the same N, work and pages touched, so the loss follows the byte stride. That is what cache-set conflicts predict.
+- f64: in place now loses 26–48% at almost every N around 4096, padded or not; only N = 4000 escapes. Its strips are 2,048 rows of 256 B, twice the f32 footprint, at strides twice as large; with the previous 1,024-row strips padded f64 lost only 7–8%. Why padding no longer helps f64 was not investigated further. `gemm_sme` packs B, so none of this reaches it.
+- ldb = 4097 is a control, not a fix: its row segments are no longer 128 B aligned, so each spans an extra cache line, and the loss mixes that cost with the stride effect.
+- Where the conflict happens, and the cost of each fix (f32): [experiments/sme-b-stride](experiments/sme-b-stride/README.md). With rows 16 KiB apart the macro-kernel loses 5–26% up to 576 rows per strip and breaks between 576 and 640, and the core's pointer chase at that stride holds roughly 450–600 lines in L2 against 8 in L1: the conflicts are in L2. With a padded stride, packing B costs ~2.5 ms and saves 7–8 ms of compute at N=4096; the remaining in-place cost is 4–8% across N = 1024–4224.
 
 ### Matrix engines, single core
 
@@ -154,14 +157,14 @@ Same machine and run as above. Every row uses one core, so this is the like-for-
 
 | Kernel | N=64 | N=256 | N=512 | N=1024 | N=2048 | N=4096 |
 |---|---|---|---|---|---|---|
-| `gemm_sme` f64 | 84 | 315 | 397 | 410 | 407 | 404 |
-| Accelerate f64 | 326 | 460 | 421 | **434** | 394 | 396 |
-| `gemm_sme` f32 | 278 | 753 | 1,283 | 1,450 | 1,417 | 1,345 |
-| Accelerate f32 | 795 | 1,705 | **1,719** | 1,649 | 1,687 | 1,590 |
-| KleidiAI v1.31 f32 | 327 | 1,060 | 1,511 | 1,643 | 1,408 | 1,023 |
+| `gemm_sme` f64 | 83 | 323 | 398 | 408 | 413 | 424 |
+| Accelerate f64 | 322 | **456** | 421 | 338 | 404 | 400 |
+| `gemm_sme` f32 | 267 | 839 | 1,332 | 1,385 | 1,465 | 1,504 |
+| Accelerate f32 | 777 | 1,692 | **1,718** | 1,629 | 1,681 | 1,599 |
+| KleidiAI v1.31 f32 | 327 | 1,055 | 1,511 | 1,659 | 1,454 | 1,019 |
 
-- f64: `gemm_sme` is within ~6% of Accelerate from N=512 up, and ahead at N=2048–4096. Those gaps are close to the noise level of this run. Below N=512 Accelerate is far ahead (4× at N=64), because `gemm_sme` pays fixed per-call costs: allocating and packing A and B, plus a streaming-mode switch per block.
-- f32: `gemm_sme` reaches 84–88% of Accelerate for N ≥ 1024. It ties KleidiAI at N=2048 and beats it at N=4096 (1,345 vs 1,023); KleidiAI uses the same 2×2-tile micro-kernel but no cache blocking, so it drops at large N.
+- f64: `gemm_sme` is within ~6% of Accelerate at N=512 and ahead from N=1024 up. Those gaps are close to the noise level of this run; Accelerate's dip at N=1024 appeared in two runs. Below N=512 Accelerate is far ahead (4× at N=64), because `gemm_sme` pays fixed per-call costs: allocating and packing A and B, plus a streaming-mode switch per block.
+- f32: `gemm_sme` reaches 85–94% of Accelerate for N ≥ 1024. It ties KleidiAI at N=2048 and beats it at N=4096 (1,504 vs 1,019); KleidiAI uses the same 2×2-tile micro-kernel but no cache blocking, so it drops at large N.
 - With all cores (default threading, wall-clock time): Accelerate 3,124 G/s f32 / 785 G/s f64 at N=4096. Roughly double the single-core figure, consistent with M4 Max's two performance clusters each having their own matrix unit.
 
 ### Apple AMX (via Accelerate.framework)
@@ -256,7 +259,7 @@ Peak per family on this machine:
 | `gemm_blocked` | 27.21 | 85.85 | 3.2× |
 | `gemm_neon_blocked` | 36.30 | 97.03 | 2.7× |
 | `gemm_neon_blocked_prefetch` (D=4, prefetch-sweep run) | 33.06 | 96.35 | 2.9× |
-| `gemm_sme` | 410 | **1,450** | 3.5× |
+| `gemm_sme` | 424 | **1,504** | 3.5× |
 | `gemm_amx` (Accelerate) | **860.28** | **3,295.78** | 3.8× |
 
 ---

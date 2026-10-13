@@ -45,32 +45,32 @@
  * compare against Accelerate with VECLIB_MAXIMUM_THREADS=1 (~1650 GFLOP/s
  * f32, ~410 f64 on one M4 Max core).
  *
- * One M4 Max core, GFLOP/s, median of 3 runs:
+ * One M4 Max core, GFLOP/s, median of 3 runs, block sizes as below:
  *
  *   f32                N=256   512  1024  2048  4000  4096
- *   gemm_sme_1tile       420   472   474   225   125   131
- *   gemm_sme_tiles       976  1461  1381   624   429   445
- *   gemm_sme_blocked     911  1400  1401  1249  1373   597
- *   gemm_sme             752  1283  1421  1438  1419  1372
+ *   gemm_sme_1tile       420   472   464   220   125   131
+ *   gemm_sme_tiles       975  1447  1319   617   427   446
+ *   gemm_sme_blocked     989  1460  1333   633  1468   489
+ *   gemm_sme             835  1322  1365  1452  1532  1519
  *
  *   f64                N=256   512  1024  2048  4000  4096
- *   gemm_sme_1tile       121   121   110    40    42    37
- *   gemm_sme_tiles       350   420   403   232   210   208
- *   gemm_sme_blocked     342   422   442   284   373   271
- *   gemm_sme             315   397   414   406   410   403
+ *   gemm_sme_1tile       121   121   105    40    42    38
+ *   gemm_sme_tiles       352   418   401   227   204   205
+ *   gemm_sme_blocked     351   420   423   243   422   225
+ *   gemm_sme             322   396   404   413   436   421
  *
- *  - 1tile → tiles, 2.3–3.4× f32 / 2.9–5.8× f64: FMOPA latency hidden
+ *  - 1tile → tiles, 2.3–3.4× f32 / 2.9–5.7× f64: FMOPA latency hidden
  *    ("All ZA tiles" below). At large N the one-tile kernel is also
  *    bandwidth bound, since each vector it loads feeds one FMOPA.
- *  - tiles → blocked, 2.0× f32 at N=2048 / 3.2× at N=4000: without
- *    blocking, all of A is re-read for every B strip and falls out of
- *    cache. N=4000 is as slow as N=4096, so this is not a stride effect;
- *    capacity is the likely cause.
- *  - blocked → gemm_sme: within 3% at N=4000, but 2.3× f32 / 1.5× f64 at
- *    N=4096 and 1.15× f32 at N=2048 — the power-of-two stride effect that
- *    packing B removes ("Packing" below).
- *  - At N ≤ 512 the kernels without pack_b are faster (+30% f32 at N=256):
- *    everything fits in cache, and gemm_sme pays for copying B.
+ *  - tiles → blocked, 3.4× f32 / 2.1× f64 at N=4000: without blocking, all
+ *    of A is re-read for every B strip and falls out of cache. N=4000 is
+ *    as slow as N=4096 without blocking, so that is capacity, not stride.
+ *  - blocked → gemm_sme: +4% at N=4000, but 2.3× f32 at N=2048 and 3.1× at
+ *    N=4096 (1.7× / 1.9× f64) — the power-of-two stride effect that
+ *    packing B removes ("Packing" below). With 2,048-row strips it hits
+ *    an 8 KiB stride (N=2048) as hard as a 16 KiB one.
+ *  - At N ≤ 512 the kernels without pack_b are faster (+18% f32 at
+ *    N=256): everything fits in cache, and gemm_sme pays for copying B.
  *
  *
  * ============================================================
@@ -91,44 +91,49 @@
  * load count; SME2 is therefore required (HPC_HAS_SME checks
  * __ARM_FEATURE_SME2 too).
  *
- * Cache blocking, GotoBLAS-style (f32 sizes):
+ * Cache blocking, GotoBLAS-style (f32 sizes; f64 has Mc = 512):
  *
- *   for jc (Nc = 4096)      pack_b → 16 MB B panel        normal mode
- *    for pc (Kc = 1024)
- *     for ic (Mc = 128)     pack_a → 512 KB A block       normal mode
+ *   for jc (Nc = 4096)      pack_b → 32 MiB B panel       normal mode
+ *    for pc (Kc = 2048)
+ *     for ic (Mc = 1024)    pack_a → 8 MiB A block        normal mode
  *      macro_kernel:                                      streaming mode
- *       for jr              one B strip, 128 KB
- *        for ir             4 A strips, each re-reads the same B strip
+ *       for jr              one B strip, 256 KiB
+ *        for ir             32 A strips, each re-reads the same B strip
  *         C tile → ZA       (zeroed when pc == 0, else loaded from C)
- *         for k = 0..1023   2 A + 2 B vectors → 4 FMOPA
+ *         for k = 0..2047   2 A + 2 B vectors → 4 FMOPA
  *         ZA → C tile
  *
  * Each level holds one operand fixed while the levels inside it reuse it
- * (f32, N=4096; f64 has 16-row A strips, so 8 ir steps, and twice the
- * bytes per block):
+ * (f32, N=4096; f64 has 16-row A strips and Mc = 512, so also 32 ir steps,
+ * an 8 MiB A block, 512 KiB B strips and a 64 MiB B panel):
  *
- *   loop  trips  fixed during it       size     reused by        lives in
- *   k     1024   C micro-tile          4 KB     1,024 k steps    ZA
- *   ir    4      B strip kc×nr         128 KB   4 A strips       cache
- *   jr    128    A block mc×kc         512 KB   128 B strips     L2
- *   ic    32     B panel kc×nc         16 MB    32 A blocks      L2 / SLC
- *   pc    4      — (splits K)
+ *   loop  trips  fixed during it       size      reused by        lives in
+ *   k     2048   C micro-tile          4 KiB     2,048 k steps    ZA
+ *   ir    32     B strip kc×nr         256 KiB   32 A strips      L2
+ *   jr    128    A block mc×kc         8 MiB     128 B strips     L2
+ *   ic    4      B panel kc×nc         32 MiB    4 A blocks       SLC / DRAM
+ *   pc    2      — (splits K)
  *   jc    1      — (splits N)
  *
  *  - k innermost: C stays in ZA for the whole k loop and touches memory
  *    once per pc pass. Per k step f32 loads 256 B for 2,048 flops
  *    (8 flop/B), f64 384 B for 1,024 flops (~2.7 flop/B).
- *  - ir inside jr: a B strip is reused after one A strip (128 KB) has
- *    passed through the cache, an A strip after ~640 KB. Swapped, each A
- *    strip would walk the whole 16 MB panel before the next one reused it.
+ *  - ir inside jr: a B strip is reused by 32 A strips in a row, so it is
+ *    fetched from beyond L2 once and read from L2 31 times. An A strip is
+ *    reused once per B strip, after the whole 8 MiB A block has passed:
+ *    the A block has to stay in L2, and at half the L2 it does.
  *  - ic inside pc: B is packed once per (jc, pc) and serves all M/Mc A
- *    blocks; A, the small operand, is repacked N/Nc times. Packing is
- *    O(MK + KN) against O(MNK) flops.
+ *    blocks; A is repacked N/Nc times. Packing is O(MK + KN) against
+ *    O(MNK) flops.
  *  - pc: C makes one round trip through ZA per Kc, so Kc is large.
- *  - jc: caps the B panel at the 16 MB P-cluster L2.
+ *  - jc: bounds the B panel. It does not fit in L2 and need not: each B
+ *    strip is streamed in once per A block and then reused from L2.
  *
- * Blocks are sized for L2, not L1 as in classic GotoBLAS: on M4 the SME
- * unit is shared by the P-cluster and reads operands from L2.
+ * This is classic GotoBLAS — the A block resident in L2, B streamed — one
+ * level out: the B strips are reused from L2 rather than L1, because on
+ * M4 the SME unit is shared by the P-cluster and reads its operands from
+ * L2. The previous sizing (Mc = 128, Kc = 1024) aimed at keeping the whole
+ * B panel in L2 instead; the current one is 4–12% faster at N ≥ 2048.
  *
  * Packing runs in the non-streaming driver, because scalar and NEON code is
  * slow in streaming mode; only macro_kernel runs streaming, with one
@@ -154,7 +159,7 @@
  *                                                  rows s·mr .. s·mr+mr−1
  *   B: dst[s·nr·kc + k·nr + c] = B(k, s·nr + c)   row k = B(k, s·nr .. +nr−1)
  *
- *   ┌ strip 0 ┬ strip 1 ┬ ... ┐   f32: kc = 1024 rows × 128 B = 128 KB each
+ *   ┌ strip 0 ┬ strip 1 ┬ ... ┐   f32: kc = 2048 rows × 128 B = 256 KiB each
  *
  * Row widths follow the micro-tile, not cache tuning: mr = 2·SVL (128 B
  * for both types), nr = kCols·SVL (128 B f32, 256 B f64). Each k step reads
@@ -172,7 +177,7 @@
  * An address splits into tag | set index | line offset (bits 0–6 for 128 B
  * lines), and a line may only live in one of the few ways of its own set.
  * A 2^14 B stride (f32 N=4096) never changes bits 0–13, so if the set index
- * comes from those bits (Apple does not document M4's indexing), all 1,024
+ * comes from those bits (Apple does not document M4's indexing), all 2,048
  * rows of the strip land in one set:
  *
  *   in place, N=4096:  row k at base + k·16 KB    same set every row
@@ -183,26 +188,24 @@
  * Contiguity is what fixes it; any strip width would.
  *
  * Evidence, gemm_sme_blocked (in place) vs gemm_sme (packed), f32 / f64:
- *  - N swept around powers of two: −17% / −31% at N=2048 and −55% / −33%
- *    at N=4096, but within 3% at N = 1984–2080 and −3…−7% / −7…−11% at
- *    N = 4000–4128.
- *  - The same 4096×4096 problem with only ldb changed: ldb = 4096 −55% /
- *    −33%, ldb = 4128 (+128 B per row) −3…−8% / −6…−8% over two runs. The
- *    collapse follows the byte stride, not N, the work or the pages
- *    touched; padded B still stays a few percent behind packed strips.
- *  - ldb = 4097, whose rows are no longer 128 B aligned and so span two
- *    lines each: −16% / −10%. Line-sized, line-aligned rows matter too.
+ *  - N swept around powers of two: −57% / −42% at N=2048 and −68% / −48%
+ *    at N=4096; f32 is within 5% at N = 1984–2080 and 4000–4128.
+ *  - The same 4096×4096 problem with only ldb changed: f32 −68% at
+ *    ldb = 4096, −6% at ldb = 4128 (+128 B per row). The collapse follows
+ *    the byte stride, not N, the work or the pages touched.
+ *  - f64 in place loses 26–48% at nearly every N around 4096, padded or
+ *    not (2,048 rows of 256 B per strip); with 1,024-row strips padded f64
+ *    lost only 7–8%. Packing removes it.
+ *  - ldb = 4097, whose rows are no longer 128 B aligned and so span an
+ *    extra line each: −16% / −30%. Line-sized, line-aligned rows matter too.
  *  - A pointer chase from a P-core over 1,024 lines 16 KB apart keeps only
- *    8 of them in L1 and fewer than 1,024 in L2 (24 ns per load, against
- *    0.78 ns for lines 128 B apart).
- * Only large problems are affected: at N ≤ 1024 in place is within 2% of
- * packed or faster (f64 N=1024, an 8 KB stride: +7%), as everything stays
- * in L2. The conflicts are in L2: with rows 16 KiB apart the macro-kernel
- * keeps pace with a padded stride up to 384 rows per strip and breaks by
- * 448 rows, far beyond L1's 8 ways. With a padded stride, in place still
- * trails packed by 0% at N=1024 up to ~10% at N=4096. Padding B would not
- * replace packing in a library anyway: the caller owns B's layout, while
- * packing works for any N. Data: docs/experiments/sme-b-stride.
+ *    8 of them in L1 and fewer than 1,024 in L2 (100 cycles per load,
+ *    against 12 for lines 16,512 B apart).
+ * The conflicts are in L2: with rows 16 KiB apart the macro-kernel breaks
+ * between 576 and 640 rows per strip, far beyond L1's 8 ways. With a
+ * padded stride, in place still trails packed by 4–8% (f32). Padding B
+ * would not replace packing in a library anyway: the caller owns B's
+ * layout, while packing works for any N. Data: docs/experiments/sme-b-stride.
  *
  * The packing buffers are Matrix<T> storage, 64-byte aligned by contract;
  * the ≥ 128 KB buffers came back 128-byte aligned in all 600 allocations
@@ -247,14 +250,15 @@ namespace hpc::gemm {
 
 // ============================================================================
 // Cache-blocking parameters (elements) for gemm_sme and gemm_sme_blocked;
-// what each block holds is in the file header ("gemm_sme"). Values picked by
-// a sweep on M4 Max (Mc 64–512, Kc 256–2048, Nc 512–4096): large Kc/Nc win
-// because they amortise C reloads and A repacking; the gain from Nc 2048 →
-// 4096 shows only at N ≥ 4096 (+5%).
+// what each block holds is in the file header ("gemm_sme"). Picked by a sweep
+// on M4 Max over Mc 128–2048, Kc 1024–4096, Nc 1024–4096 at N = 512 … 4096:
+// the A block (Mc × Kc) is 8 MiB in both types, half the L2, and each B
+// strip is reused by Mc / 32 (f32) or Mc / 16 (f64) A strips in a row.
 // ============================================================================
 
-inline constexpr std::size_t kSmeMc = 128;
-inline constexpr std::size_t kSmeKc = 1024;
+template <typename T>
+inline constexpr std::size_t kSmeMc = sizeof(T) == 4 ? 1024 : 512;
+inline constexpr std::size_t kSmeKc = 2048;
 inline constexpr std::size_t kSmeNc = 4096;
 
 #if !HPC_HAS_SME
@@ -554,7 +558,7 @@ void blocked_driver(const Matrix<T>& A, const T* B, std::size_t ldb, Matrix<T>& 
     const std::size_t mr = 2 * s, nr = kCols<T> * s;
     auto round_up        = [](std::size_t x, std::size_t m) { return (x + m - 1) / m * m; };
     const std::size_t kc_max = std::min(kSmeKc, K);
-    Matrix<T> a_pack(round_up(std::min(kSmeMc, M), mr), kc_max);  // 64-byte aligned scratch
+    Matrix<T> a_pack(round_up(std::min(kSmeMc<T>, M), mr), kc_max);  // 64-byte aligned scratch
     Matrix<T> b_pack(PackB ? kc_max : 0, PackB ? round_up(std::min(kSmeNc, N), nr) : 0);
 
     for (std::size_t jc = 0; jc < N; jc += kSmeNc) {
@@ -570,8 +574,8 @@ void blocked_driver(const Matrix<T>& A, const T* B, std::size_t ldb, Matrix<T>& 
                 b_step = static_cast<std::int64_t>(kc);
                 b_ld   = static_cast<std::int64_t>(nr);
             }
-            for (std::size_t ic = 0; ic < M; ic += kSmeMc) {
-                const std::size_t mc = std::min(kSmeMc, M - ic);
+            for (std::size_t ic = 0; ic < M; ic += kSmeMc<T>) {
+                const std::size_t mc = std::min(kSmeMc<T>, M - ic);
                 pack_a(A.data() + ic * K + pc, K, mc, kc, mr, a_pack.data());
                 macro_kernel<T>(a_pack.data(), b, b_step, b_ld, C.data() + ic * N + jc,
                                 static_cast<std::int64_t>(N), static_cast<std::int64_t>(mc),

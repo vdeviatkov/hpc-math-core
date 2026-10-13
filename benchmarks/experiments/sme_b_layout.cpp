@@ -70,7 +70,7 @@ Phases timed_driver(const Matrix<float>& A, const float* B, std::size_t ldb, Mat
 
     Phases p;
     auto t = Clock::now();
-    Matrix<float> a_pack(round_up(std::min(kSmeMc, M), mr), kc_max);
+    Matrix<float> a_pack(round_up(std::min(kSmeMc<float>, M), mr), kc_max);
     Matrix<float> b_pack(PackB ? kc_max : 0, PackB ? round_up(std::min(kSmeNc, N), nr) : 0);
     p.scratch = ms_since(t);
 
@@ -88,8 +88,8 @@ Phases timed_driver(const Matrix<float>& A, const float* B, std::size_t ldb, Mat
                 b_step = std::int64_t(kc);
                 b_ld   = std::int64_t(nr);
             }
-            for (std::size_t ic = 0; ic < M; ic += kSmeMc) {
-                const std::size_t mc = std::min(kSmeMc, M - ic);
+            for (std::size_t ic = 0; ic < M; ic += kSmeMc<float>) {
+                const std::size_t mc = std::min(kSmeMc<float>, M - ic);
                 t                    = Clock::now();
                 sme::pack_a(A.data() + ic * K + pc, K, mc, kc, mr, a_pack.data());
                 p.pack_a += ms_since(t);

@@ -25,34 +25,34 @@
 <text x="574.0" y="433" font-size="12" text-anchor="middle">2048</text>
 <text x="732.0" y="433" font-size="12" text-anchor="middle">4000</text>
 <text x="890.0" y="433" font-size="12" text-anchor="middle">4096</text>
-<polyline points="100.0,348.68 258.0,341.088 416.0,340.796 574.0,377.15 732.0,391.75 890.0,390.874" fill="none" stroke="#8c96a3" stroke-width="3"/>
+<polyline points="100.0,348.68 258.0,341.088 416.0,342.256 574.0,377.88 732.0,391.75 890.0,390.874" fill="none" stroke="#8c96a3" stroke-width="3"/>
 <circle cx="100.0" cy="348.68" r="4" fill="#8c96a3"/>
 <circle cx="258.0" cy="341.088" r="4" fill="#8c96a3"/>
-<circle cx="416.0" cy="340.796" r="4" fill="#8c96a3"/>
-<circle cx="574.0" cy="377.15" r="4" fill="#8c96a3"/>
+<circle cx="416.0" cy="342.256" r="4" fill="#8c96a3"/>
+<circle cx="574.0" cy="377.88" r="4" fill="#8c96a3"/>
 <circle cx="732.0" cy="391.75" r="4" fill="#8c96a3"/>
 <circle cx="890.0" cy="390.874" r="4" fill="#8c96a3"/>
-<polyline points="100.0,267.504 258.0,196.694 416.0,208.374 574.0,318.896 732.0,347.366 890.0,345.03" fill="none" stroke="#245ea8" stroke-width="3"/>
-<circle cx="100.0" cy="267.504" r="4" fill="#245ea8"/>
-<circle cx="258.0" cy="196.694" r="4" fill="#245ea8"/>
-<circle cx="416.0" cy="208.374" r="4" fill="#245ea8"/>
-<circle cx="574.0" cy="318.896" r="4" fill="#245ea8"/>
-<circle cx="732.0" cy="347.366" r="4" fill="#245ea8"/>
-<circle cx="890.0" cy="345.03" r="4" fill="#245ea8"/>
-<polyline points="100.0,276.994 258.0,205.60000000000002 416.0,205.454 574.0,227.646 732.0,209.542 890.0,322.838" fill="none" stroke="#2f9e6e" stroke-width="3"/>
-<circle cx="100.0" cy="276.994" r="4" fill="#2f9e6e"/>
-<circle cx="258.0" cy="205.60000000000002" r="4" fill="#2f9e6e"/>
-<circle cx="416.0" cy="205.454" r="4" fill="#2f9e6e"/>
-<circle cx="574.0" cy="227.646" r="4" fill="#2f9e6e"/>
-<circle cx="732.0" cy="209.542" r="4" fill="#2f9e6e"/>
-<circle cx="890.0" cy="322.838" r="4" fill="#2f9e6e"/>
-<polyline points="100.0,300.20799999999997 258.0,222.68200000000002 416.0,202.534 574.0,200.05200000000002 732.0,202.826 890.0,209.688" fill="none" stroke="#be4d14" stroke-width="3"/>
-<circle cx="100.0" cy="300.20799999999997" r="4" fill="#be4d14"/>
-<circle cx="258.0" cy="222.68200000000002" r="4" fill="#be4d14"/>
-<circle cx="416.0" cy="202.534" r="4" fill="#be4d14"/>
-<circle cx="574.0" cy="200.05200000000002" r="4" fill="#be4d14"/>
-<circle cx="732.0" cy="202.826" r="4" fill="#be4d14"/>
-<circle cx="890.0" cy="209.688" r="4" fill="#be4d14"/>
+<polyline points="100.0,267.65 258.0,198.738 416.0,217.42600000000002 574.0,319.918 732.0,347.658 890.0,344.884" fill="none" stroke="#245ea8" stroke-width="3"/>
+<circle cx="100.0" cy="267.65" r="4" fill="#245ea8"/>
+<circle cx="258.0" cy="198.738" r="4" fill="#245ea8"/>
+<circle cx="416.0" cy="217.42600000000002" r="4" fill="#245ea8"/>
+<circle cx="574.0" cy="319.918" r="4" fill="#245ea8"/>
+<circle cx="732.0" cy="347.658" r="4" fill="#245ea8"/>
+<circle cx="890.0" cy="344.884" r="4" fill="#245ea8"/>
+<polyline points="100.0,265.606 258.0,196.84 416.0,215.382 574.0,317.582 732.0,195.672 890.0,338.606" fill="none" stroke="#2f9e6e" stroke-width="3"/>
+<circle cx="100.0" cy="265.606" r="4" fill="#2f9e6e"/>
+<circle cx="258.0" cy="196.84" r="4" fill="#2f9e6e"/>
+<circle cx="416.0" cy="215.382" r="4" fill="#2f9e6e"/>
+<circle cx="574.0" cy="317.582" r="4" fill="#2f9e6e"/>
+<circle cx="732.0" cy="195.672" r="4" fill="#2f9e6e"/>
+<circle cx="890.0" cy="338.606" r="4" fill="#2f9e6e"/>
+<polyline points="100.0,288.09000000000003 258.0,216.988 416.0,210.71 574.0,198.008 732.0,186.328 890.0,188.22600000000003" fill="none" stroke="#be4d14" stroke-width="3"/>
+<circle cx="100.0" cy="288.09000000000003" r="4" fill="#be4d14"/>
+<circle cx="258.0" cy="216.988" r="4" fill="#be4d14"/>
+<circle cx="416.0" cy="210.71" r="4" fill="#be4d14"/>
+<circle cx="574.0" cy="198.008" r="4" fill="#be4d14"/>
+<circle cx="732.0" cy="186.328" r="4" fill="#be4d14"/>
+<circle cx="890.0" cy="188.22600000000003" r="4" fill="#be4d14"/>
 <text x="495.0" y="463" font-size="14" text-anchor="middle">N (square matrices; categories, not to scale)</text>
 <text transform="translate(23 270) rotate(-90)" text-anchor="middle" font-size="14">GFLOP/s</text>
 <path d="M 90.0 494 h 35" stroke="#8c96a3" stroke-width="3"/>

@@ -171,15 +171,15 @@ struct Shape {
 // Square sizes below, at and just past the vector widths (4/8/16 lanes),
 // register tiles (16, 32) and cache tiles (64, 128, 256); rectangular shapes
 // with partial tiles in every dimension; K across the SME Kc block (twice,
-// so partial sums are reloaded into ZA) and N across its Nc block; empty
-// matrices.
+// so partial sums are reloaded into ZA), M across its Mc block and N across
+// its Nc block; empty matrices.
 const Shape kShapes[] = {
     {1, 1, 1},       {2, 2, 2},       {3, 3, 3},     {4, 4, 4},         {5, 5, 5},
     {7, 7, 7},       {8, 8, 8},       {13, 13, 13},  {15, 15, 15},      {16, 16, 16},
     {17, 17, 17},    {31, 31, 31},    {32, 32, 32},  {33, 33, 33},      {64, 64, 64},
     {100, 100, 100}, {128, 128, 128}, {256, 256, 256},
     {3, 5, 2},       {7, 3, 9},       {17, 33, 15},  {33, 1, 65},       {63, 65, 64},
-    {129, 7, 33},    {257, 64, 31},   {24, 777, 40}, {20, 2065, 36},    {133, 70, 40},
+    {129, 7, 33},    {257, 64, 31},   {24, 777, 40}, {20, 4113, 36},    {1031, 70, 40},
     {9, 11, 4103},   {3, 0, 4},       {0, 5, 3},     {4, 5, 0},
 };
 

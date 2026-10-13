@@ -20,64 +20,71 @@ against the packed driver before timing.
 
 ## Phases: where the time goes
 
-`sme_b_layout 4096 15 3`. Each of 15 repetitions runs six cases (three
-`ldb` × B in place or packed) end to end (the driver, mean of 3 calls) and
-by phase (the same loop nest with a clock around each phase), in shuffled
+`sme_b_layout 4096 15 3`, with the library's block sizes (Mc = 1024,
+Kc = 2048, Nc = 4096). Each of 15 repetitions runs six cases (three `ldb`
+× B in place or packed) end to end (the driver, mean of 3 calls) and by
+phase (the same loop nest with a clock around each phase), in shuffled
 order. Medians, ms; interquartile range in brackets.
 
 | ldb | B | End to end | GFLOP/s | Pack A | Pack B | Compute |
 |---:|:--|--:|--:|--:|--:|--:|
-| 4096 | in place | 238.1 [232.3–240.9] | 577 | 2.95 | — | 230.8 [228.4–236.6] |
-| 4096 | packed | 104.7 [103.5–105.5] | 1,313 | 2.96 | 4.81 | 96.9 [95.9–98.7] |
-| 4128 | in place | 114.1 [109.6–117.4] | 1,204 | 2.94 | — | 110.0 [105.3–112.5] |
-| 4128 | packed | 102.0 [100.8–103.6] | 1,348 | 2.96 | 2.07 | 96.0 [95.2–97.7] |
-| 4160 | in place | 116.6 [109.9–117.6] | 1,179 | 2.93 | — | 107.2 [105.7–110.9] |
-| 4160 | packed | 101.4 [100.8–102.5] | 1,355 | 2.98 | 2.03 | 97.0 [95.7–98.8] |
+| 4096 | in place | 281.2 [280.5–286.8] | 489 | 3.75 | — | 278.9 [275.2–282.2] |
+| 4096 | packed | 91.1 [90.9–92.0] | 1,508 | 3.84 | 4.94 | 82.4 [82.1–84.0] |
+| 4128 | in place | 92.9 [92.5–93.7] | 1,479 | 3.74 | — | 89.0 [88.6–89.7] |
+| 4128 | packed | 88.5 [87.8–88.8] | 1,553 | 3.76 | 2.54 | 82.0 [81.7–83.1] |
+| 4160 | in place | 93.2 [92.9–94.6] | 1,474 | 3.77 | — | 89.6 [89.4–91.3] |
+| 4160 | packed | 88.4 [88.0–89.0] | 1,555 | 3.81 | 2.49 | 81.7 [81.3–85.0] |
 
-Packed B won all 15 repetitions at `ldb` = 4128 and 4160. The phase clocks
-wrap every `pack_a`, `pack_b` and macro-kernel call (128 macro-kernel calls
-per driver call), so phase figures carry some timing overhead.
+Packed B won all 15 repetitions at every `ldb`. The phase clocks wrap
+every `pack_a`, `pack_b` and macro-kernel call (8 macro-kernel calls per
+driver call), so phase figures carry some timing overhead.
 
 ## Height: how many rows the conflicting cache holds
 
-`sme_b_stride_probe height`: N = 1024, M = 4096, one Kc block; A packed
-and B laid out once, only the macro-kernel timed, 9 shuffled repetitions.
-B in place with rows 16 KiB apart (`ldb` = 4096) or 16,512 B apart
-(`ldb` = 4128); packed for reference. Median GFLOP/s [IQR].
+`sme_b_stride_probe height`: N = 1024, M = 4096 in blocks of Mc = 1024,
+one Kc block; A packed and B laid out once, only the macro-kernel timed,
+9 shuffled repetitions. B in place with rows 16 KiB apart (`ldb` = 4096)
+or 16,512 B apart (`ldb` = 4128); packed for reference. Median GFLOP/s
+[IQR].
 
 | Kc (rows) | ldb 4096 | ldb 4128 | packed | 4096 / 4128 |
 |---:|--:|--:|--:|--:|
-| 8 | 191 [190–193] | 199 [196–207] | 224 | 0.96 |
-| 32 | 552 [491–563] | 615 [603–625] | 638 | 0.90 |
-| 128 | 1,048 [1,008–1,104] | 1,170 [1,138–1,208] | 1,297 | 0.90 |
-| 256 | 1,321 [1,202–1,331] | 1,436 [1,397–1,487] | 1,564 | 0.92 |
-| 384 | 1,380 [1,339–1,398] | 1,606 [1,569–1,616] | 1,670 | 0.86 |
-| **448** | **1,034 [978–1,035]** | 1,624 [1,539–1,661] | 1,709 | **0.64** |
-| 512 | 1,104 [1,098–1,146] | 1,634 [1,592–1,644] | 1,736 | 0.68 |
-| 640 | 1,171 [961–1,196] | 1,676 [1,574–1,692] | 1,733 | 0.70 |
-| 768 | 960 [882–980] | 1,710 [1,699–1,737] | 1,753 | 0.56 |
-| 896 | 791 [691–799] | 1,710 [1,658–1,751] | 1,771 | 0.46 |
-| 1024 | 652 [647–657] | 1,728 [1,712–1,732] | 1,763 | 0.38 |
+| 8 | 159 [142–168] | 168 [159–176] | 176 | 0.95 |
+| 32 | 396 [369–465] | 532 [518–538] | 533 | 0.74 |
+| 128 | 878 [806–919] | 1,150 [1,113–1,170] | 1,250 | 0.76 |
+| 256 | 1,200 [1,168–1,280] | 1,434 [1,418–1,452] | 1,505 | 0.84 |
+| 384 | 1,343 [1,334–1,372] | 1,558 [1,532–1,563] | 1,665 | 0.86 |
+| 448 | 1,335 [1,268–1,351] | 1,614 [1,573–1,638] | 1,694 | 0.83 |
+| 512 | 1,267 [1,237–1,335] | 1,652 [1,594–1,665] | 1,693 | 0.77 |
+| 576 | 1,236 [1,214–1,249] | 1,677 [1,671–1,687] | 1,696 | 0.74 |
+| **640** | **946 [941–971]** | 1,668 [1,647–1,698] | 1,737 | **0.57** |
+| 768 | 924 [907–937] | 1,688 [1,571–1,734] | 1,724 | 0.55 |
+| 896 | 768 [749–774] | 1,703 [1,673–1,730] | 1,771 | 0.45 |
+| 1024 | 626 [618–628] | 1,698 [1,667–1,724] | 1,734 | 0.37 |
+| 1536 | 510 [502–512] | 1,666 [1,655–1,683] | 1,757 | 0.31 |
+| 2048 | 500 [499–506] | 1,584 [1,563–1,610] | 1,700 | 0.32 |
 
-`height.csv` also has Kc = 16, 64, 576. Up to 384 rows the power-of-two
-stride costs 4–14%; between 384 and 448 rows it breaks.
+`height.csv` also has Kc = 16 and 64. Up to 576 rows the power-of-two
+stride costs 5–26%; between 576 and 640 rows it breaks. An earlier run
+with Mc = 128 (4 A strips per B strip instead of 32) broke between 384
+and 448 rows; both are in the range where the chase below loses L2.
 
 ## Width: what padding leaves
 
-`sme_b_stride_probe width`: Kc = 1024, M = 4096, macro-kernel only, 9
+`sme_b_stride_probe width`: Kc = 2048, M = 4096, macro-kernel only, 9
 shuffled repetitions. B in place with `ldb = N + 32` against packed.
 
 | N | in place, ldb = N + 32 | packed | in place / packed |
 |---:|--:|--:|--:|
-| 1024 | 1,790 [1,788–1,806] | 1,790 [1,761–1,819] | 1.00 |
-| 2048 | 1,730 [1,705–1,738] | 1,783 [1,776–1,802] | 0.97 |
-| 3072 | 1,573 [1,548–1,626] | 1,637 [1,626–1,646] | 0.96 |
-| 3584 | 1,545 [1,515–1,560] | 1,622 [1,614–1,631] | 0.95 |
-| 3968 | 1,456 [1,429–1,476] | 1,561 [1,530–1,563] | 0.93 |
-| 4000 | 1,426 [1,353–1,447] | 1,568 [1,564–1,583] | 0.91 |
-| 4096 | 1,413 [1,318–1,424] | 1,546 [1,537–1,551] | 0.91 |
-| 4128 | 1,394 [1,369–1,426] | 1,563 [1,550–1,571] | 0.89 |
-| 4224 | 1,394 [1,312–1,428] | 1,544 [1,541–1,551] | 0.90 |
+| 1024 | 1,676 [1,651–1,698] | 1,740 [1,723–1,777] | 0.96 |
+| 2048 | 1,654 [1,623–1,698] | 1,749 [1,734–1,774] | 0.95 |
+| 3072 | 1,589 [1,587–1,616] | 1,725 [1,715–1,734] | 0.92 |
+| 3584 | 1,572 [1,562–1,588] | 1,714 [1,695–1,722] | 0.92 |
+| 3968 | 1,560 [1,546–1,569] | 1,686 [1,681–1,690] | 0.93 |
+| 4000 | 1,559 [1,556–1,574] | 1,697 [1,696–1,709] | 0.92 |
+| 4096 | 1,554 [1,533–1,556] | 1,686 [1,675–1,695] | 0.92 |
+| 4128 | 1,572 [1,552–1,578] | 1,680 [1,674–1,692] | 0.94 |
+| 4224 | 1,549 [1,546–1,557] | 1,682 [1,675–1,694] | 0.92 |
 
 ## Chase: the CPU core's view
 
@@ -107,9 +114,9 @@ on, against 3, are first-level TLB misses, as every line sits on its own
 
 ## Conditions
 
-A desktop machine with other work running (load average 4–6). Results are
-medians of interleaved, shuffled repetitions; the interquartile ranges show
-the noise. Inputs stay warm in cache between calls; nothing is flushed.
+A desktop machine with other work running (load average 4–6 during the
+chase, 5–10 during the other runs). Results are medians of interleaved,
+shuffled repetitions; the interquartile ranges show the noise. Inputs stay warm in cache between calls; nothing is flushed.
 
 ## Reproduce
 

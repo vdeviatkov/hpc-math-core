@@ -12,22 +12,22 @@ machine's caches, TLBs and SME unit:
 [Matrix multiplication on Apple M4's SME2 unit](sme2-gemm.md).*
 
 A matrix multiplication written for ARM's Scalable Matrix Extension (SME2)
-reached **1,365 GFLOP/s at N = 4000 and 608 GFLOP/s at N = 4096**. The larger
-problem does 7% more work, and its throughput drops by 55%. This article traces that
+reached **1,494 GFLOP/s at N = 4000 and 480 GFLOP/s at N = 4096**. The larger
+problem does 7% more work, and its throughput drops by 68%. This article traces that
 cliff to its cause and measures both fixes.
 
 **Key results**
 
 - The slowdown follows the **byte distance between rows of B**, not the
   matrix size: keeping N = 4096 and padding each row of B by 128 bytes
-  restores 2.2× throughput with the same arithmetic.
+  restores 3.1× throughput with the same arithmetic.
 - At a 16 KiB row stride, the B rows the kernel reuses all map to a handful
-  of **L2 cache sets**. The kernel keeps pace up to 384 rows per reused
-  strip and breaks between 384 and 448, far past the 8 rows an L1 set can
-  hold; the CPU core's own loads show the same L2 limit.
+  of **L2 cache sets**. The kernel collapses between 576 and 640 rows per
+  reused strip, far past the 8 rows an L1 set can hold; the CPU core's own
+  loads show the same L2 limit.
 - **Packing B** into contiguous strips removes the cliff for any stride. It
-  costs about 2% of the runtime and cuts compute time by 10–13% even when
-  the stride is already padded, and its advantage grows with matrix width.
+  costs about 3% of the runtime and cuts compute time by 8–9% even when
+  the stride is already padded.
 
 ## The kernel and the B operand
 
@@ -53,7 +53,7 @@ row.
 
 Both variants run one driver, `sme_detail::blocked_driver<float, PackB>`
 ([source](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/sme.hpp)),
-with GotoBLAS cache blocking `Mc = 128`, `Kc = 1024`, `Nc = 4096`. Only the
+with GotoBLAS cache blocking `Mc = 1024`, `Kc = 2048`, `Nc = 4096`. Only the
 B source differs:
 
 | | B in place | B packed |
@@ -62,12 +62,12 @@ B source differs:
 | Row k of a B strip | `B + k·ldb + j` | `strip + k·128 B` |
 | Cost of copying B | none | included in every timing |
 
-The quantity that matters is the **B strip**: 1,024 rows × 32 floats =
-128 KiB. The macro-kernel streams one strip against the 4 A strips of an
+The quantity that matters is the **B strip**: 2,048 rows × 32 floats =
+256 KiB. The macro-kernel streams one strip against the 32 A strips of an
 Mc block, one after another, so the strip must stay cached between those
-four passes. Packed, the strip is 128 KiB of contiguous memory. In place at
-`ldb = 4096`, it is 1,024 pieces of 128 bytes spaced 16 KiB apart, spread
-over 16 MiB of address space.
+32 passes. Packed, the strip is 256 KiB of contiguous memory. In place at
+`ldb = 4096`, it is 2,048 pieces of 128 bytes spaced 16 KiB apart, spread
+over 32 MiB of address space.
 
 ## N = 4096 runs at half the speed of N = 4000
 
@@ -79,18 +79,19 @@ allocation and all packing.
 
 | N | B row stride | B in place, GFLOP/s | B packed, GFLOP/s |
 |---:|---:|---:|---:|
-| 1984 | 7,936 B | 1,565 | 1,517 |
-| 2016 | 8,064 B | 1,556 | 1,541 |
-| **2048** | **8,192 B** | **1,196** | 1,432 |
-| 2080 | 8,320 B | 1,493 | 1,483 |
-| 4000 | 16,000 B | 1,365 | 1,406 |
-| 4032 | 16,128 B | 1,354 | 1,399 |
-| 4064 | 16,256 B | 1,303 | 1,399 |
-| **4096** | **16,384 B** | **608** | 1,344 |
-| 4128 | 16,512 B | 1,260 | 1,304 |
+| 1984 | 7,936 B | 1,570 | 1,561 |
+| 2016 | 8,064 B | 1,572 | 1,555 |
+| **2048** | **8,192 B** | **636** | 1,485 |
+| 2080 | 8,320 B | 1,462 | 1,440 |
+| 4000 | 16,000 B | 1,494 | 1,515 |
+| 4032 | 16,128 B | 1,489 | 1,529 |
+| 4064 | 16,256 B | 1,476 | 1,525 |
+| **4096** | **16,384 B** | **480** | 1,506 |
+| 4128 | 16,512 B | 1,356 | 1,433 |
 
-The dips sit exactly on the powers of two: −17% at 2048 and −55% at 4096,
-with full recovery 32 columns either side. Packed B shows no cliff at all.
+The dips sit exactly on the powers of two: −60% at 2048 and −68% at 4096
+against the size just below, with recovery 32 columns either side. Packed
+B shows no cliff at all.
 
 ## Same multiplication, different stride: the cliff follows the bytes
 
@@ -102,13 +103,13 @@ row stride `ldb` changes. The padding columns are never read.
 
 | ldb | B row stride | B in place, GFLOP/s | B packed, GFLOP/s |
 |---:|---:|---:|---:|
-| **4096** | **16,384 B** | **608** | 1,344 |
-| 4097 | 16,388 B | 1,145 | 1,365 |
-| 4128 | 16,512 B | 1,339 | 1,386 |
-| 4160 | 16,640 B | 1,332 | 1,390 |
+| **4096** | **16,384 B** | **480** | 1,506 |
+| 4097 | 16,388 B | 1,283 | 1,527 |
+| 4128 | 16,512 B | 1,465 | 1,553 |
+| 4160 | 16,640 B | 1,498 | 1,532 |
 
 One extra cache line per row (`ldb = 4128`) makes B 0.5 MiB larger and the
-in-place kernel **2.2× faster**. The arithmetic, the useful data and the
+in-place kernel **3.1× faster**. The arithmetic, the useful data and the
 number of 16 KiB pages touched are unchanged; only the stride moved.
 `ldb = 4097` recovers less because its 128-byte row segments no longer
 start on a cache-line boundary, so each one spans two lines.
@@ -134,30 +135,35 @@ At a power-of-two stride every row of the strip lands in the same few sets.
 Once the strip has more rows than those sets have ways, it evicts itself
 before the next A strip comes back for it: **conflict misses** in a cache
 that has plenty of total capacity. One line more of stride spreads the rows
-over every set, which is exactly what the padding experiment shows.
+over every set, which is exactly what the padding experiment shows. An
+8 KiB stride gives the rows twice as many sets as 16 KiB, but a
+2,048-row strip overflows those too, which is why N = 2048 loses almost as
+much as N = 4096.
 
 ## The conflicts are in L2
 
 Which cache? The number of rows a strip can have before the conflict bites
 measures the capacity of the conflicting sets, so the next experiment
 varies the strip height `Kc` while timing only the macro-kernel (A packed
-and B laid out once, N = 1024, 9 shuffled repetitions).
+and B laid out once, N = 1024, Mc = 1024, 9 shuffled repetitions).
 
 ![Macro-kernel throughput against rows per B strip, rows 16 KiB vs 16,512 B apart](assets/sme2-strip-height.svg)
 
 | Rows per strip | rows 16,384 B apart | rows 16,512 B apart | ratio |
 |---:|---:|---:|---:|
-| 64 | 807 | 835 | 0.97 |
-| 256 | 1,321 | 1,436 | 0.92 |
-| 384 | 1,380 | 1,606 | 0.86 |
-| **448** | **1,034** | 1,624 | **0.64** |
-| 768 | 960 | 1,710 | 0.56 |
-| 1024 | 652 | 1,728 | 0.38 |
+| 64 | 630 | 786 | 0.80 |
+| 256 | 1,200 | 1,434 | 0.84 |
+| 512 | 1,267 | 1,652 | 0.77 |
+| 576 | 1,236 | 1,677 | 0.74 |
+| **640** | **946** | 1,668 | **0.57** |
+| 1024 | 626 | 1,698 | 0.37 |
+| 2048 | 500 | 1,584 | 0.32 |
 
-Up to 384 rows the power-of-two stride costs at most 14%; between 384 and
-448 rows it breaks, and from there it degrades with every row added. An
-8-way L1 set would overflow at the 9th row. The conflicting structure holds
-roughly 400 rows at this stride, which only the 16 MiB L2 can.
+Up to 576 rows the power-of-two stride costs 5–26%; between 576 and 640
+rows it breaks, and from there it degrades with every row added, to a
+third of the padded throughput at the 2,048 rows `gemm_sme` uses. An 8-way
+L1 set would overflow at the 9th row. The conflicting structure holds
+roughly 600 rows at this stride, which only the 16 MiB L2 can.
 
 A pointer chase on a CPU core, one dependent load per line, confirms the
 L2's capacity at this stride independently of SME (cycles per load at
@@ -168,26 +174,26 @@ L2's capacity at this stride independently of SME (cycles per load at
 | cycles per load | 3 | 24 | 33 | 41 | 52 | 100 | 144 |
 
 Only 8 lines stay in L1 (3 cycles); roughly 450–600 stay in L2 (~32
-cycles; the step moved within that range across three runs); beyond that,
-loads go further out. The SME kernel breaks in the same range, between 384
-and 448 rows, a little earlier because its A strips and C tiles occupy the
-same L2 sets. The two measurements agree on the structure: a power-of-two
-stride leaves this data a few hundred lines of a 131,072-line L2.
+cycles; the step moved between 448 and 640 lines across three runs);
+beyond that, loads go further out. The SME kernel breaks in the same
+range, between 576 and 640 rows. The two measurements agree on the
+structure: a power-of-two stride leaves this data a few hundred lines of a
+131,072-line L2.
 
 ## Fix 1: pad the leading dimension
 
-Padding B's rows by one cache line removes the cliff: 608 → 1,339 GFLOP/s
+Padding B's rows by one cache line removes the cliff: 480 → 1,465 GFLOP/s
 at N = 4096. It costs 0.8% more memory and no code. It is not a complete
 fix, for two reasons:
 
 - The caller owns B's layout. A library receiving a matrix with a 16 KiB
   stride cannot pad it without copying it, and a copy is what packing is.
-- Even padded, B in place trails packed B, and the gap widens with matrix
-  width. Macro-kernel only, `ldb = N + 32`:
+- Even padded, B in place trails packed B by 4–8%, more for wider
+  matrices. Macro-kernel only, `ldb = N + 32`:
 
 | N | 1024 | 2048 | 3072 | 3584 | 4096 | 4224 |
 |---|--:|--:|--:|--:|--:|--:|
-| in place / packed | 1.00 | 0.97 | 0.96 | 0.95 | 0.91 | 0.90 |
+| in place / packed | 0.96 | 0.95 | 0.92 | 0.92 | 0.92 | 0.92 |
 
 ## Fix 2: pack B, and why it wins
 
@@ -198,21 +204,22 @@ measurable directly: the same driver with a clock around each phase, N =
 
 | ldb | B | End to end | Pack A | Pack B | Compute |
 |---:|:--|--:|--:|--:|--:|
-| 4096 | in place | 238.1 | 2.95 | — | 230.8 |
-| 4096 | packed | 104.7 | 2.96 | 4.81 | 96.9 |
-| 4128 | in place | 114.1 | 2.94 | — | 110.0 |
-| 4128 | packed | 102.0 | 2.96 | 2.07 | 96.0 |
-| 4160 | in place | 116.6 | 2.93 | — | 107.2 |
-| 4160 | packed | 101.4 | 2.98 | 2.03 | 97.0 |
+| 4096 | in place | 281.2 | 3.75 | — | 278.9 |
+| 4096 | packed | 91.1 | 3.84 | 4.94 | 82.4 |
+| 4128 | in place | 92.9 | 3.74 | — | 89.0 |
+| 4128 | packed | 88.5 | 3.76 | 2.54 | 82.0 |
+| 4160 | in place | 93.2 | 3.77 | — | 89.6 |
+| 4160 | packed | 88.4 | 3.81 | 2.49 | 81.7 |
 
-- At the 16 KiB stride, packing costs 4.8 ms and saves 134 ms of compute.
-- With an already padded stride, packing costs 2.1 ms and still saves
-  11–14 ms; packed B was faster in all 15 repetitions.
-- With packed B, compute time is the same 96–97 ms for every `ldb`: the
+- At the 16 KiB stride, packing costs 4.9 ms and saves 196 ms of compute.
+- With an already padded stride, packing costs 2.5 ms and still saves
+  7–8 ms; packed B was faster in all 15 repetitions.
+- With packed B, compute time is the same 82 ms for every `ldb`: the
   macro-kernel only ever sees the packed layout.
 
-The copy is cheap because each element of B is copied once per `Kc` block,
-while the compute reads it once per A strip. At these sizes it pays for
+The copy is cheap because each element of B is copied once, while the
+compute reads it once per A strip: 32 times per A block, `M / 32` times in
+all. At these sizes it pays for
 itself several times over.
 
 ## Rules of thumb
@@ -225,7 +232,7 @@ itself several times over.
    else in one measurement.
 3. **Pack operands that are reused across a loop.** In a blocked GEMM the
    B strip is reused by every A strip; copying it into a contiguous buffer
-   costs a few percent and makes performance independent of the caller's
+   costs about 3% and makes performance independent of the caller's
    layout.
 4. **Measure the conflicting capacity.** Sweeping the number of reused rows
    until the stride starts to hurt tells you which cache level is involved,

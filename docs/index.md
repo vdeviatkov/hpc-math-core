@@ -42,7 +42,7 @@ benchmarked with Google Benchmark.
 |---|---|--:|
 | Scalar, cache-blocked | Apple M4 Max | 86 GFLOP/s |
 | AVX-512, register-tiled | AMD Ryzen 9 9950X (Zen 5) | 219 GFLOP/s |
-| ARM SME2, packed and blocked, one core | Apple M4 Max | 1.45 TFLOP/s |
+| ARM SME2, packed and blocked, one core | Apple M4 Max | 1.53 TFLOP/s |
 | CUDA Tensor Cores, pipelined WMMA | NVIDIA RTX 5080 | 100 TFLOP/s |
 
 - [Benchmark results](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/benchmarks.md) for Apple M4 Max, AMD Zen 5 and RTX 5080

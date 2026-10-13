@@ -17,7 +17,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 COLORS = {"in_place_gflops": "#245ea8", "packed_gflops": "#be4d14"}
 LEGEND = {"in_place_gflops": "B read in place", "packed_gflops": "B packed"}
-Y_MAX = 1600
+Y_MAX = 1800
 
 
 def load(experiment):
