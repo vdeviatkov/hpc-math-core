@@ -74,7 +74,8 @@ over 32 MiB of address space.
 
 Square matrices around 2048 and 4096, so the row stride is `N × 4` bytes.
 Median of 3 interleaved repetitions; each timed call includes scratch
-allocation and all packing.
+allocation and all packing. (This is a separate run from the step tables
+in part 1; the same kernels agree between the two within about 2%.)
 
 ![Throughput near N = 2048 and 4096, B in place and packed](assets/sme2-size-sweep.svg)
 

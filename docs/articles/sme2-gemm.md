@@ -245,7 +245,7 @@ delivery, not by load instructions.)
 For FP64 the micro-tile is 2 × 4 tiles (16 × 32 elements, all eight FP64
 tiles): eight FMOPAs per 384 bytes loaded instead of four per 256 bytes,
 2.7 flops per byte instead of 2. That layout measured 9% faster than 2 × 2
-at N = 4096.
+at N = 4096 (with the earlier block sizes described in step 3).
 
 | N | 256 | 512 | 1024 | 2048 | 4000 | 4096 |
 |---|--:|--:|--:|--:|--:|--:|
@@ -418,8 +418,8 @@ B's 32-element row segments are already contiguous, so the kernel can read
 B in place. But consecutive rows of a strip are then `N × 4` bytes apart:
 16 KiB at N = 4096, 8 KiB at N = 2048. At such a power-of-two stride the
 2,048 rows of a strip map to a handful of L2 cache sets and evict each
-other before the next A strip reuses them; throughput falls to a third
-(489 GFLOP/s at N = 4096, 633 at N = 2048). Packing copies each strip into
+other before the next A strip reuses them; throughput falls to a third at
+N = 4096 (489 GFLOP/s) and to under half at N = 2048 (633). Packing copies each strip into
 2,048 contiguous 128-byte rows, which fill all sets evenly whatever N
 is. The [follow-up
 article](sme2-cache-associativity.md) traces that cliff in detail.
@@ -432,9 +432,11 @@ article](sme2-cache-associativity.md) traces that cliff in detail.
 ### What packing costs
 
 Timing each phase of the full multiplication at N = 4096 (median of 15):
-packing A takes 3.8 ms and packing B 2.5 ms of an 88.5 ms call, about 7%
+packing A takes 3.8 ms and packing B 4.9 ms of a 91 ms call, about 10%
 together, and the compute takes 82 ms whatever B's original stride was:
-1,680 GFLOP/s, 85% of peak. At small N the copy shows: below N = 1024 the
+1,670 GFLOP/s, 85% of peak. Packing B is itself slowed by the 16 KiB
+stride it reads from; with rows padded to 16,512 B it takes 2.5 ms and
+the two copies 7% of the call. At small N the copy shows: below N = 1024 the
 unpacked kernels are faster (989 vs 835 GFLOP/s at N = 256), because the
 whole problem fits in L2 anyway. Packing is an investment that pays off once data stops fitting.
 
@@ -455,6 +457,56 @@ whole problem fits in L2 anyway. Packing is an investment that pays off once dat
   strips with zeros, so every FMOPA runs on full vectors with an all-true
   predicate; only the loads and stores of C into ZA are predicated at the
   matrix edges.
+
+## Correctness
+
+Every kernel in the repository, all four SME steps included, is checked
+by the test suite ([`tests/test_gemm.cpp`](https://github.com/vdeviatkov/hpc-math-core/blob/main/tests/test_gemm.cpp),
+run with `ctest`):
+
+- **Reference.** Each kernel's output is compared element by element with
+  `gemm_naive`, a plain triple loop. That reference is itself checked
+  against hand-computed products (a 2 × 2 case, a 2 × 3 by 3 × 2 case,
+  multiplication by the identity and by zero).
+- **Tolerance.** An element passes if `|C − C_ref| ≤ tol · (1 + |C_ref|)`,
+  with tol = 1e-4 for FP32 and 1e-10 for FP64: an absolute bound near
+  zero and a relative one for larger values. Inputs are uniform in
+  [−1, 1] with fixed seeds. C is filled with junk (123) before each call,
+  so a kernel that accumulates into C instead of overwriting it fails.
+- **Shapes.** 32 (M, K, N) shapes, each run in FP32 and in FP64:
+  - squares of 1–5, 7, 8, 13, 15–17, 31–33, 64, 100, 128 and 256: below,
+    at and just past the vector and tile widths;
+  - rectangular shapes with partial tiles in every dimension, such as
+    3 × 5 × 2, 17 × 33 × 15, 33 × 1 × 65 and 257 × 64 × 31;
+  - shapes that cross every cache block: K = 4113 crosses Kc = 2048
+    twice, so partial sums are reloaded into ZA; M = 1031 crosses Mc
+    (1024 in FP32, 512 in FP64); N = 4103 crosses Nc = 4096;
+  - empty matrices (M, K or N = 0).
+- **Edges.** Dimensions that are not multiples of the 32 × 32 micro-tile
+  (or 16 × 32 in FP64) take the zero-padded strips and predicated C
+  loads and stores of the edge path; the odd sizes above exercise them in
+  every dimension.
+- **Packing and layout.** Packing A is checked to be a pure bit move on
+  random bit patterns, NaN payloads, denormals and −0 included. B read in
+  place is checked with a leading dimension larger than N, junk in the
+  unused columns, and K across Kc.
+
+The test shapes are small enough to run in seconds. The large sizes
+benchmarked here are not compared element by element in the suite, but
+every code path they take (full and partial blocks, K split across Kc
+blocks) is exercised by the shapes above, and the phase-timing experiment
+checks each of its layouts against the packed driver before timing.
+
+**`-ffast-math`.** Tests are built with the same Release flags as the
+benchmarks, `-O3 -ffast-math`. Inside `gemm_sme` the arithmetic is SME
+intrinsics, and each element of C is accumulated over k in order, one
+FMOPA per k, across Kc blocks too; the packing is a bit move. The
+compiler's freedom to reorder floating-point arithmetic therefore applies
+to ordinary C++ code such as the reference loop, which is why the
+comparison uses a tolerance rather than exact equality. `-ffast-math` also
+lets the compiler assume there are no NaNs or infinities: the tests use
+finite inputs only, and propagation of NaN and infinity through the GEMM
+is neither tested nor guaranteed.
 
 ## Where it stands
 
@@ -488,8 +540,8 @@ step tables above.
 - KleidiAI uses the same 2 × 2-tile micro-kernel, written in assembly by
   Arm, and packs both operands, but has no cache blocking: it leads at
   N ≤ 1024 and falls to 1,019 GFLOP/s at N = 4096.
-- With all cores, Accelerate roughly doubles its one-thread throughput,
-  as two SME units predict.
+- With all cores, Accelerate roughly doubles its one-thread throughput
+  from N = 1024 up (1.9–2.0×), as two SME units predict.
 
 ## Takeaways
 
@@ -508,7 +560,7 @@ step tables above.
    it.
 4. **Pack both operands.** A must be transposed for the hardware; B is
    packed to make performance independent of the caller's layout. Together
-   the copies cost about 7% and remove a 3× cliff.
+   the copies cost 7–10% and remove a 3× cliff.
 
 ## Reproduce
 
