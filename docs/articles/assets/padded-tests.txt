@@ -1,0 +1,26 @@
+// blocked_driver with B rows ldb > N apart, as the BStride benchmarks run it:
+// both B paths must ignore the padding columns.
+template <typename T>
+void expect_padded_b_matches_naive(std::size_t M, std::size_t K, std::size_t N, std::size_t ldb) {
+    Matrix<T> A(M, K), B(K, N), Bpad(K, ldb), C_ref(M, N), C(M, N);
+    fill_random(A, 31);
+    fill_random(Bpad, 32);  // the padding columns hold junk too
+    for (std::size_t k = 0; k < K; ++k)
+        for (std::size_t j = 0; j < N; ++j)
+            B(k, j) = Bpad(k, j);
+    gemm_naive(A, B, C_ref);
+    C.fill(T{123});
+    sme_detail::blocked_driver<T, false>(A, Bpad.data(), ldb, C);
+    expect_near(C, C_ref, "in place, ldb=" + std::to_string(ldb));
+    C.fill(T{123});
+    sme_detail::blocked_driver<T, true>(A, Bpad.data(), ldb, C);
+    expect_near(C, C_ref, "packed, ldb=" + std::to_string(ldb));
+}
+
+TEST(GemmSme, PaddedBMatchesNaive) {
+    expect_padded_b_matches_naive<float>(70, 90, 50, 53);
+    expect_padded_b_matches_naive<float>(33, kSmeKc + 5, 65, 97);
+    expect_padded_b_matches_naive<double>(70, 90, 50, 53);
+    expect_padded_b_matches_naive<double>(33, kSmeKc + 5, 65, 97);
+}
+

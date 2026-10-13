@@ -1,0 +1,15 @@
+title: HPC Math Core
+description: Investigations in matrix kernels and memory performance
+url: https://vdeviatkov.github.io
+baseurl: /hpc-math-core
+markdown: kramdown
+highlighter: rouge
+kramdown:
+  input: GFM
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: article
+exclude:
+  - articles/assets/render_charts.py

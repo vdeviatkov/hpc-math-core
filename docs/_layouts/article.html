@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ page.title | default: site.title | escape }} — Vladyslav Deviatkov</title>
+  <meta name="description" content="{{ page.description | default: site.description | escape }}">
+  <link rel="canonical" href="{{ page.url | absolute_url }}">
+  <style>
+    :root { color-scheme: light; }
+    * { box-sizing: border-box; }
+    body { margin: 0; color: #202c38; background: #fff; font: 18px/1.75 system-ui, sans-serif; }
+    header, main, footer { max-width: 960px; margin: auto; padding: 24px; }
+    header { border-bottom: 1px solid #e0e5eb; font-size: 15px; display: flex; justify-content: space-between; gap: 20px; }
+    main { padding-top: 40px; }
+    h1 { font-size: clamp(32px, 5vw, 46px); line-height: 1.2; letter-spacing: -.025em; margin-top: 0; }
+    h2 { font-size: 28px; line-height: 1.35; margin-top: 52px; }
+    h3 { font-size: 22px; line-height: 1.4; margin-top: 32px; }
+    a { color: #185cac; text-underline-offset: 3px; }
+    img { max-width: 100%; height: auto; display: block; margin: 28px auto; }
+    pre { padding: 20px; background: #f3f5f8; border: 1px solid #e0e5eb; border-radius: 6px; overflow-x: auto; line-height: 1.6; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85em; }
+    p code, li code, td code { background: #f3f5f8; padding: 2px 4px; border-radius: 3px; }
+    table { border-collapse: collapse; font-size: 15px; width: 100%; display: block; overflow-x: auto; margin: 24px 0; }
+    th, td { padding: 10px 14px; border-bottom: 1px solid #dce2e8; white-space: nowrap; }
+    th { background: #f3f5f8; }
+    blockquote { border-left: 3px solid #185cac; margin-left: 0; padding-left: 20px; }
+    footer { border-top: 1px solid #e0e5eb; margin-top: 48px; color: #586574; font-size: 14px; }
+    @media (max-width: 600px) { body { font-size: 16px; } header, main, footer { padding: 18px; } h2 { font-size: 25px; } }
+  </style>
+</head>
+<body>
+  <header><a href="{{ '/' | relative_url }}">HPC Math Core</a><a href="https://github.com/vdeviatkov/hpc-math-core">Source on GitHub</a></header>
+  <main>{{ content }}</main>
+  <footer>Vladyslav Deviatkov · Engineering investigations · <a href="https://github.com/vdeviatkov">GitHub</a></footer>
+</body>
+</html>

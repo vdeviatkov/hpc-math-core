@@ -1,0 +1,36 @@
+#### SME: B row stride
+
+> **Command:** `./build/benchmarks/bench_gemm --benchmark_filter=BStride --benchmark_repetitions=3 --benchmark_enable_random_interleaving=true --benchmark_report_aggregates_only=true`
+
+The same blocked kernel with B read in place (`gemm_sme_blocked`) and packed
+(`gemm_sme`); GFLOP/s, median of 3 interleaved runs, load average ~5. Why a
+power-of-two row stride is expected to hurt: [sme.hpp](../src/gemm/sme.hpp),
+"Packing". First, N around powers of two (all matrices square, B row stride
+= N·sizeof(T); the f64 strides are twice the f32 ones):
+
+| N | B row stride (f32) | f32 in place | f32 packed | diff | f64 in place | f64 packed | diff |
+|---|---|---|---|---|---|---|---|
+| 1984 | 7,936 B | 1,565 | 1,517 | +3% | 407 | 418 | −3% |
+| 2016 | 8,064 B | 1,556 | 1,541 | +1% | 410 | 419 | −2% |
+| **2048** | **2¹³ B** | 1,196 | 1,432 | **−17%** | 281 | 407 | **−31%** |
+| 2080 | 8,320 B | 1,493 | 1,483 | +1% | 398 | 404 | −2% |
+| 4000 | 16,000 B | 1,365 | 1,406 | −3% | 380 | 409 | −7% |
+| 4032 | 16,128 B | 1,354 | 1,399 | −3% | 380 | 408 | −7% |
+| 4064 | 16,256 B | 1,303 | 1,399 | −7% | 364 | 411 | −11% |
+| **4096** | **2¹⁴ B** | 608 | 1,344 | **−55%** | 268 | 398 | **−33%** |
+| 4128 | 16,512 B | 1,260 | 1,304 | −3% | 362 | 395 | −8% |
+
+Then the 4096×4096 problem with B in a wider buffer, so only its row stride
+(ldb elements) changes and the work stays the same:
+
+| ldb | B row stride (f32) | f32 in place | f32 packed | diff | f64 in place | f64 packed | diff |
+|---|---|---|---|---|---|---|---|
+| **4096** | **2¹⁴ B** | 608 | 1,344 | **−55%** | 268 | 398 | **−33%** |
+| 4097 | 16,388 B | 1,145 | 1,365 | −16% | 367 | 407 | −10% |
+| 4128 (+128 B) | 16,512 B | 1,339 | 1,386 | −3% | 376 | 407 | −8% |
+| 4160 (+256 B) | 16,640 B | 1,332 | 1,390 | −4% | 376 | 406 | −7% |
+
+- The collapse is confined to the exact powers of two; 32 columns either side, in place is within 11% of packed.
+- Padding each row by one cache line (ldb = 4128) recovers almost all of the loss with the same N, work and pages touched, so the loss follows the byte stride. That is what cache-set conflicts predict.
+- ldb = 4097 is a control, not a fix: its 32-float row segments are no longer 128 B aligned, so each spans two cache lines, and the −16% mixes that cost with the stride effect.
+- Not established: which cache level is responsible. A pointer chase from a P-core keeps only 8 of 1,024 lines spaced 16 KB apart in L1 and fewer than 1,024 in L2 (24 ns per load, against 0.78 ns at 128 B apart), but the SME unit reads through L2 and its own path is not visible to that test; no hardware counters were collected. Nor is the cause of the 3–11% that in place still loses away from powers of two (TLB reach, prefetching and address footprint were not separated).
