@@ -11,5 +11,3 @@ defaults:
       path: ""
     values:
       layout: article
-exclude:
-  - articles/assets/render_charts.py
