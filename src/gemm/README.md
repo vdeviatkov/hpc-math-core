@@ -20,7 +20,7 @@ summary of every family's cache technique and key intrinsics side by side.
 | `avx512.hpp` | `gemm_avx512_naive` · `gemm_avx512_reordered` · `gemm_avx512_blocked` | `__AVX512F__` |
 | `neon.hpp` | `gemm_neon_naive` · `gemm_neon_reordered` · `gemm_neon_blocked` | `__ARM_NEON` |
 | `sve.hpp` | `gemm_sve_naive` · `gemm_sve_reordered` · `gemm_sve_blocked` | `__ARM_FEATURE_SVE` |
-| `sme.hpp` | `gemm_sme` (packed, cache-blocked, all ZA tiles, SME2 loads) — **verified, Apple M4 Max** | `__ARM_FEATURE_SME` + `__ARM_FEATURE_SME2` (+ `-DHPC_ENABLE_SME=ON`) |
+| `sme.hpp` | `gemm_sme_1tile` (one ZA tile) · `gemm_sme_tiles` (all ZA tiles, B in place) · `gemm_sme_blocked` (+ cache blocking, B in place) · `gemm_sme` (packed, cache-blocked, all ZA tiles, SME2 loads) — **verified, Apple M4 Max** | `__ARM_FEATURE_SME` + `__ARM_FEATURE_SME2` (+ `-DHPC_ENABLE_SME=ON`) |
 | `amx.hpp` | `gemm_amx` — **verified, Apple M4 Max, via Accelerate.framework** | `HPC_HAS_AMX` (Apple + Accelerate.framework; on by default) |
 | `kleidiai.hpp` | `gemm_kleidiai` (f32 only) — reference, Arm KleidiAI SME2 `FMOPA` micro-kernel | `HPC_HAS_KLEIDIAI` (`HPC_ENABLE_KLEIDIAI=ON`, default when SME works; needs SME2) |
 | `prefetch.hpp` | `gemm_blocked_prefetch` · `gemm_avx2_blocked_prefetch` · `gemm_avx512_blocked_prefetch` · `gemm_neon_blocked_prefetch` · `gemm_sve_blocked_prefetch` | per ISA |
@@ -764,12 +764,64 @@ flag) with `-mcpu=apple-m4` silently drops the SME features, so
 so the CMake SME check compiles and runs a probe program
 (`check_cxx_source_runs`).
 
+### Four kernels
+
+| Kernel | ZA tiles | A | B | Cache blocking |
+|---|---|---|---|---|
+| `gemm_sme_1tile` | 1 | packed strips | read in place | none |
+| `gemm_sme_tiles` | all (2×2 f32 / 2×4 f64) | packed strips | read in place | none |
+| `gemm_sme_blocked` | all | packed strips | read in place | GotoBLAS |
+| `gemm_sme` | all | packed strips | packed strips | GotoBLAS |
+
+Every kernel packs A, because FMOPA needs a column of A as one vector and
+streaming mode has no gather loads. The strips make each k step's column
+contiguous, which also keeps A clear of the cache-set conflicts described
+in [Why A and B are packed](#why-a-and-b-are-packed). So each step changes
+one thing: the number of tiles, then blocking, then packing B. The last
+three share one macro-kernel, which reads B either from packed strips or
+in place. `gemm_sme_blocked` is `gemm_sme` without `pack_b`.
+
+One M4 Max core, GFLOP/s, median of 3 runs (load average ~5):
+
+| f32 | N=256 | 512 | 1024 | 2048 | 4000 | 4096 |
+|---|---|---|---|---|---|---|
+| `gemm_sme_1tile` | 420 | 472 | 474 | 225 | 125 | 131 |
+| `gemm_sme_tiles` | **976** | **1,461** | 1,381 | 624 | 429 | 445 |
+| `gemm_sme_blocked` | 911 | 1,400 | 1,401 | 1,249 | 1,373 | 597 |
+| `gemm_sme` | 752 | 1,283 | **1,421** | **1,438** | **1,419** | **1,372** |
+
+| f64 | N=256 | 512 | 1024 | 2048 | 4000 | 4096 |
+|---|---|---|---|---|---|---|
+| `gemm_sme_1tile` | 121 | 121 | 110 | 40 | 42 | 37 |
+| `gemm_sme_tiles` | **350** | 420 | 403 | 232 | 210 | 208 |
+| `gemm_sme_blocked` | 342 | **422** | **442** | 284 | 373 | 271 |
+| `gemm_sme` | 315 | 397 | 414 | **406** | **410** | **403** |
+
+- One tile → all tiles: 2.3–3.4× f32, 2.9–5.8× f64. With one tile, every
+  FMOPA waits for the previous one's result (design choice 1 below). At
+  large N the one-tile kernel is also bandwidth bound, since each vector
+  it loads feeds only one FMOPA.
+- All tiles → blocked: 2.0× f32 at N=2048, 3.2× at N=4000. Without
+  blocking, all of A is re-read for every B strip and no longer stays
+  cached. N=4000 is as slow as N=4096, so this is not a stride effect;
+  capacity is the likely cause.
+- Blocked → `gemm_sme`: within 3% at N=4000, but 2.3× f32 / 1.5× f64 at
+  N=4096 and 1.15× f32 at N=2048. The loss follows the power-of-two
+  distance between unpacked B rows and is consistent with cache-set
+  conflicts; packing B removes it
+  ([Why A and B are packed](#why-a-and-b-are-packed), with a stride sweep
+  and an ldb-padding test).
+- At N ≤ 512 the kernels without `pack_b` are faster (+30% f32 at N=256
+  for `gemm_sme_tiles`): everything fits in cache anyway, and `gemm_sme`
+  pays for copying B.
+
 ### The kernel: `gemm_sme`
 
-A straightforward SME kernel — one ZA tile, A packed per row-panel, B read
-in place — peaks at 386 GFLOP/s f32 / 116 GFLOP/s f64 on one M4 Max core
-and falls to 180 GFLOP/s f32 at N=4096. Accelerate runs at ~1,650 / ~410 on
-the same core. `gemm_sme` closes most of that gap with four design choices:
+`gemm_sme_1tile` peaks at ~470 GFLOP/s f32 / ~120 GFLOP/s f64 on one M4 Max
+core; Accelerate runs at ~1,650 / ~410 on the same core. `gemm_sme` closes
+most of that gap with four design choices. `gemm_sme_tiles` already has 1,
+3 and 4; `gemm_sme_blocked` adds the blocking of 2, and `gemm_sme` the
+packing of B:
 
 1. All ZA tiles in use. ZA holds 4 f32 tiles (16×16 each at 512-bit SVL)
 or 8 f64 tiles (8×8). With one tile, every `FMOPA` has to wait for the
@@ -835,28 +887,15 @@ B is packed to keep it cached. A row segment `B(k, j..j+31)` is already
 contiguous, so FMOPA could read B in place. But consecutive k rows are then
 N × sizeof(T) bytes apart, and one B strip (kc × nr = 1024 × 32 floats =
 128 KB) is reused by every A strip of the block — 4 per Mc block, and again
-for each of the M/Mc blocks. Measured with B read in place (same kernel,
-only the B source changed; M4 Max, f32, GFLOP/s):
+for each of the M/Mc blocks.
 
-| N | stride between B rows | packed B | B read in place |
-|---|---|---|---|
-| 512 | 2 KB | 1,276 | 1,350 (+6%) |
-| 1024 | 4 KB | 1,404 | 1,372 (−2%) |
-| 2016 | 8,064 B | 1,528 | 1,525 (same) |
-| 2048 | 8 KB = 2¹³ B | 1,427 | 1,255 (−12%) |
-| 4000 | 16,000 B | 1,367 | 1,265 (−7%) |
-| 4096 | 16 KB = 2¹⁴ B | 1,316 | 589 (−55%) |
-
-N=4000 and N=4096 touch almost the same number of memory pages, yet lose 7%
-and 55%. The large loss comes from the power-of-two stride. A cache maps
-each address to a set using bits in the middle of the address, and each set
-holds only a few lines (its ways). Adding 2¹⁴ to an address never changes
-its low 14 bits, so at N=4096 all 1,024 rows of the strip fall into the
-same set or a few sets, and only a few of them can be cached at once — the
-128 KB strip keeps evicting itself, although it is far smaller than the
-cache. At N=4000 the stride shifts the set bits on every row and the strip
-fits; the remaining −7% is consistent with the cost of touching ~1,000
-different 16 KB pages instead of 8 (not measured directly).
+At a power-of-two stride this appears to cause severe cache-set conflicts.
+A cache maps each address to a set using bits in the middle of the
+address, and each set holds only a few lines (its ways). Adding 2¹⁴ to an
+address never changes its low 14 bits, so at N=4096 all 1,024 rows of the
+strip map to the same set or a few sets, and only a few of them can be
+cached at once — the 128 KB strip keeps evicting itself, although it is far
+smaller than the cache.
 
 ```
 B read in place, N=4096:              packed B:
@@ -865,11 +904,70 @@ row k → base + k·16 KB                row k → base + k·128 B
         only a few rows fit at once           the whole strip fits
 ```
 
-Packing copies the strip into one contiguous buffer, so its rows fill
-consecutive cache sets whatever N is. The copy is not free: at N=512, where
-the cache holds everything anyway, reading in place is 6% faster, and at
-N=1024 the two are even. Packing pays off at large N, and most at
-power-of-two N.
+What removes the problem is not the strip width of 32 (that comes from the
+ZA tile shape) but replacing a large, possibly pathological stride with a
+compact contiguous layout: packed rows are 128 B apart and fill consecutive
+sets whatever N is.
+
+#### Evidence
+
+Same blocked kernel, B read in place (`gemm_sme_blocked`) vs packed
+(`gemm_sme`), M4 Max, one core, GFLOP/s, median of 3 interleaved runs
+(load average ~5). Reproduce with the `BStride` benchmarks in `bench_gemm`:
+
+```bash
+./build/benchmarks/bench_gemm --benchmark_filter=BStride --benchmark_repetitions=3 \
+    --benchmark_enable_random_interleaving=true --benchmark_report_aggregates_only=true
+```
+
+First, N varied around powers of two:
+
+| N | B row stride (f32) | f32 in place | f32 packed | diff | f64 in place | f64 packed | diff |
+|---|---|---|---|---|---|---|---|
+| 1984 | 7,936 B | 1,565 | 1,517 | +3% | 407 | 418 | −3% |
+| 2016 | 8,064 B | 1,556 | 1,541 | +1% | 410 | 419 | −2% |
+| **2048** | **2¹³ B** | 1,196 | 1,432 | **−17%** | 281 | 407 | **−31%** |
+| 2080 | 8,320 B | 1,493 | 1,483 | +1% | 398 | 404 | −2% |
+| 4000 | 16,000 B | 1,365 | 1,406 | −3% | 380 | 409 | −7% |
+| 4032 | 16,128 B | 1,354 | 1,399 | −3% | 380 | 408 | −7% |
+| 4064 | 16,256 B | 1,303 | 1,399 | −7% | 364 | 411 | −11% |
+| **4096** | **2¹⁴ B** | 608 | 1,344 | **−55%** | 268 | 398 | **−33%** |
+| 4128 | 16,512 B | 1,260 | 1,304 | −3% | 362 | 395 | −8% |
+
+(f64 strides are twice the f32 ones: 2¹⁴ B at N=2048, 2¹⁵ B at N=4096.)
+
+The collapse is confined to the exact power-of-two sizes; 32 columns either
+side, in place is within 11% of packed. Then the same logical 4096×4096
+problem with B stored in a wider buffer, so only its row stride (ldb)
+changes and the arithmetic stays identical:
+
+| ldb | B row stride (f32) | f32 in place | f32 packed | diff | f64 in place | f64 packed | diff |
+|---|---|---|---|---|---|---|---|
+| **4096** | **2¹⁴ B** | 608 | 1,344 | **−55%** | 268 | 398 | **−33%** |
+| 4097 | 16,388 B | 1,145 | 1,365 | −16% | 367 | 407 | −10% |
+| 4128 (+128 B) | 16,512 B | 1,339 | 1,386 | −3% | 376 | 407 | −8% |
+| 4160 (+256 B) | 16,640 B | 1,332 | 1,390 | −4% | 376 | 406 | −7% |
+
+Padding each row by one cache line (ldb = 4128) recovers almost all of the
+loss without changing the problem. ldb = 4097 is a control, not a fix: its
+32-float row segments are no longer 128 B aligned, so each one spans two
+cache lines, and the −16% mixes that cost with the remaining stride effect.
+
+What this does and does not show:
+
+- The loss depends on the exact byte stride between B rows, not on N, the
+  amount of work or the number of pages touched (ldb = 4128 touches as many
+  pages as 4096). That is what set conflicts predict.
+- It does not show which cache level is responsible. A pointer chase from a
+  core (128 B lines, random order) keeps only 8 lines 16 KB apart in L1 and
+  fewer than 1,024 in L2, but on M4 the SME unit reads through L2 and
+  its own path is not visible to that test. No hardware-counter data was
+  collected.
+- Packing is not free and does not remove every other effect: away from
+  powers of two, in place stays 3–11% behind packed at large N (TLB reach,
+  prefetching and the larger address footprint are all candidates; they
+  were not separated), and at N ≤ 2080 in place is sometimes up to 3% faster
+  for f32 because it skips the copy.
 
 Edges: packing zero-pads partial strips, so FMOPAs always run with an
 all-true predicate. Only the C transfers into and out of ZA are predicated.

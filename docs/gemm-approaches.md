@@ -99,8 +99,10 @@ class of operation as CUDA's `wmma::mma_sync` or Apple AMX below. One
 hardware constraint shapes the kernel: gather-load intrinsics are illegal
 inside SME's required "streaming mode," so the `A` column vector must be
 packed rather than gathered. `gemm_sme` packs both A and B outside
-streaming mode and keeps all ZA tiles busy (2×2 f32 / 2×4 f64). Full
-writeup in `sme.hpp`'s file header.
+streaming mode and keeps all ZA tiles busy (2×2 f32 / 2×4 f64);
+`gemm_sme_1tile` (one tile), `gemm_sme_tiles` (all tiles, B unpacked, no
+blocking) and `gemm_sme_blocked` (blocking, B unpacked) are the steps
+before it. Full writeup in `sme.hpp`'s file header.
 
 Apple AMX has no public intrinsics at all. Unlike every other family
 here, there's no ACLE-style header to include — Apple's AMX coprocessor is

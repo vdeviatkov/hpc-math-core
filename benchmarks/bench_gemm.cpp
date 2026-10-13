@@ -28,6 +28,7 @@
 
 #include <cstddef>
 #include <random>
+#include <string>
 #include <type_traits>
 
 #include "gemm/avx2.hpp"
@@ -612,10 +613,15 @@ BENCHMARK(BM_SveBlocked<1024, float>)->Unit(benchmark::kMicrosecond)->Name("SveB
 BENCHMARK(BM_SveBlocked<4096, float>)->Unit(benchmark::kMicrosecond)->Name("SveBlocked/f32/N=4096");
 
 // ============================================================================
-// SME (Scalable Matrix Extension) benchmark
-// On SME hardware (Apple M4/M4 Pro/M4 Max with -DHPC_ENABLE_SME=ON) this is
-// the packed, cache-blocked, all-ZA-tiles outer-product kernel — see
-// src/gemm/sme.hpp. Elsewhere it reports SKIPPED.
+// SME (Scalable Matrix Extension) benchmarks
+// On SME hardware (Apple M4/M4 Pro/M4 Max with -DHPC_ENABLE_SME=ON) these
+// are the four steps of src/gemm/sme.hpp; elsewhere they report SKIPPED.
+//   Sme1Tile    one ZA tile, A packed, B in place     (FMOPA latency bound)
+//   SmeTiles    all ZA tiles, A packed, B in place    (no blocking)
+//   SmeBlocked  + GotoBLAS blocking, B still in place (power-of-two stride)
+//   Sme         + packed B
+// N=4000 is a non-power-of-two control next to N=4096: SmeTiles is equally
+// slow at both, SmeBlocked only at N=4096 (B row stride of 2^14 bytes).
 //
 // Single-threaded. The fair library comparisons are Accelerate with
 // VECLIB_MAXIMUM_THREADS=1 and KleidiAI (always single-threaded).
@@ -625,33 +631,128 @@ BENCHMARK(BM_SveBlocked<4096, float>)->Unit(benchmark::kMicrosecond)->Name("SveB
 //   512-bit SVL: svl=16 (f32) / svl=8 (f64)  ← Apple M4/M4 Pro/M4 Max
 // ============================================================================
 
-/**
- * @brief Benchmark gemm_sme<T> — 2×2 za32 / 2×4 za64 tiles, packed A and B.
- */
+template <typename T>
+static void sme_counters([[maybe_unused]] benchmark::State& s) {
+#if HPC_HAS_SME
+    s.counters["svl"] = static_cast<double>((sizeof(T) == 4) ? svcntsw() : svcntsd());
+#endif
+}
+
+/** @brief Benchmark gemm_sme_1tile<T> — one ZA tile. */
+template <std::size_t N, typename T = double>
+static void BM_Sme1Tile(benchmark::State& state) {
+    run_gemm<N, T, kHaveSme>(
+        state, kNoSme, [](auto& A, auto& B, auto& C) { hpc::gemm::gemm_sme_1tile(A, B, C); },
+        sme_counters<T>);
+}
+
+/** @brief Benchmark gemm_sme_tiles<T> — all ZA tiles, B read in place. */
+template <std::size_t N, typename T = double>
+static void BM_SmeTiles(benchmark::State& state) {
+    run_gemm<N, T, kHaveSme>(
+        state, kNoSme, [](auto& A, auto& B, auto& C) { hpc::gemm::gemm_sme_tiles(A, B, C); },
+        sme_counters<T>);
+}
+
+/** @brief Benchmark gemm_sme_blocked<T> — all ZA tiles, cache blocking, B in place. */
+template <std::size_t N, typename T = double>
+static void BM_SmeBlocked(benchmark::State& state) {
+    run_gemm<N, T, kHaveSme>(
+        state, kNoSme, [](auto& A, auto& B, auto& C) { hpc::gemm::gemm_sme_blocked(A, B, C); },
+        sme_counters<T>);
+}
+
+/** @brief Benchmark gemm_sme<T> — 2×2 za32 / 2×4 za64 tiles, packed A and B. */
 template <std::size_t N, typename T = double>
 static void BM_Sme(benchmark::State& state) {
     run_gemm<N, T, kHaveSme>(
-        state, kNoSme,
-        [](auto& A, auto& B, auto& C) { hpc::gemm::gemm_sme(A, B, C); },
-        []([[maybe_unused]] benchmark::State& s) {
-#if HPC_HAS_SME
-            s.counters["svl"] = static_cast<double>((sizeof(T) == 4) ? svcntsw() : svcntsd());
-#endif
-        });
+        state, kNoSme, [](auto& A, auto& B, auto& C) { hpc::gemm::gemm_sme(A, B, C); },
+        sme_counters<T>);
 }
 
-BENCHMARK(BM_Sme<64>)->Unit(benchmark::kMicrosecond)->Name("Sme/f64/N=64");
-BENCHMARK(BM_Sme<256>)->Unit(benchmark::kMicrosecond)->Name("Sme/f64/N=256");
-BENCHMARK(BM_Sme<512>)->Unit(benchmark::kMicrosecond)->Name("Sme/f64/N=512");
-BENCHMARK(BM_Sme<1024>)->Unit(benchmark::kMicrosecond)->Name("Sme/f64/N=1024");
-BENCHMARK(BM_Sme<2048>)->Unit(benchmark::kMicrosecond)->Name("Sme/f64/N=2048");
-BENCHMARK(BM_Sme<4096>)->Unit(benchmark::kMicrosecond)->Name("Sme/f64/N=4096");
-BENCHMARK(BM_Sme<64, float>)->Unit(benchmark::kMicrosecond)->Name("Sme/f32/N=64");
-BENCHMARK(BM_Sme<256, float>)->Unit(benchmark::kMicrosecond)->Name("Sme/f32/N=256");
-BENCHMARK(BM_Sme<512, float>)->Unit(benchmark::kMicrosecond)->Name("Sme/f32/N=512");
-BENCHMARK(BM_Sme<1024, float>)->Unit(benchmark::kMicrosecond)->Name("Sme/f32/N=1024");
-BENCHMARK(BM_Sme<2048, float>)->Unit(benchmark::kMicrosecond)->Name("Sme/f32/N=2048");
-BENCHMARK(BM_Sme<4096, float>)->Unit(benchmark::kMicrosecond)->Name("Sme/f32/N=4096");
+#define HPC_SME_BENCH(BM, NAME, T, TN)                                                        \
+    BENCHMARK(BM<64, T>)->Unit(benchmark::kMicrosecond)->Name(NAME "/" TN "/N=64");     \
+    BENCHMARK(BM<256, T>)->Unit(benchmark::kMicrosecond)->Name(NAME "/" TN "/N=256");   \
+    BENCHMARK(BM<512, T>)->Unit(benchmark::kMicrosecond)->Name(NAME "/" TN "/N=512");   \
+    BENCHMARK(BM<1024, T>)->Unit(benchmark::kMicrosecond)->Name(NAME "/" TN "/N=1024"); \
+    BENCHMARK(BM<2048, T>)->Unit(benchmark::kMicrosecond)->Name(NAME "/" TN "/N=2048"); \
+    BENCHMARK(BM<4000, T>)->Unit(benchmark::kMicrosecond)->Name(NAME "/" TN "/N=4000"); \
+    BENCHMARK(BM<4096, T>)->Unit(benchmark::kMicrosecond)->Name(NAME "/" TN "/N=4096")
+
+HPC_SME_BENCH(BM_Sme1Tile, "Sme1Tile", double, "f64");
+HPC_SME_BENCH(BM_Sme1Tile, "Sme1Tile", float, "f32");
+HPC_SME_BENCH(BM_SmeTiles, "SmeTiles", double, "f64");
+HPC_SME_BENCH(BM_SmeTiles, "SmeTiles", float, "f32");
+HPC_SME_BENCH(BM_SmeBlocked, "SmeBlocked", double, "f64");
+HPC_SME_BENCH(BM_SmeBlocked, "SmeBlocked", float, "f32");
+HPC_SME_BENCH(BM_Sme, "Sme", double, "f64");
+HPC_SME_BENCH(BM_Sme, "Sme", float, "f32");
+#undef HPC_SME_BENCH
+
+// ============================================================================
+// SME B-stride experiment
+//
+// gemm_sme_blocked (B read in place) vs gemm_sme (B packed) as a function of
+// the byte distance between B rows. Both run sme_detail::blocked_driver; only
+// the B source differs. B is stored in an N×ldb buffer of which only the
+// first N columns are used, so B(k, j) = B[k·ldb + j]:
+//
+//   1. N swept around 2048 and 4096 with ldb = N. A collapse confined to the
+//      exact powers of two points at the row stride, not at N.
+//   2. The same 4096×4096 problem with ldb = 4096, 4097, 4128, 4160: the
+//      arithmetic and the pages touched stay the same, only the stride
+//      changes. ldb = 4097 is a misalignment control: its 32-float row
+//      segments are no longer 128 B aligned and each spans two cache lines.
+//
+// Names start with "BStride" (not "Sme…") so that --benchmark_filter=Sme
+// does not pick up these 48 long runs. Run with
+//   ./build/benchmarks/bench_gemm --benchmark_filter=BStride --benchmark_repetitions=3 \
+//       --benchmark_enable_random_interleaving=true --benchmark_report_aggregates_only=true
+// Results: src/gemm/README.md, "Why A and B are packed".
+// ============================================================================
+
+#if HPC_HAS_SME
+template <typename T, bool PackB>
+static void BM_BStride(benchmark::State& state, std::size_t N, std::size_t ldb) {
+    hpc::Matrix<T> A(N, N), B(N, ldb), C(N, N);  // B: N rows of ldb elements
+    fill_random(A, 1);
+    fill_random(B, 2);
+    for (auto _ : state) {
+        hpc::gemm::sme_detail::blocked_driver<T, PackB>(A, B.data(), ldb, C);
+        benchmark::DoNotOptimize(C.data());
+        benchmark::ClobberMemory();
+    }
+    state.counters["GFLOP/s"] = benchmark::Counter(
+        flops(N), benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::OneK::kIs1000);
+    state.counters["stride_B"] = static_cast<double>(ldb * sizeof(T));  // bytes between B rows
+}
+#endif
+
+template <typename T>
+static void register_bstride() {
+    struct Cfg {
+        std::size_t N, ldb;
+    };
+    const Cfg cfgs[] = {{1984, 1984}, {2016, 2016}, {2048, 2048}, {2080, 2080},
+                        {4000, 4000}, {4032, 4032}, {4064, 4064}, {4096, 4096},
+                        {4128, 4128}, {4096, 4097}, {4096, 4128}, {4096, 4160}};
+    for (const auto& c : cfgs) {
+        const std::string name = std::string("BStride/") + precision_label<T>() + "/N=" +
+                                 std::to_string(c.N) + "/ldb=" + std::to_string(c.ldb);
+#if HPC_HAS_SME
+        benchmark::RegisterBenchmark((name + "/in_place").c_str(), BM_BStride<T, false>, c.N, c.ldb)
+            ->Unit(benchmark::kMillisecond);
+        benchmark::RegisterBenchmark((name + "/packed").c_str(), BM_BStride<T, true>, c.N, c.ldb)
+            ->Unit(benchmark::kMillisecond);
+#else
+        for (const char* v : {"/in_place", "/packed"})
+            benchmark::RegisterBenchmark((name + v).c_str(),
+                                         [](benchmark::State& s) { s.SkipWithMessage(kNoSme); });
+#endif
+    }
+}
+
+static const bool kBStrideRegistered = (register_bstride<float>(), register_bstride<double>(), true);
 
 // ============================================================================
 // AMX (Apple Matrix coprocessor, via Accelerate.framework) benchmark

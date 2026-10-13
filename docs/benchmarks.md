@@ -73,9 +73,9 @@ use CPU time instead, which is unaffected.
 ### ARM SME2 (`-DHPC_ENABLE_SME=ON`)
 
 > **SVL (streaming vector length):** 16 f32 / 8 f64 elements — reported live via the `svl` benchmark counter
-> **Command:** `./build/benchmarks/bench_gemm --benchmark_filter=Sme`
+> **Command:** `./build/benchmarks/bench_gemm --benchmark_filter=Sme` (also runs `Sme1Tile`, `SmeTiles` and `SmeBlocked`)
 
-SME computes GEMM with outer products rather than per-lane FMA: one `FMOPA` adds a whole SVL×SVL outer product into the 2-D accumulator ZA, like a GPU Tensor Core. `gemm_sme` packs A and B outside streaming mode, keeps all ZA tiles busy (2×2 za32 tiles for f32, a 32×32 C block; 2×4 za64 for f64, a 16×32 block) and uses SME2 multi-vector loads. The design, and a single-tile baseline kernel (peak 386 G/s f32 / 116 G/s f64), are described in [src/gemm/README.md](../src/gemm/README.md#algorithm-10--arm-sme2-scalable-matrix-extension).
+SME computes GEMM with outer products rather than per-lane FMA: one `FMOPA` adds a whole SVL×SVL outer product into the 2-D accumulator ZA, like a GPU Tensor Core. `gemm_sme` packs A and B outside streaming mode, keeps all ZA tiles busy (2×2 za32 tiles for f32, a 32×32 C block; 2×4 za64 for f64, a 16×32 block) and uses SME2 multi-vector loads. Three simpler kernels show what each step adds: `gemm_sme_1tile` (one ZA tile, B read in place, no blocking), `gemm_sme_tiles` (all ZA tiles, B read in place, no blocking) and `gemm_sme_blocked` (`gemm_sme` without packing B). The design is described in [src/gemm/README.md](../src/gemm/README.md#algorithm-10--arm-sme2-scalable-matrix-extension).
 
 > **Load Average during this run:** 10–16 on 16 cores. Treat ±5% as noise.
 
@@ -84,7 +84,20 @@ SME computes GEMM with outer products rather than per-lane FMA: one `FMOPA` adds
 | `gemm_sme` f64 | 84 | 315 | 397 | **410** | 407 | 404 |
 | `gemm_sme` f32 | 278 | 753 | 1,283 | **1,450** | 1,417 | 1,345 |
 
-- 3.8× f32 / 3.5× f64 over a single-tile kernel at N=1024, with no drop at large N: 1,345 vs 180 G/s f32 at N=4096. The biggest single factor is using all ZA tiles. With one tile, every FMOPA waits on the previous one's accumulator, so the loop runs at FMOPA latency.
+- The four SME steps, from a separate run (load average ~5, median of 3):
+
+  | Kernel | N=256 | N=512 | N=1024 | N=2048 | N=4000 | N=4096 |
+  |---|---|---|---|---|---|---|
+  | `gemm_sme_1tile` f32 | 420 | 472 | 474 | 225 | 125 | 131 |
+  | `gemm_sme_tiles` f32 | 976 | 1,461 | 1,381 | 624 | 429 | 445 |
+  | `gemm_sme_blocked` f32 | 911 | 1,400 | 1,401 | 1,249 | 1,373 | 597 |
+  | `gemm_sme` f32 | 752 | 1,283 | 1,421 | 1,438 | 1,419 | 1,372 |
+  | `gemm_sme_1tile` f64 | 121 | 121 | 110 | 40 | 42 | 37 |
+  | `gemm_sme_tiles` f64 | 350 | 420 | 403 | 232 | 210 | 208 |
+  | `gemm_sme_blocked` f64 | 342 | 422 | 442 | 284 | 373 | 271 |
+  | `gemm_sme` f64 | 315 | 397 | 414 | 406 | 410 | 403 |
+
+  Using all ZA tiles gives 2.3–3.4× f32: with one tile, every FMOPA waits on the previous one's accumulator, so the loop runs at FMOPA latency. Without cache blocking, `gemm_sme_tiles` falls off from N=2048 because all of A is re-read for every B strip; N=4000 is as slow as N=4096, so that is not a stride effect (likely capacity). Blocking recovers it at N=4000 (3.2×), but `gemm_sme_blocked` still drops to 597 at N=4096: the rows of an unpacked B strip are 16 KB apart, and the loss is consistent with cache-set conflicts — it disappears when only B's row stride is padded by one cache line ([stride sweep and ldb test](../src/gemm/README.md#why-a-and-b-are-packed), `bench_gemm --benchmark_filter=BStride`). Packing B (`gemm_sme`) removes it, 2.3× at N=4096. Below N=1024 the kernels without B packing are faster, because they skip the copy.
 - One compiler pitfall costs ~5×. A streaming helper function without a ZA attribute (`__arm_preserves("za")` / `__arm_inout("za")`) is "private-ZA". Clang won't inline it into a ZA-owning caller. Instead it emits a lazy ZA save (`TPIDR2` + `smstart za`) around every call, and inside the k loop that drops throughput from ~1,290 to ~270 G/s.
 - f64 is ~¼ of f32, which matches the hardware: an f64 FMOPA covers 8×8 elements against 16×16 for f32.
 

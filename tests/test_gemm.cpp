@@ -34,6 +34,7 @@
 #include <random>
 #include <string>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "gemm/avx2.hpp"
@@ -1310,26 +1311,37 @@ INSTANTIATE_TEST_SUITE_P(Sizes, GemmSveBlockedCrossValidation,
 #if HPC_HAS_SME
 
 // ===========================================================================
-// 19. SME  (packed A+B, GotoBLAS cache blocking, all ZA tiles: 2×2 za32 for
-//     f32, 2×4 za64 for f64 — see gemm/sme.hpp)
+// 19. SME  (gemm_sme_1tile: one ZA tile; gemm_sme_tiles: all ZA tiles, B in
+//     place; gemm_sme_blocked: + GotoBLAS cache blocking, B still in place;
+//     gemm_sme: + packed B — see gemm/sme.hpp)
 // ===========================================================================
 
-/// gemm_sme vs gemm_naive on an M×K·K×N problem. C is pre-filled with junk
-/// to prove the kernel overwrites (rather than accumulates into) C.
+/// All four SME kernels vs gemm_naive on an M×K·K×N problem. C is
+/// pre-filled with junk to prove each kernel overwrites (rather than
+/// accumulates into) C.
 template <typename T>
 static void expect_sme_matches_naive(std::size_t M, std::size_t K, std::size_t N, unsigned seed) {
+    using Kernel = void (*)(const hpc::Matrix<T>&, const hpc::Matrix<T>&, hpc::Matrix<T>&);
+    const std::pair<const char*, Kernel> kernels[] = {
+        {"gemm_sme_1tile", &hpc::gemm::gemm_sme_1tile<T>},
+        {"gemm_sme_tiles", &hpc::gemm::gemm_sme_tiles<T>},
+        {"gemm_sme_blocked", &hpc::gemm::gemm_sme_blocked<T>},
+        {"gemm_sme", &hpc::gemm::gemm_sme<T>},
+    };
     hpc::Matrix<T> A(M, K), B(K, N), C_ref(M, N), C_sme(M, N);
     fill_random(A, seed, T{-1}, T{1});
     fill_random(B, seed + 1, T{-1}, T{1});
-    C_sme.fill(T{123});
     hpc::gemm::gemm_naive(A, B, C_ref);
-    hpc::gemm::gemm_sme(A, B, C_sme);
     const T tol = sizeof(T) == 4 ? T(1e-4) : T(1e-10);
-    for (std::size_t i = 0; i < M; ++i)
-        for (std::size_t j = 0; j < N; ++j)
-            ASSERT_NEAR(C_sme(i, j), C_ref(i, j), tol * (T{1} + std::abs(C_ref(i, j))))
-                << (sizeof(T) == 4 ? "f32 " : "f64 ") << M << "x" << K << "x" << N << " (" << i
-                << "," << j << ")";
+    for (const auto& [name, kernel] : kernels) {
+        C_sme.fill(T{123});
+        kernel(A, B, C_sme);
+        for (std::size_t i = 0; i < M; ++i)
+            for (std::size_t j = 0; j < N; ++j)
+                ASSERT_NEAR(C_sme(i, j), C_ref(i, j), tol * (T{1} + std::abs(C_ref(i, j))))
+                    << name << (sizeof(T) == 4 ? " f32 " : " f64 ") << M << "x" << K << "x" << N
+                    << " (" << i << "," << j << ")";
+    }
 }
 
 TEST(GemmSme, MultiplyByIdentityGivesOriginal) {
@@ -1372,12 +1384,15 @@ TEST(GemmSme, FloatKnownResult2x2) {
 }
 
 TEST(GemmSme, EmptyInnerDimensionZeroesC) {
-    MatrixD A(3, 0), B(0, 4), C(3, 4);
-    C.fill(5.0);
-    hpc::gemm::gemm_sme(A, B, C);
-    for (std::size_t i = 0; i < 3; ++i)
-        for (std::size_t j = 0; j < 4; ++j)
-            EXPECT_DOUBLE_EQ(C(i, j), 0.0);
+    for (auto kernel : {&hpc::gemm::gemm_sme_1tile<double>, &hpc::gemm::gemm_sme_tiles<double>,
+                        &hpc::gemm::gemm_sme_blocked<double>, &hpc::gemm::gemm_sme<double>}) {
+        MatrixD A(3, 0), B(0, 4), C(3, 4);
+        C.fill(5.0);
+        kernel(A, B, C);
+        for (std::size_t i = 0; i < 3; ++i)
+            for (std::size_t j = 0; j < 4; ++j)
+                EXPECT_DOUBLE_EQ(C(i, j), 0.0);
+    }
 }
 
 // Rectangular shapes chosen to hit every edge path: partial micro-tile rows
@@ -1417,9 +1432,8 @@ INSTANTIATE_TEST_SUITE_P(
                std::to_string(info.param.N);
     });
 
-// pack_a's NEON transpose relabels lanes with vreinterpretq (float <-> 64-bit
-// lane views) to move float pairs as one unit. It must be a pure bit move:
-// feed random bit patterns (NaN payloads, denormals, -0) and compare bytes.
+// pack_a's NEON transpose must be a pure bit move: feed random bit patterns
+// (NaN payloads, denormals, -0) and compare bytes.
 template <typename T>
 static void expect_pack_a_bit_exact() {
     using Bits = std::conditional_t<sizeof(T) == 4, std::uint32_t, std::uint64_t>;
@@ -1441,6 +1455,40 @@ static void expect_pack_a_bit_exact() {
                 << "mc=" << mc << " kc=" << kc;
         }
     }
+}
+
+// blocked_driver with B rows ldb > N apart (as the BStride benchmarks run it):
+// both B paths must ignore the padding columns and match gemm_naive.
+template <typename T>
+static void expect_padded_b_matches_naive(std::size_t M, std::size_t K, std::size_t N,
+                                          std::size_t ldb) {
+    hpc::Matrix<T> A(M, K), B(K, N), Bpad(K, ldb), C_ref(M, N), C(M, N);
+    fill_random(A, 31, T{-1}, T{1});
+    fill_random(Bpad, 32, T{-1}, T{1});  // padding columns hold junk too
+    for (std::size_t k = 0; k < K; ++k)
+        for (std::size_t j = 0; j < N; ++j)
+            B(k, j) = Bpad(k, j);
+    hpc::gemm::gemm_naive(A, B, C_ref);
+    const T tol = sizeof(T) == 4 ? T(1e-4) : T(1e-10);
+    for (int packed = 0; packed < 2; ++packed) {
+        C.fill(T{123});
+        if (packed)
+            hpc::gemm::sme_detail::blocked_driver<T, true>(A, Bpad.data(), ldb, C);
+        else
+            hpc::gemm::sme_detail::blocked_driver<T, false>(A, Bpad.data(), ldb, C);
+        for (std::size_t i = 0; i < M; ++i)
+            for (std::size_t j = 0; j < N; ++j)
+                ASSERT_NEAR(C(i, j), C_ref(i, j), tol * (T{1} + std::abs(C_ref(i, j))))
+                    << (packed ? "packed" : "in place") << " ldb=" << ldb << " (" << i << ","
+                    << j << ")";
+    }
+}
+
+TEST(GemmSme, PaddedBMatchesNaive) {
+    expect_padded_b_matches_naive<float>(70, 90, 50, 53);
+    expect_padded_b_matches_naive<float>(33, hpc::gemm::kSmeKc + 5, 65, 97);
+    expect_padded_b_matches_naive<double>(70, 90, 50, 53);
+    expect_padded_b_matches_naive<double>(33, hpc::gemm::kSmeKc + 5, 65, 97);
 }
 
 TEST(GemmSme, PackAIsBitExactFloat) { expect_pack_a_bit_exact<float>(); }
