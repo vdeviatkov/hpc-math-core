@@ -39,7 +39,7 @@ The 32 A values are separated by a row stride in the original matrix. The driver
 
 B looks easier: its 32 values are already adjacent. A vector load can read them directly. The issue emerges when `k` advances: the next useful segment is in the next matrix row, potentially thousands of bytes away.
 
-The implementation is in [sme.hpp](assets/sme-kernel.hpp); the [kernel documentation](assets/documented-evidence.txt) contains the recorded stride experiments.
+The implementation is in [sme.hpp](https://github.com/vdeviatkov/hpc-math-core/blob/d71255d2dcff2f4909aead5d9a4b0d4334166465/src/gemm/sme.hpp); the [kernel documentation](https://github.com/vdeviatkov/hpc-math-core/blob/d71255d2dcff2f4909aead5d9a4b0d4334166465/src/gemm/README.md#why-a-and-b-are-packed) contains the recorded stride experiments.
 
 ## What the comparison holds constant
 
@@ -252,9 +252,9 @@ Nor does packing guarantee freedom from evictions. Other operands, competing thr
 
 ## Reproducing the investigation
 
-The benchmark registrations and timed loop are in [bench_gemm.cpp](assets/bstride-experiment.txt). They cover nine nearby dimensions and three additional padded configurations, for both precisions and both B paths: **48 benchmark cases**.
+The benchmark registrations and timed loop are in [bench_gemm.cpp](https://github.com/vdeviatkov/hpc-math-core/blob/d71255d2dcff2f4909aead5d9a4b0d4334166465/benchmarks/bench_gemm.cpp). They cover nine nearby dimensions and three additional padded configurations, for both precisions and both B paths: **48 benchmark cases**.
 
-The archived driver and benchmark excerpt reflect the local working tree used to document this investigation. They are not yet integrated into the public main branch. The benchmark excerpt is not a standalone program; reproduction requires integrating its registrations and the archived driver into a compatible benchmark checkout. The commands below assume that integration has been completed and `BStride` is registered. Follow the repository's [SME build instructions](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/build.md#sme-and-amx-build-flags) on supported hardware:
+Follow the repository's [SME build instructions](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/build.md#sme-and-amx-build-flags) on supported hardware:
 
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release -DHPC_ENABLE_SME=ON
@@ -270,7 +270,7 @@ ctest --test-dir build --output-on-failure
   --benchmark_out_format=json
 ```
 
-The padded-layout correctness checks are in [test_gemm.cpp](assets/padded-tests.txt): both B paths are compared against a reference multiplication with junk in the padding columns.
+The padded-layout correctness checks are in [test_gemm.cpp](https://github.com/vdeviatkov/hpc-math-core/blob/d71255d2dcff2f4909aead5d9a4b0d4334166465/tests/test_gemm.cpp): both B paths are compared against a reference multiplication with junk in the padding columns.
 
 Input matrices are allocated and initialized before the benchmark iteration loop. Inside it, the complete blocked driver runs: scratch allocation, A packing, optional B packing, and computation. This measures repeated calls against existing inputs, not an explicitly flushed cold-cache workload or a prepacked-weight compute-only workload.
 
@@ -278,7 +278,7 @@ The `GFLOP/s` counter uses `2 × N³` operations per iteration. It is an iterati
 
 For a publication-quality rerun, record the commit, working-tree diff, OS and compiler versions, benchmark context, and individual repetitions. Prefer a quiet machine and more repetitions to quantify spread. The existing documentation reports rounded medians, so the charts here intentionally have no invented error bars.
 
-The companion [CSV](assets/sme2-bstride-documented.csv) transcribes those documented medians; the [chart script](assets/render_charts.py) regenerates the figures. It is derived data, not the original benchmark output. The linked kernel, benchmark excerpt, correctness-test excerpt, and evidence table are archived working-tree snapshots accompanying this article. They preserve the material discussed here without implying that the newer experiment is already integrated into the public main branch. General project and build-guide links follow `main`.
+The companion [CSV](assets/sme2-bstride-documented.csv) transcribes those documented medians; the [chart script](assets/render_charts.py) regenerates the figures. It is derived data, not the original benchmark output. Code and evidence links are pinned to commit `d71255d2dcff2f4909aead5d9a4b0d4334166465`, which includes the BStride experiment. General project and build-guide links follow `main`. Additional working-tree source snapshots are included with the article assets for archival context.
 
 ## The engineering lesson
 
