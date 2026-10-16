@@ -1,0 +1,7 @@
+label,value,group
+"naive, i-j-k",1.86,scalar
+"reordered, i-k-j",82.40,scalar
+"cache-blocked",47.52,scalar
+"AVX2 register tile",143.43,simd
+"AVX-512, 4 × 2 tile (before)",205.2,old
+"AVX-512, 8 × 2 tile",327.92,simd

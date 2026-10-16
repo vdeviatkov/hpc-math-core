@@ -171,7 +171,7 @@ takes a regular expression:
 ./build/benchmarks/bench_gemm --benchmark_filter="N=1024$"             # one size, every kernel
 ./build/benchmarks/bench_gemm --benchmark_filter="Sme"                 # the four SME kernels
 ./build/benchmarks/bench_gemm --benchmark_filter="BStride"             # SME B-stride experiment
-./build/benchmarks/bench_gemm_cuda --benchmark_filter="ComputeOnly"    # GPU, device-resident buffers
+./build/benchmarks/bench_gemm_cuda --benchmark_filter="N=4096"         # GPU, every kernel at one size
 ```
 
 A full `bench_gemm` run includes the naive kernels at N=4096, which alone

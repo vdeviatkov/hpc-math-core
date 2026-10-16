@@ -1,4 +1,4 @@
-"""Render the article's two charts from sme2-bstride.csv (standard library only).
+"""Render the articles' charts (standard library only).
 
 sme2-bstride.csv holds the FP32 medians published in docs/benchmarks.md,
 section "SME: B row stride": `bench_gemm --benchmark_filter=BStride/f32`,
@@ -6,7 +6,7 @@ Apple M4 Max, median of 3 interleaved repetitions. The strip-height chart
 reads the raw samples in docs/experiments/sme-b-stride/height.csv, and the
 ladder chart sme2-ladder.csv (docs/benchmarks.md, "The four SME steps").
 
-    python3 render_charts.py    # rewrites the four SVG files
+    python3 render_charts.py    # rewrites every SVG file in this directory
 """
 import csv
 import statistics
@@ -91,6 +91,44 @@ def chart(path, title, panels, subtitle=None, series=None, y_max=Y_MAX, referenc
     (HERE / path).write_text("\n".join(out) + "\n")
 
 
+def bars(path, title, subtitle, rows, unit, x_max, tick, references=(), colors=None):
+    """Horizontal bars. rows: (label, value, group); colors: {group: color};
+    references: (value, label) drawn as dashed vertical lines."""
+    colors = colors or {}
+    left, right, top, row_h = 250, 930, 100, 32
+    height = top + row_h * len(rows) + 90
+    scale = (right - left) / x_max
+    out = [f'<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="{height}" '
+           f'viewBox="0 0 1000 {height}" role="img">',
+           f"<title>{escape(title)}</title>",
+           f'<rect width="1000" height="{height}" fill="white"/>',
+           '<g font-family="Arial, sans-serif" fill="#172635">',
+           text(500, 34, title, 23), text(500, 61, subtitle, 14)]
+    bottom = top + row_h * len(rows)
+    for t in range(0, int(x_max) + 1, tick):
+        x = left + t * scale
+        out.append(f'<path d="M {x} {top - 8} V {bottom}" stroke="#dce2e8"/>')
+        out.append(text(x, bottom + 20, t, 12))
+    for i, (label, value, group) in enumerate(rows):
+        y = top + i * row_h
+        color = colors.get(group, "#245ea8")
+        out.append(text(left - 12, y + 20, label, 14, "end"))
+        out.append(f'<rect x="{left}" y="{y + 6}" width="{value * scale:.1f}" height="{row_h - 12}" fill="{color}"/>')
+        out.append(text(left + value * scale + 8, y + 21, f"{value:,.1f}" if value < 100 else f"{value:,.0f}", 13, "start"))
+    for value, label in references:
+        x = left + value * scale
+        out.append(f'<path d="M {x} {top - 8} V {bottom}" stroke="#7a8794" stroke-dasharray="6 5"/>')
+        out.append(text(x - 6, top - 14, label, 12, "end"))
+    out.append(text((left + right) / 2, bottom + 45, unit, 14))
+    out.append("</g></svg>")
+    (HERE / path).write_text("\n".join(out) + "\n")
+
+
+def load_bars(name):
+    with (HERE / name).open() as f:
+        return [(r["label"], float(r["value"]), r["group"]) for r in csv.DictReader(f)]
+
+
 def main():
     sweep = load("size_sweep")
     chart("sme2-size-sweep.svg", "The power-of-two cliff",
@@ -116,6 +154,20 @@ def main():
                   "gemm_sme_blocked": ("#2f9e6e", "+ cache blocking"),
                   "gemm_sme": ("#be4d14", "+ packed B")},
           y_max=2000, reference=(1963, "FMOPA peak, 1,963"))
+    bars("cuda-ladder.svg", "Eight CUDA GEMM levels on an RTX 5080",
+         "N = 4096 · GPU time of the GEMM alone · levels 5–7 and cuBLAS FP16 multiply in fp16",
+         load_bars("cuda-ladder.csv"), "TFLOP/s", 130, 20,
+         references=[(59.7, "FP32 peak 59.7"), (124.4, "Tensor Core peak 124.4")],
+         colors={"fma": "#245ea8", "tensor": "#be4d14", "ref": "#8c96a3"})
+    simd = {"scalar": "#8c96a3", "simd": "#245ea8", "old": "#c9d3de"}
+    bars("simd-zen5.svg", "FP32 GEMM on one Zen 5 core",
+         "AMD Ryzen 9 9950X · N = 512 · GCC 13 · one thread",
+         load_bars("simd-zen5.csv"), "GFLOP/s", 400, 50,
+         references=[(182.3, "AVX2 peak 182"), (362, "AVX-512 peak 362")], colors=simd)
+    bars("simd-m4.svg", "FP32 GEMM on one Apple M4 P-core",
+         "Apple M4 Max · N = 512 · Apple Clang 17 · one thread",
+         load_bars("simd-m4.csv"), "GFLOP/s", 140, 20,
+         references=[(130, "NEON peak ~130")], colors=simd)
 
 
 if __name__ == "__main__":

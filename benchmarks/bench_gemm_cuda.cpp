@@ -4,20 +4,22 @@
  *
  *   ./build/benchmarks/bench_gemm_cuda --benchmark_filter=<regex>
  *
- * Two kinds of benchmark:
+ * Every benchmark, <Kernel>/<f64|f32>/N=<N>, times the GEMM alone, as the
+ * CPU benchmarks do: A, B and C are allocated and filled on the GPU before
+ * timing, and each iteration is one call of the kernel's device entry point
+ * (gemm_cuda_*_device). The time is GPU time, from CUDA events recorded
+ * before and after the launch (gemm_cuda_time_ms), reported to Google
+ * Benchmark as manual time. One untimed call precedes the loop, so one-off
+ * costs such as creating the cuBLAS handle are not counted.
  *
- *   <Kernel>/<f64|f32>/N=<N>             end to end: every iteration runs
- *       cudaMalloc, host-to-device copies, the kernel and the copy back, as
- *       the Matrix-based entry points do. N = 64 … 4096; cuBLAS and Level 7
- *       also at 8192 and 16384.
- *   <Kernel>ComputeOnly/f32/N=<N>        only the GEMM call, on device buffers
- *       filled once outside the timed loop (fp16 kernels get their inputs
- *       converted there too). N = 4096, 8192, 16384. At large N the
- *       end-to-end rows mostly measure PCIe transfers; these do not.
+ * CudaWmma and CudaMmaLdmatrix take fp32 inputs and convert each tile to
+ * fp16 inside the kernel. CudaWmmaPipelined and CudaCublasFp16 take fp16
+ * inputs, converted once before timing.
  *
  * The "precision" counter is the bits of the multiply inputs: 16 for the
- * Tensor Core kernels (fp16 in, fp32 accumulate), so their GFLOP/s is not
- * like-for-like with the fp32 rows.
+ * Tensor Core kernels (fp16 in, fp32 accumulate), 32 for TF32 cuBLAS (its
+ * inputs are fp32, rounded to TF32 by the Tensor Cores), so their GFLOP/s is
+ * not like-for-like with the plain fp32 rows.
  *
  * Every benchmark reports SKIPPED without a CUDA device (the stub build has
  * none), and the Tensor Core / TF32 ones also on GPUs older than they need.
@@ -71,124 +73,116 @@ bool skip(benchmark::State& state, Needs needs) {
     return false;
 }
 
-void add_counters(benchmark::State& state, std::size_t N, int precision_bits) {
-    const double n            = static_cast<double>(N);
-    state.counters["GFLOP/s"] = benchmark::Counter(2.0 * n * n * n,
-                                                   benchmark::Counter::kIsIterationInvariantRate,
-                                                   benchmark::Counter::OneK::kIs1000);
-    state.counters["precision"] = precision_bits;
-}
+/// Square N x N inputs on the GPU: T, or fp16 when Fp16 (the kernel then
+/// receives void* buffers of halves). C is always T.
+template <typename T, bool Fp16>
+struct DeviceProblem {
+    void* A = nullptr;
+    void* B = nullptr;
+    T* C    = nullptr;
 
-/// End to end: kernel(A, B, C) on host matrices, transfers included.
-template <typename T, typename Kernel>
-void add_end_to_end(const std::string& name, Kernel kernel, Needs needs, int precision_bits,
-                    std::initializer_list<std::size_t> sizes) {
+    explicit DeviceProblem(std::size_t n) {
+        hpc::Matrix<T> hA(n, n), hB(n, n);
+        fill_random(hA, 1);
+        fill_random(hB, 2);
+        const std::size_t bytes = n * n * sizeof(T);
+        A = gemm_cuda_malloc(bytes);
+        B = gemm_cuda_malloc(bytes);
+        C = static_cast<T*>(gemm_cuda_malloc(bytes));
+        gemm_cuda_memcpy_h2d(A, hA.data(), bytes);
+        gemm_cuda_memcpy_h2d(B, hB.data(), bytes);
+        if constexpr (Fp16) {
+            static_assert(sizeof(T) == 4, "fp16 inputs are converted from fp32");
+            for (void** buf : {&A, &B}) {
+                void* half = gemm_cuda_malloc(n * n * 2);
+                gemm_cuda_convert_f32_to_f16_device(static_cast<const float*>(*buf), half,
+                                                    static_cast<int>(n * n));
+                gemm_cuda_device_synchronize();
+                gemm_cuda_free(*buf);
+                *buf = half;
+            }
+        }
+        gemm_cuda_device_synchronize();
+    }
+    ~DeviceProblem() {
+        gemm_cuda_free(A);
+        gemm_cuda_free(B);
+        gemm_cuda_free(C);
+    }
+    DeviceProblem(const DeviceProblem&)            = delete;
+    DeviceProblem& operator=(const DeviceProblem&) = delete;
+};
+
+/// Register <name>/<type>/N=<n> for each size: launch(A, B, C, n) on device
+/// buffers, timed with GPU events.
+template <typename T, bool Fp16 = false, typename Launch>
+void add(const std::string& name, Launch launch, Needs needs, int precision_bits,
+         std::initializer_list<std::size_t> sizes) {
     for (const std::size_t n : sizes) {
         benchmark::RegisterBenchmark(
             name + "/" + type_name<T>() + "/N=" + std::to_string(n),
             [=](benchmark::State& state) {
                 if (skip(state, needs))
                     return;
-                hpc::Matrix<T> A(n, n), B(n, n), C(n, n);
-                fill_random(A, 1);
-                fill_random(B, 2);
-                for (auto _ : state) {
-                    kernel(A, B, C);
-                    benchmark::DoNotOptimize(C.data());
-                    benchmark::ClobberMemory();
-                }
-                add_counters(state, n, precision_bits);
+                DeviceProblem<T, Fp16> p(n);
+                const int N = static_cast<int>(n);
+                auto call   = [&] { launch(p.A, p.B, p.C, N); };
+                gemm_cuda_time_ms(call);  // warm-up, untimed
+                for (auto _ : state)
+                    state.SetIterationTime(gemm_cuda_time_ms(call) / 1e3);
+                const double flops        = 2.0 * double(n) * double(n) * double(n);
+                state.counters["GFLOP/s"] = benchmark::Counter(
+                    flops, benchmark::Counter::kIsIterationInvariantRate,
+                    benchmark::Counter::OneK::kIs1000);
+                state.counters["precision"] = precision_bits;
             })
-            ->Unit(n > 4096 ? benchmark::kMillisecond : benchmark::kMicrosecond);
-    }
-}
-
-/// Every FMA level runs in f64 and f32; the Tensor Core levels in f32 only.
-constexpr std::initializer_list<std::size_t> kSizes = {64, 256, 512, 1024, 4096};
-
-template <typename Kernel>
-void add_both_types(const std::string& name, Kernel kernel) {
-    add_end_to_end<double>(name, kernel, Needs::kDevice, 64, kSizes);
-    add_end_to_end<float>(name, kernel, Needs::kDevice, 32, kSizes);
-}
-
-/// Compute-only: kernel(dA, dB, dC, N) on device buffers staged once. With
-/// Fp16 the inputs are converted to fp16 on the device before timing.
-template <bool Fp16, typename Kernel>
-void add_compute_only(const std::string& name, Kernel kernel, Needs needs) {
-    for (const std::size_t n : {4096, 8192, 16384}) {
-        benchmark::RegisterBenchmark(
-            name + "ComputeOnly/f32/N=" + std::to_string(n),
-            [=](benchmark::State& state) {
-                if (skip(state, needs))
-                    return;
-                const std::size_t bytes32 = n * n * sizeof(float);
-                const std::size_t bytes16 = n * n * 2;  // __half
-                hpc::Matrix<float> A(n, n), B(n, n);
-                fill_random(A, 1);
-                fill_random(B, 2);
-                void* dA = gemm_cuda_malloc(bytes32);
-                void* dB = gemm_cuda_malloc(bytes32);
-                auto* dC = static_cast<float*>(gemm_cuda_malloc(bytes32));
-                gemm_cuda_memcpy_h2d(dA, A.data(), bytes32);
-                gemm_cuda_memcpy_h2d(dB, B.data(), bytes32);
-                if constexpr (Fp16) {
-                    void* dA16 = gemm_cuda_malloc(bytes16);
-                    void* dB16 = gemm_cuda_malloc(bytes16);
-                    gemm_cuda_convert_f32_to_f16_device(static_cast<float*>(dA), dA16, int(n * n));
-                    gemm_cuda_convert_f32_to_f16_device(static_cast<float*>(dB), dB16, int(n * n));
-                    gemm_cuda_free(dA);
-                    gemm_cuda_free(dB);
-                    dA = dA16;
-                    dB = dB16;
-                }
-                gemm_cuda_device_synchronize();
-                for (auto _ : state) {
-                    kernel(dA, dB, dC, int(n));
-                    gemm_cuda_device_synchronize();
-                    benchmark::ClobberMemory();
-                }
-                gemm_cuda_free(dA);
-                gemm_cuda_free(dB);
-                gemm_cuda_free(dC);
-                add_counters(state, n, Fp16 ? 16 : 32);
-            })
+            ->UseManualTime()
             ->Unit(benchmark::kMillisecond);
     }
 }
 
+constexpr std::initializer_list<std::size_t> kSizesF32 = {256, 1024, 4096, 8192, 16384};
+constexpr std::initializer_list<std::size_t> kSizesF64 = {256, 1024, 4096, 8192};
+
+/// An FMA level (Levels 0-4) in both precisions.
+#define HPC_ADD_FMA(name, fn)                                                                   \
+    add<double>(name, [](void* a, void* b, double* c, int n) {                                  \
+        fn<double>(static_cast<const double*>(a), static_cast<const double*>(b), c, n, n, n); }, \
+        Needs::kDevice, 64, kSizesF64);                                                         \
+    add<float>(name, [](void* a, void* b, float* c, int n) {                                    \
+        fn<float>(static_cast<const float*>(a), static_cast<const float*>(b), c, n, n, n); },    \
+        Needs::kDevice, 32, kSizesF32)
+
 void register_all() {
     // clang-format off
-    add_both_types("CudaNaive",      [](auto& A, auto& B, auto& C) { gemm_cuda_naive(A, B, C); });
-    add_both_types("CudaBlocked",    [](auto& A, auto& B, auto& C) { gemm_cuda_blocked(A, B, C); });
-    add_both_types("CudaRegTile",    [](auto& A, auto& B, auto& C) { gemm_cuda_reg_tile(A, B, C); });
-    add_both_types("CudaDoubleBuf",  [](auto& A, auto& B, auto& C) { gemm_cuda_double_buf(A, B, C); });
-    add_both_types("CudaVectorized", [](auto& A, auto& B, auto& C) { gemm_cuda_vectorized(A, B, C); });
-    add_end_to_end<float>("CudaWmma", gemm_cuda_wmma, Needs::kTensorCores, 16, kSizes);
-    add_end_to_end<float>("CudaMmaLdmatrix", gemm_cuda_mma_ldmatrix, Needs::kAmpere, 16, kSizes);
-    // Level 7 needs M, N multiples of 128: N=64 runs its fallback, gemm_cuda_wmma.
-    add_end_to_end<float>("CudaWmmaPipelined", gemm_cuda_wmma_pipelined, Needs::kTensorCores, 16,
-                          {64, 256, 512, 1024, 4096, 8192, 16384});
+    HPC_ADD_FMA("CudaNaive",      gemm_cuda_naive_device);
+    HPC_ADD_FMA("CudaBlocked",    gemm_cuda_blocked_device);
+    HPC_ADD_FMA("CudaRegTile",    gemm_cuda_reg_tile_device);
+    HPC_ADD_FMA("CudaDoubleBuf",  gemm_cuda_double_buf_device);
+    HPC_ADD_FMA("CudaVectorized", gemm_cuda_vectorized_device);
 
-    add_end_to_end<double>("CudaCublas", gemm_cuda_cublas<double>, Needs::kDevice, 64, kSizes);
-    add_end_to_end<float>("CudaCublas", gemm_cuda_cublas<float>, Needs::kDevice, 32,
-                          {64, 256, 512, 1024, 4096, 8192, 16384});
-    add_end_to_end<float>("CudaCublasTf32", gemm_cuda_cublas_tf32, Needs::kAmpere, 32,
-                          {64, 256, 512, 1024, 4096, 8192, 16384});
+    add<float>("CudaWmma", [](void* a, void* b, float* c, int n) {
+        gemm_cuda_wmma_device(static_cast<const float*>(a), static_cast<const float*>(b), c, n, n, n); },
+        Needs::kTensorCores, 16, kSizesF32);
+    add<float>("CudaMmaLdmatrix", [](void* a, void* b, float* c, int n) {
+        gemm_cuda_mma_ldmatrix_device(static_cast<const float*>(a), static_cast<const float*>(b), c, n, n, n); },
+        Needs::kAmpere, 16, kSizesF32);
+    // No fallback on the device path: every size here is a multiple of 128.
+    add<float, true>("CudaWmmaPipelined", [](void* a, void* b, float* c, int n) {
+        gemm_cuda_wmma_pipelined_device(a, b, c, n, n, n); },
+        Needs::kTensorCores, 16, kSizesF32);
 
-    add_compute_only<false>("CudaCublas", [](void* a, void* b, float* c, int n) {
-        gemm_cuda_cublas_device_f32(static_cast<float*>(a), static_cast<float*>(b), c, n, n, n); },
-        Needs::kDevice);
-    add_compute_only<false>("CudaCublasTf32", [](void* a, void* b, float* c, int n) {
-        gemm_cuda_cublas_tf32_device(static_cast<float*>(a), static_cast<float*>(b), c, n, n, n); },
-        Needs::kAmpere);
-    add_compute_only<true>("CudaCublasFp16", [](void* a, void* b, float* c, int n) {
-        gemm_cuda_cublas_fp16_device(a, b, c, n, n, n); }, Needs::kTensorCores);
-    // No fallback on the device path: every N here is a multiple of 128.
-    add_compute_only<true>("CudaWmmaPipelined", [](void* a, void* b, float* c, int n) {
-        gemm_cuda_wmma_pipelined_device(a, b, c, n, n, n); }, Needs::kTensorCores);
+    HPC_ADD_FMA("CudaCublas",     gemm_cuda_cublas_device);
+    add<float>("CudaCublasTf32", [](void* a, void* b, float* c, int n) {
+        gemm_cuda_cublas_tf32_device(static_cast<const float*>(a), static_cast<const float*>(b), c, n, n, n); },
+        Needs::kAmpere, 32, kSizesF32);
+    add<float, true>("CudaCublasFp16", [](void* a, void* b, float* c, int n) {
+        gemm_cuda_cublas_fp16_device(a, b, c, n, n, n); },
+        Needs::kTensorCores, 16, kSizesF32);
     // clang-format on
 }
+
+#undef HPC_ADD_FMA
 
 }  // namespace
 

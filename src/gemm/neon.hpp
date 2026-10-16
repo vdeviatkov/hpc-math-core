@@ -11,18 +11,19 @@
  *                       and C rows. Measured on M4 Max: no faster than scalar
  *                       gemm_reordered, which the compiler auto-vectorises.
  *  gemm_neon_blocked    tiled i → k → j with a C tile held in Q registers for
- *                       a whole k-tile: 4×16 f32 (4 rows × 4 Q) or 4×4 f64
- *                       (4 rows × 2 Q). The fastest of the three.
+ *                       a whole k-tile: 4×16 f32 (4 rows × 4 Q) or 8×4 f64
+ *                       (8 rows × 2 Q). The fastest of the three.
  *
- * AArch64 has 32 × 128-bit Q registers (4 f32 / 2 f64). The f32 micro-kernel
- * keeps 16 accumulators, 4 broadcasts of A and 4 B vectors live (24 of 32);
- * the f64 one 8 + 4 + 2 (14 of 32).
+ * AArch64 has 32 × 128-bit Q registers (4 f32 / 2 f64). Both micro-kernels
+ * keep 16 accumulators: f32 with 4 broadcasts of A and 4 B vectors live (24
+ * of 32), f64 with 2 B vectors and a broadcast (19 of 32).
  *
- * Apple M4 P-core peak (~4.5 GHz, 4 FP/SIMD pipes vs 2 FMA ports on x86):
- *   f32: 4 pipes × 4 lanes × 2 FLOP = 32 FLOP/cycle → ~144 GFLOP/s
- *   f64: 4 pipes × 2 lanes × 2 FLOP = 16 FLOP/cycle →  ~72 GFLOP/s
- * gemm_neon_blocked reaches ~97 / ~36 GFLOP/s (≈67% / 50% of peak). NEON is
- * half the width of AVX2, but twice the FMA pipes give the same FLOP/cycle.
+ * Apple M4 P-core (measured with fma_peak at ~4.05 GHz, docs/experiments/
+ * cpu-simd): up to 4 FMAs per cycle, ~3-cycle latency.
+ *   f32: 4 pipes × 4 lanes × 2 FLOP = 32 FLOP/cycle → ~130 GFLOP/s
+ *   f64: 4 pipes × 2 lanes × 2 FLOP = 16 FLOP/cycle →  ~65 GFLOP/s
+ * gemm_neon_blocked reaches ~95 / ~40 GFLOP/s (≈73% / 61%). NEON is half the
+ * width of AVX2, but twice the FMA pipes give the same FLOP/cycle.
  *
  * HPC_HAS_NEON (hpc/isa.hpp) requires AArch64: the kernels use f64 lanes
  * and vfmaq_f64, which 32-bit ARMv7 NEON lacks. Where it is 0 the kernels
@@ -55,8 +56,8 @@ inline constexpr std::size_t kNeonTileN = 256;  // outer j-tile
 inline constexpr std::size_t kNeonF32RegRows = 4;
 inline constexpr std::size_t kNeonF32RegCols = 4;  // 4 Q-vectors → 16 f32
 
-// f64 micro-kernel: 4 rows × 2 Q-vectors per row = 4×4 j-elements
-inline constexpr std::size_t kNeonF64RegRows = 4;
+// f64 micro-kernel: 8 rows × 2 Q-vectors per row = 8×4 j-elements
+inline constexpr std::size_t kNeonF64RegRows = 8;
 inline constexpr std::size_t kNeonF64RegCols = 2;  // 2 Q-vectors → 4 f64
 
 // ============================================================================
@@ -145,46 +146,41 @@ inline void neon_micro_f32_4x16(const float* __restrict__ a, const float* __rest
 }
 
 /**
- * @brief NEON f64 micro-kernel: C[i..i+3][j..j+3] += A[i..i+3][k_blk..k_end) × B[..][j..)
+ * @brief NEON f64 micro-kernel: C[i..i+7][j..j+3] += A[i..i+7][k_blk..k_end) × B[..][j..)
  *
- * Register tile: 4 rows × 2 Q-vectors = 4×4 f64.
+ * Register tile: 8 rows × 2 Q-vectors = 8×4 f64, 16 accumulators. The P-core
+ * issues up to 4 FMAs per cycle with a ~3-cycle latency, so it takes 12–16
+ * independent accumulators to keep the pipes busy (fma_peak). The previous
+ * 4×4 tile had 8 and ran at half the rate of this one on L1-resident data
+ * (simd_microkernel, docs/experiments/cpu-simd).
+ *
+ * @param c  Pointer to C(i, j) — row-stride ldc
  */
-inline void neon_micro_f64_4x4(const double* __restrict__ a, const double* __restrict__ b,
-                               double* __restrict__ c0, double* __restrict__ c1,
-                               double* __restrict__ c2, double* __restrict__ c3, std::size_t lda,
-                               std::size_t ldb, std::size_t k_len) noexcept {
-    float64x2_t c00 = vld1q_f64(c0), c01 = vld1q_f64(c0 + 2);
-    float64x2_t c10 = vld1q_f64(c1), c11 = vld1q_f64(c1 + 2);
-    float64x2_t c20 = vld1q_f64(c2), c21 = vld1q_f64(c2 + 2);
-    float64x2_t c30 = vld1q_f64(c3), c31 = vld1q_f64(c3 + 2);
-
+inline void neon_micro_f64_8x4(const double* __restrict__ a, const double* __restrict__ b,
+                               double* __restrict__ c, std::size_t lda, std::size_t ldb,
+                               std::size_t ldc, std::size_t k_len) noexcept {
+    constexpr int R = 8;
+    float64x2_t acc[R][2];
+#pragma GCC unroll 8
+    for (int r = 0; r < R; ++r) {
+        acc[r][0] = vld1q_f64(c + r * ldc);
+        acc[r][1] = vld1q_f64(c + r * ldc + 2);
+    }
     for (std::size_t k = 0; k < k_len; ++k) {
         const float64x2_t b0 = vld1q_f64(b + k * ldb);
         const float64x2_t b1 = vld1q_f64(b + k * ldb + 2);
-
-        const float64x2_t a0 = vdupq_n_f64(a[0 * lda + k]);
-        const float64x2_t a1 = vdupq_n_f64(a[1 * lda + k]);
-        const float64x2_t a2 = vdupq_n_f64(a[2 * lda + k]);
-        const float64x2_t a3 = vdupq_n_f64(a[3 * lda + k]);
-
-        c00 = vfmaq_f64(c00, a0, b0);
-        c01 = vfmaq_f64(c01, a0, b1);
-        c10 = vfmaq_f64(c10, a1, b0);
-        c11 = vfmaq_f64(c11, a1, b1);
-        c20 = vfmaq_f64(c20, a2, b0);
-        c21 = vfmaq_f64(c21, a2, b1);
-        c30 = vfmaq_f64(c30, a3, b0);
-        c31 = vfmaq_f64(c31, a3, b1);
+#pragma GCC unroll 8
+        for (int r = 0; r < R; ++r) {
+            const float64x2_t ar = vdupq_n_f64(a[r * lda + k]);
+            acc[r][0]            = vfmaq_f64(acc[r][0], ar, b0);
+            acc[r][1]            = vfmaq_f64(acc[r][1], ar, b1);
+        }
     }
-
-    vst1q_f64(c0, c00);
-    vst1q_f64(c0 + 2, c01);
-    vst1q_f64(c1, c10);
-    vst1q_f64(c1 + 2, c11);
-    vst1q_f64(c2, c20);
-    vst1q_f64(c2 + 2, c21);
-    vst1q_f64(c3, c30);
-    vst1q_f64(c3 + 2, c31);
+#pragma GCC unroll 8
+    for (int r = 0; r < R; ++r) {
+        vst1q_f64(c + r * ldc, acc[r][0]);
+        vst1q_f64(c + r * ldc + 2, acc[r][1]);
+    }
 }
 
 #endif  // HPC_HAS_NEON
@@ -348,7 +344,7 @@ void gemm_neon_reordered(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
  * @brief NEON GEMM with cache-blocking and register-tiled micro-kernel.
  *
  * Counterpart of gemm_avx2_blocked: i-k-j order, 3-level tiling
- * (kNeonTileM × kNeonTileK × kNeonTileN), and a 4×16 f32 / 4×4 f64 C tile
+ * (kNeonTileM × kNeonTileK × kNeonTileN), and a 4×16 f32 / 8×4 f64 C tile
  * held in Q registers for a whole k-tile, so C is stored once per
  * kNeonTileK steps instead of being reloaded every k-iteration as in
  * gemm_neon_reordered at large N.
@@ -395,24 +391,19 @@ void gemm_neon_blocked(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
 
                     std::size_t j = j_blk;
                     for (; j + kJStep <= j_end; j += kJStep) {
-                        T* c0 = C.data() + (i + 0) * ldc + j;
-                        T* c1 = C.data() + (i + 1) * ldc + j;
-                        T* c2 = C.data() + (i + 2) * ldc + j;
-                        T* c3 = C.data() + (i + 3) * ldc + j;
+                        T* c0 = C.data() + i * ldc + j;
                         if constexpr (sizeof(T) == 4) {
                             neon_micro_f32_4x16(reinterpret_cast<const float*>(a_ptr),
                                                 reinterpret_cast<const float*>(b_ptr + (j - j_blk)),
                                                 reinterpret_cast<float*>(c0),
-                                                reinterpret_cast<float*>(c1),
-                                                reinterpret_cast<float*>(c2),
-                                                reinterpret_cast<float*>(c3), lda, ldb, k_len);
+                                                reinterpret_cast<float*>(c0 + ldc),
+                                                reinterpret_cast<float*>(c0 + 2 * ldc),
+                                                reinterpret_cast<float*>(c0 + 3 * ldc), lda, ldb,
+                                                k_len);
                         } else {
-                            neon_micro_f64_4x4(reinterpret_cast<const double*>(a_ptr),
+                            neon_micro_f64_8x4(reinterpret_cast<const double*>(a_ptr),
                                                reinterpret_cast<const double*>(b_ptr + (j - j_blk)),
-                                               reinterpret_cast<double*>(c0),
-                                               reinterpret_cast<double*>(c1),
-                                               reinterpret_cast<double*>(c2),
-                                               reinterpret_cast<double*>(c3), lda, ldb, k_len);
+                                               reinterpret_cast<double*>(c0), lda, ldb, ldc, k_len);
                         }
                     }
                     // Scalar j-tail

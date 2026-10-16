@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="318" viewBox="0 0 1000 318" role="img">
+<title>FP32 GEMM on one Apple M4 P-core</title>
+<rect width="1000" height="318" fill="white"/>
+<g font-family="Arial, sans-serif" fill="#172635">
+<text x="500" y="34" font-size="23" text-anchor="middle">FP32 GEMM on one Apple M4 P-core</text>
+<text x="500" y="61" font-size="14" text-anchor="middle">Apple M4 Max · N = 512 · Apple Clang 17 · one thread</text>
+<path d="M 250.0 92 V 228" stroke="#dce2e8"/>
+<text x="250.0" y="248" font-size="12" text-anchor="middle">0</text>
+<path d="M 347.1428571428571 92 V 228" stroke="#dce2e8"/>
+<text x="347.1428571428571" y="248" font-size="12" text-anchor="middle">20</text>
+<path d="M 444.2857142857143 92 V 228" stroke="#dce2e8"/>
+<text x="444.2857142857143" y="248" font-size="12" text-anchor="middle">40</text>
+<path d="M 541.4285714285713 92 V 228" stroke="#dce2e8"/>
+<text x="541.4285714285713" y="248" font-size="12" text-anchor="middle">60</text>
+<path d="M 638.5714285714286 92 V 228" stroke="#dce2e8"/>
+<text x="638.5714285714286" y="248" font-size="12" text-anchor="middle">80</text>
+<path d="M 735.7142857142857 92 V 228" stroke="#dce2e8"/>
+<text x="735.7142857142857" y="248" font-size="12" text-anchor="middle">100</text>
+<path d="M 832.8571428571428 92 V 228" stroke="#dce2e8"/>
+<text x="832.8571428571428" y="248" font-size="12" text-anchor="middle">120</text>
+<path d="M 930.0 92 V 228" stroke="#dce2e8"/>
+<text x="930.0" y="248" font-size="12" text-anchor="middle">140</text>
+<text x="238" y="120" font-size="14" text-anchor="end">naive, i-j-k</text>
+<rect x="250" y="106" width="11.1" height="20" fill="#8c96a3"/>
+<text x="269.12285714285713" y="121" font-size="13" text-anchor="start">2.3</text>
+<text x="238" y="152" font-size="14" text-anchor="end">reordered, i-k-j</text>
+<rect x="250" y="138" width="153.7" height="20" fill="#8c96a3"/>
+<text x="411.67999999999995" y="153" font-size="13" text-anchor="start">31.6</text>
+<text x="238" y="184" font-size="14" text-anchor="end">cache-blocked</text>
+<rect x="250" y="170" width="235.8" height="20" fill="#8c96a3"/>
+<text x="493.76571428571424" y="185" font-size="13" text-anchor="start">48.5</text>
+<text x="238" y="216" font-size="14" text-anchor="end">NEON register tile</text>
+<rect x="250" y="202" width="461.2" height="20" fill="#245ea8"/>
+<text x="719.2342857142856" y="217" font-size="13" text-anchor="start">95.0</text>
+<path d="M 881.4285714285713 92 V 228" stroke="#7a8794" stroke-dasharray="6 5"/>
+<text x="875.4285714285713" y="86" font-size="12" text-anchor="end">NEON peak ~130</text>
+<text x="590.0" y="273" font-size="14" text-anchor="middle">GFLOP/s</text>
+</g></svg>

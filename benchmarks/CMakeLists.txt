@@ -5,10 +5,20 @@ target_link_libraries(bench_gemm PRIVATE hpc_math_core benchmark::benchmark)
 add_executable(bench_gemm_cuda bench_gemm_cuda.cpp)
 target_link_libraries(bench_gemm_cuda PRIVATE hpc_math_cuda benchmark::benchmark)
 
-# Experiments behind the SME2 articles in docs/articles/; their data and
-# method are in docs/experiments/.
+# Experiments behind the articles in docs/articles/; their data and method
+# are in docs/experiments/.
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64|ARM64")
     add_executable(cache_chase experiments/cache_chase.cpp)
+endif()
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64|ARM64|x86_64|AMD64")
+    add_executable(fma_peak experiments/fma_peak.cpp)
+    target_link_libraries(fma_peak PRIVATE hpc_math_core)
+    add_executable(simd_microkernel experiments/simd_microkernel.cpp)
+    target_link_libraries(simd_microkernel PRIVATE hpc_math_core)
+endif()
+if(CMAKE_CUDA_COMPILER)
+    add_executable(cuda_peak experiments/cuda_peak.cu)
+    set_target_properties(cuda_peak PROPERTIES CUDA_STANDARD 17 CUDA_STANDARD_REQUIRED ON)
 endif()
 if(_HPC_SME_FOUND)
     add_executable(sme_b_layout experiments/sme_b_layout.cpp)

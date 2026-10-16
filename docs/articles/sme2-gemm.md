@@ -2,14 +2,16 @@
 title: "Matrix Multiplication on Apple M4's SME2 Unit: From Outer Products to 1.5 TFLOP/s"
 description: "How an SME2 GEMM on Apple M4 Max goes from 472 to 1,532 GFLOP/s on one core: the hardware measured down to TLBs, outer products, all four ZA tiles, GotoBLAS blocking and packing, each step with data."
 date: 2026-10-12
-series_part: 1
+series_part: 2
 permalink: /articles/sme2-gemm.html
 ---
 # Matrix multiplication on Apple M4's SME2 unit: from outer products to 1.5 TFLOP/s
 
 *Apple M4 Max, one thread unless stated. Every number in this article was
 measured on that machine; the code is in
-[hpc-math-core](https://github.com/vdeviatkov/hpc-math-core).*
+[hpc-math-core](https://github.com/vdeviatkov/hpc-math-core). Part 2 of a
+series: [part 1](simd-gemm.md) builds the CPU SIMD kernel this one starts
+from.*
 
 Apple's M4 is the first Apple chip that exposes its matrix unit through a
 public instruction set: ARM's Scalable Matrix Extension, SME2. This article
@@ -386,7 +388,7 @@ may have optima further from the fixed set.
 
 Both operands are copied into **strips**: narrow blocks laid out so that
 each step of the micro-kernel reads one contiguous run of memory. This
-section summarises why each operand needs them; part 2 of this series,
+section summarises why each operand needs them; part 3 of this series,
 [*A power-of-two stride halves SME2 GEMM throughput*](sme2-cache-associativity.md),
 takes the B strips apart in detail: how their rows map to cache sets, where
 the conflicts happen, and what packing them costs and saves.
@@ -519,7 +521,7 @@ step tables above.
 
 | One thread | N = 256 | 512 | 1024 | 2048 | 4096 | best, % of one unit's peak |
 |---|--:|--:|--:|--:|--:|--:|
-| NEON, blocked, register-tiled, FP32 | 96 | 97 | 94 | — | 73 | — |
+| NEON, blocked, register-tiled, FP32 ([part 1](simd-gemm.md)) | 94 | 95 | 91 | — | 70 | 73% of NEON's ~130 |
 | `gemm_sme`, FP32 | 839 | 1,332 | 1,385 | 1,465 | **1,504** | 77% |
 | Arm KleidiAI, FP32 | 1,055 | 1,511 | 1,659 | 1,454 | 1,019 | 85% |
 | Apple Accelerate, FP32, single thread | 1,692 | 1,718 | 1,629 | 1,681 | 1,599 | 88% |
@@ -531,7 +533,7 @@ step tables above.
 | Apple Accelerate, FP32, all cores | 1,685 | 2,651 | 3,178 | 3,127 | 3,115 | 81% |
 | Apple Accelerate, FP64, all cores | 458 | 782 | 804 | 782 | 787 | 80% |
 
-- SME is **15× the best NEON kernel** on the same core.
+- SME is **16× the best NEON kernel** on the same core (1,504 vs 95 GFLOP/s).
 - On one thread, `gemm_sme` reaches 85–94% of Accelerate for N ≥ 1024 in
   FP32, and in FP64 it is within 6% at N = 512 and ahead from N = 1024.
   Accelerate's lead is largest at small N, where `gemm_sme`'s fixed costs

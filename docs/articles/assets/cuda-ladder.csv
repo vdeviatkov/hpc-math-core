@@ -1,0 +1,11 @@
+label,value,group
+"0  naive",3.68,fma
+"1  shared-memory tiles",3.38,fma
+"2  register tile",23.50,fma
+"3  + double buffer",25.64,fma
+"4  + 128-bit loads",26.85,fma
+"5  WMMA",14.63,tensor
+"6  mma.sync",16.96,tensor
+"7  pipelined WMMA",96.69,tensor
+"cuBLAS SGEMM",37.91,ref
+"cuBLAS FP16",112.98,ref

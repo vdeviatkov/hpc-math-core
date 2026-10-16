@@ -1,0 +1,5 @@
+label,value,group
+"naive, i-j-k",2.29,scalar
+"reordered, i-k-j",31.64,scalar
+"cache-blocked",48.54,scalar
+"NEON register tile",94.96,simd

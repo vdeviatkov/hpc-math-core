@@ -1,0 +1,393 @@
+name,iterations,real_time,cpu_time,time_unit,bytes_per_second,items_per_second,label,error_occurred,error_message,"GFLOP/s"
+"Naive/f64/N=64",19471,36.0266,36.0262,us,,,,,,1.4553e+10
+"Naive/f64/N=256",45,15317.3,15316.9,us,,,,,,2.19067e+09
+"Naive/f64/N=512",3,214054,214045,us,,,,,,1.25411e+09
+"Naive/f64/N=1024",1,2.84157e+06,2.84151e+06,us,,,,,,7.55754e+08
+"Naive/f64/N=4096",1,3.11838e+08,3.1182e+08,us,,,,,,4.40764e+08
+"Naive/f32/N=64",21031,33.2354,33.2351,us,,,,,,1.57751e+10
+"Naive/f32/N=256",70,9948.58,9948.14,us,,,,,,3.37293e+09
+"Naive/f32/N=512",5,144487,144483,us,,,,,,1.8579e+09
+"Naive/f32/N=1024",1,3.79023e+06,3.79017e+06,us,,,,,,5.66592e+08
+"Naive/f32/N=4096",1,3.28385e+08,3.28367e+08,us,,,,,,4.18553e+08
+"Reordered/f64/N=64",56123,12.5104,12.5104,us,,,,,,4.19082e+10
+"Reordered/f64/N=256",1092,639.168,639.137,us,,,,,,5.24996e+10
+"Reordered/f64/N=512",95,7303.35,7303.16,us,,,,,,3.67561e+10
+"Reordered/f64/N=1024",11,64875.5,64872.6,us,,,,,,3.31031e+10
+"Reordered/f64/N=4096",1,1.05377e+07,1.0537e+07,us,,,,,,1.30435e+10
+"Reordered/f32/N=64",67362,10.3941,10.3934,us,,,,,,5.04442e+10
+"Reordered/f32/N=256",1958,357.44,357.386,us,,,,,,9.38885e+10
+"Reordered/f32/N=512",215,3257.96,3257.63,us,,,,,,8.24022e+10
+"Reordered/f32/N=1024",23,30598.8,30597.4,us,,,,,,7.01852e+10
+"Reordered/f32/N=4096",1,4.50926e+06,4.50899e+06,us,,,,,,3.04811e+10
+"Blocked/f64/N=64",55997,12.5285,12.5282,us,,,,,,4.18485e+10
+"Blocked/f64/N=256",763,910.468,910.297,us,,,,,,3.6861e+10
+"Blocked/f64/N=512",93,7506.85,7505.72,us,,,,,,3.57641e+10
+"Blocked/f64/N=1024",12,60398.6,60396.8,us,,,,,,3.55563e+10
+"Blocked/f64/N=4096",1,4.16192e+06,4.16166e+06,us,,,,,,3.3025e+10
+"Blocked/f32/N=64",65169,10.715,10.713,us,,,,,,4.89394e+10
+"Blocked/f32/N=256",995,701.803,701.694,us,,,,,,4.78192e+10
+"Blocked/f32/N=512",124,5649.21,5648.96,us,,,,,,4.75195e+10
+"Blocked/f32/N=1024",15,46666.8,46652.6,us,,,,,,4.60313e+10
+"Blocked/f32/N=4096",1,3.23527e+06,3.2351e+06,us,,,,,,4.24837e+10
+"Avx2Naive/f64/N=64",18732,37.3489,37.3412,us,,,,,,1.40405e+10
+"Avx2Naive/f64/N=256",44,15727.3,15725.4,us,,,,,,2.13378e+09
+"Avx2Naive/f64/N=512",3,269347,269316,us,,,,,,9.96731e+08
+"Avx2Naive/f64/N=1024",1,2.86538e+06,2.86502e+06,us,,,,,,7.49553e+08
+"Avx2Naive/f64/N=4096",1,3.16806e+08,3.16787e+08,us,,,,,,4.33853e+08
+"Avx2Naive/f32/N=64",20995,34.9852,34.9844,us,,,,,,1.49863e+10
+"Avx2Naive/f32/N=256",70,9997.98,9997.83,us,,,,,,3.35617e+09
+"Avx2Naive/f32/N=512",5,145748,145747,us,,,,,,1.84179e+09
+"Avx2Naive/f32/N=1024",1,3.56643e+06,3.56636e+06,us,,,,,,6.0215e+08
+"Avx2Naive/f32/N=4096",1,3.30316e+08,3.30297e+08,us,,,,,,4.16107e+08
+"Avx2Reordered/f64/N=64",30291,23.1134,23.1134,us,,,,,,2.26833e+10
+"Avx2Reordered/f64/N=256",680,1030.91,1030.88,us,,,,,,3.25494e+10
+"Avx2Reordered/f64/N=512",81,8643.41,8643.18,us,,,,,,3.10575e+10
+"Avx2Reordered/f64/N=1024",10,67505.7,67502.2,us,,,,,,3.18135e+10
+"Avx2Reordered/f64/N=4096",1,1.20062e+07,1.20054e+07,us,,,,,,1.14481e+10
+"Avx2Reordered/f32/N=64",52472,13.3429,13.3429,us,,,,,,3.92934e+10
+"Avx2Reordered/f32/N=256",1153,607.543,607.475,us,,,,,,5.52359e+10
+"Avx2Reordered/f32/N=512",153,4569.57,4568.99,us,,,,,,5.87516e+10
+"Avx2Reordered/f32/N=1024",20,34761.9,34761.5,us,,,,,,6.17776e+10
+"Avx2Reordered/f32/N=4096",1,5.38734e+06,5.38695e+06,us,,,,,,2.55133e+10
+"Avx2Blocked/f64/N=64",100312,6.98732,6.98572,us,,,,,,7.50514e+10
+"Avx2Blocked/f64/N=256",1488,470.685,470.673,us,,,,,,7.12904e+10
+"Avx2Blocked/f64/N=512",120,5831.31,5830.43,us,,,,,,4.60405e+10
+"Avx2Blocked/f64/N=1024",13,51487.3,51485.5,us,,,,,,4.17105e+10
+"Avx2Blocked/f64/N=4096",1,3.68279e+06,3.68255e+06,us,,,,,,3.73217e+10
+"Avx2Blocked/f32/N=64",201945,3.46815,3.4674,us,,,,,,1.51205e+11
+"Avx2Blocked/f32/N=256",3136,223.454,223.415,us,,,,,,1.50189e+11
+"Avx2Blocked/f32/N=512",374,1871.83,1871.52,us,,,,,,1.43432e+11
+"Avx2Blocked/f32/N=1024",30,22976.4,22975.5,us,,,,,,9.34683e+10
+"Avx2Blocked/f32/N=4096",1,1.8099e+06,1.8098e+06,us,,,,,,7.59416e+10
+"Avx512Naive/f64/N=64",20906,33.4681,33.4681,us,,,,,,1.56653e+10
+"Avx512Naive/f64/N=256",45,15440.4,15440.1,us,,,,,,2.1732e+09
+"Avx512Naive/f64/N=512",3,260048,260048,us,,,,,,1.03225e+09
+"Avx512Naive/f64/N=1024",1,2.97557e+06,2.97524e+06,us,,,,,,7.21785e+08
+"Avx512Naive/f64/N=4096",1,3.1638e+08,3.16361e+08,us,,,,,,4.34438e+08
+"Avx512Naive/f32/N=64",20658,33.9403,33.9401,us,,,,,,1.54475e+10
+"Avx512Naive/f32/N=256",69,10166.6,10166.4,us,,,,,,3.30053e+09
+"Avx512Naive/f32/N=512",5,147690,147685,us,,,,,,1.81763e+09
+"Avx512Naive/f32/N=1024",1,3.54108e+06,3.54105e+06,us,,,,,,6.06454e+08
+"Avx512Naive/f32/N=4096",1,3.27957e+08,3.27938e+08,us,,,,,,4.19101e+08
+"Avx512Reordered/f64/N=64",43233,16.2236,16.2234,us,,,,,,3.23168e+10
+"Avx512Reordered/f64/N=256",888,783.629,783.619,us,,,,,,4.28198e+10
+"Avx512Reordered/f64/N=512",94,7480.03,7480.07,us,,,,,,3.58868e+10
+"Avx512Reordered/f64/N=1024",11,63463.6,63461.7,us,,,,,,3.38391e+10
+"Avx512Reordered/f64/N=4096",1,1.16501e+07,1.16494e+07,us,,,,,,1.17979e+10
+"Avx512Reordered/f32/N=64",61986,11.4709,11.4702,us,,,,,,4.57087e+10
+"Avx512Reordered/f32/N=256",1494,468.706,468.636,us,,,,,,7.16002e+10
+"Avx512Reordered/f32/N=512",192,3650.63,3650.57,us,,,,,,7.35324e+10
+"Avx512Reordered/f32/N=1024",22,31382.7,31381.8,us,,,,,,6.84309e+10
+"Avx512Reordered/f32/N=4096",1,5.3494e+06,5.34902e+06,us,,,,,,2.56942e+10
+"Avx512Blocked/f64/N=64",135007,5.19576,5.19559,us,,,,,,1.0091e+11
+"Avx512Blocked/f64/N=256",2218,315.868,315.863,us,,,,,,1.06231e+11
+"Avx512Blocked/f64/N=512",146,4807.87,4806.82,us,,,,,,5.58447e+10
+"Avx512Blocked/f64/N=1024",18,38972.5,38970.9,us,,,,,,5.51048e+10
+"Avx512Blocked/f64/N=4096",1,2.68966e+06,2.68947e+06,us,,,,,,5.11025e+10
+"Avx512Blocked/f32/N=64",287929,2.43016,2.42982,us,,,,,,2.15772e+11
+"Avx512Blocked/f32/N=256",4519,154.779,154.754,us,,,,,,2.16824e+11
+"Avx512Blocked/f32/N=512",535,1308.17,1308.18,us,,,,,,2.05198e+11
+"Avx512Blocked/f32/N=1024",46,15197.5,15197.3,us,,,,,,1.41307e+11
+"Avx512Blocked/f32/N=4096",1,1.14593e+06,1.14586e+06,us,,,,,,1.19944e+11
+"NeonNaive/f64/N=64",,,,,,,,false,"NEON not available on this target"
+"NeonNaive/f64/N=256",,,,,,,,false,"NEON not available on this target"
+"NeonNaive/f64/N=512",,,,,,,,false,"NEON not available on this target"
+"NeonNaive/f64/N=1024",,,,,,,,false,"NEON not available on this target"
+"NeonNaive/f64/N=4096",,,,,,,,false,"NEON not available on this target"
+"NeonNaive/f32/N=64",,,,,,,,false,"NEON not available on this target"
+"NeonNaive/f32/N=256",,,,,,,,false,"NEON not available on this target"
+"NeonNaive/f32/N=512",,,,,,,,false,"NEON not available on this target"
+"NeonNaive/f32/N=1024",,,,,,,,false,"NEON not available on this target"
+"NeonNaive/f32/N=4096",,,,,,,,false,"NEON not available on this target"
+"NeonReordered/f64/N=64",,,,,,,,false,"NEON not available on this target"
+"NeonReordered/f64/N=256",,,,,,,,false,"NEON not available on this target"
+"NeonReordered/f64/N=512",,,,,,,,false,"NEON not available on this target"
+"NeonReordered/f64/N=1024",,,,,,,,false,"NEON not available on this target"
+"NeonReordered/f64/N=4096",,,,,,,,false,"NEON not available on this target"
+"NeonReordered/f32/N=64",,,,,,,,false,"NEON not available on this target"
+"NeonReordered/f32/N=256",,,,,,,,false,"NEON not available on this target"
+"NeonReordered/f32/N=512",,,,,,,,false,"NEON not available on this target"
+"NeonReordered/f32/N=1024",,,,,,,,false,"NEON not available on this target"
+"NeonReordered/f32/N=4096",,,,,,,,false,"NEON not available on this target"
+"NeonBlocked/f64/N=64",,,,,,,,false,"NEON not available on this target"
+"NeonBlocked/f64/N=256",,,,,,,,false,"NEON not available on this target"
+"NeonBlocked/f64/N=512",,,,,,,,false,"NEON not available on this target"
+"NeonBlocked/f64/N=1024",,,,,,,,false,"NEON not available on this target"
+"NeonBlocked/f64/N=4096",,,,,,,,false,"NEON not available on this target"
+"NeonBlocked/f32/N=64",,,,,,,,false,"NEON not available on this target"
+"NeonBlocked/f32/N=256",,,,,,,,false,"NEON not available on this target"
+"NeonBlocked/f32/N=512",,,,,,,,false,"NEON not available on this target"
+"NeonBlocked/f32/N=1024",,,,,,,,false,"NEON not available on this target"
+"NeonBlocked/f32/N=4096",,,,,,,,false,"NEON not available on this target"
+"SveNaive/f64/N=64",,,,,,,,false,"SVE not available on this target"
+"SveNaive/f64/N=256",,,,,,,,false,"SVE not available on this target"
+"SveNaive/f64/N=512",,,,,,,,false,"SVE not available on this target"
+"SveNaive/f64/N=1024",,,,,,,,false,"SVE not available on this target"
+"SveNaive/f64/N=4096",,,,,,,,false,"SVE not available on this target"
+"SveNaive/f32/N=64",,,,,,,,false,"SVE not available on this target"
+"SveNaive/f32/N=256",,,,,,,,false,"SVE not available on this target"
+"SveNaive/f32/N=512",,,,,,,,false,"SVE not available on this target"
+"SveNaive/f32/N=1024",,,,,,,,false,"SVE not available on this target"
+"SveNaive/f32/N=4096",,,,,,,,false,"SVE not available on this target"
+"SveReordered/f64/N=64",,,,,,,,false,"SVE not available on this target"
+"SveReordered/f64/N=256",,,,,,,,false,"SVE not available on this target"
+"SveReordered/f64/N=512",,,,,,,,false,"SVE not available on this target"
+"SveReordered/f64/N=1024",,,,,,,,false,"SVE not available on this target"
+"SveReordered/f64/N=4096",,,,,,,,false,"SVE not available on this target"
+"SveReordered/f32/N=64",,,,,,,,false,"SVE not available on this target"
+"SveReordered/f32/N=256",,,,,,,,false,"SVE not available on this target"
+"SveReordered/f32/N=512",,,,,,,,false,"SVE not available on this target"
+"SveReordered/f32/N=1024",,,,,,,,false,"SVE not available on this target"
+"SveReordered/f32/N=4096",,,,,,,,false,"SVE not available on this target"
+"SveBlocked/f64/N=64",,,,,,,,false,"SVE not available on this target"
+"SveBlocked/f64/N=256",,,,,,,,false,"SVE not available on this target"
+"SveBlocked/f64/N=512",,,,,,,,false,"SVE not available on this target"
+"SveBlocked/f64/N=1024",,,,,,,,false,"SVE not available on this target"
+"SveBlocked/f64/N=4096",,,,,,,,false,"SVE not available on this target"
+"SveBlocked/f32/N=64",,,,,,,,false,"SVE not available on this target"
+"SveBlocked/f32/N=256",,,,,,,,false,"SVE not available on this target"
+"SveBlocked/f32/N=512",,,,,,,,false,"SVE not available on this target"
+"SveBlocked/f32/N=1024",,,,,,,,false,"SVE not available on this target"
+"SveBlocked/f32/N=4096",,,,,,,,false,"SVE not available on this target"
+"Sme1Tile/f64/N=64",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"Sme1Tile/f64/N=256",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"Sme1Tile/f64/N=512",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"Sme1Tile/f64/N=1024",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"Sme1Tile/f64/N=2048",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"Sme1Tile/f64/N=4000",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"Sme1Tile/f64/N=4096",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"Sme1Tile/f32/N=64",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"Sme1Tile/f32/N=256",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"Sme1Tile/f32/N=512",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"Sme1Tile/f32/N=1024",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"Sme1Tile/f32/N=2048",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"Sme1Tile/f32/N=4000",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"Sme1Tile/f32/N=4096",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"SmeTiles/f64/N=64",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"SmeTiles/f64/N=256",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"SmeTiles/f64/N=512",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"SmeTiles/f64/N=1024",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"SmeTiles/f64/N=2048",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"SmeTiles/f64/N=4000",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"SmeTiles/f64/N=4096",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"SmeTiles/f32/N=64",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"SmeTiles/f32/N=256",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"SmeTiles/f32/N=512",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"SmeTiles/f32/N=1024",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"SmeTiles/f32/N=2048",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"SmeTiles/f32/N=4000",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"SmeTiles/f32/N=4096",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"SmeBlocked/f64/N=64",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"SmeBlocked/f64/N=256",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"SmeBlocked/f64/N=512",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"SmeBlocked/f64/N=1024",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"SmeBlocked/f64/N=2048",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"SmeBlocked/f64/N=4000",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"SmeBlocked/f64/N=4096",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"SmeBlocked/f32/N=64",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"SmeBlocked/f32/N=256",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"SmeBlocked/f32/N=512",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"SmeBlocked/f32/N=1024",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"SmeBlocked/f32/N=2048",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"SmeBlocked/f32/N=4000",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"SmeBlocked/f32/N=4096",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"Sme/f64/N=64",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"Sme/f64/N=256",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"Sme/f64/N=512",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"Sme/f64/N=1024",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"Sme/f64/N=2048",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"Sme/f64/N=4000",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"Sme/f64/N=4096",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"Sme/f32/N=64",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"Sme/f32/N=256",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"Sme/f32/N=512",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"Sme/f32/N=1024",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"Sme/f32/N=2048",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"Sme/f32/N=4000",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"Sme/f32/N=4096",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"Amx/f64/N=64/real_time",,,,,,,,false,"Accelerate.framework not available (Apple only, HPC_ENABLE_AMX)"
+"Amx/f64/N=256/real_time",,,,,,,,false,"Accelerate.framework not available (Apple only, HPC_ENABLE_AMX)"
+"Amx/f64/N=512/real_time",,,,,,,,false,"Accelerate.framework not available (Apple only, HPC_ENABLE_AMX)"
+"Amx/f64/N=1024/real_time",,,,,,,,false,"Accelerate.framework not available (Apple only, HPC_ENABLE_AMX)"
+"Amx/f64/N=2048/real_time",,,,,,,,false,"Accelerate.framework not available (Apple only, HPC_ENABLE_AMX)"
+"Amx/f64/N=4096/real_time",,,,,,,,false,"Accelerate.framework not available (Apple only, HPC_ENABLE_AMX)"
+"Amx/f32/N=64/real_time",,,,,,,,false,"Accelerate.framework not available (Apple only, HPC_ENABLE_AMX)"
+"Amx/f32/N=256/real_time",,,,,,,,false,"Accelerate.framework not available (Apple only, HPC_ENABLE_AMX)"
+"Amx/f32/N=512/real_time",,,,,,,,false,"Accelerate.framework not available (Apple only, HPC_ENABLE_AMX)"
+"Amx/f32/N=1024/real_time",,,,,,,,false,"Accelerate.framework not available (Apple only, HPC_ENABLE_AMX)"
+"Amx/f32/N=2048/real_time",,,,,,,,false,"Accelerate.framework not available (Apple only, HPC_ENABLE_AMX)"
+"Amx/f32/N=4096/real_time",,,,,,,,false,"Accelerate.framework not available (Apple only, HPC_ENABLE_AMX)"
+"KleidiAI/f32/N=64",,,,,,,,false,"KleidiAI not built (needs SME2 and HPC_ENABLE_KLEIDIAI=ON)"
+"KleidiAI/f32/N=256",,,,,,,,false,"KleidiAI not built (needs SME2 and HPC_ENABLE_KLEIDIAI=ON)"
+"KleidiAI/f32/N=512",,,,,,,,false,"KleidiAI not built (needs SME2 and HPC_ENABLE_KLEIDIAI=ON)"
+"KleidiAI/f32/N=1024",,,,,,,,false,"KleidiAI not built (needs SME2 and HPC_ENABLE_KLEIDIAI=ON)"
+"KleidiAI/f32/N=2048",,,,,,,,false,"KleidiAI not built (needs SME2 and HPC_ENABLE_KLEIDIAI=ON)"
+"KleidiAI/f32/N=4096",,,,,,,,false,"KleidiAI not built (needs SME2 and HPC_ENABLE_KLEIDIAI=ON)"
+"BlockedPf2/f64/N=256",764,907.241,907.184,us,,,,,,3.69875e+10
+"BlockedPf2/f64/N=512",93,7569.78,7568.79,us,,,,,,3.54661e+10
+"BlockedPf2/f64/N=1024",11,60894.9,60892.9,us,,,,,,3.52665e+10
+"BlockedPf2/f32/N=256",978,707.619,707.482,us,,,,,,4.7428e+10
+"BlockedPf2/f32/N=512",123,5692.34,5692.18,us,,,,,,4.71587e+10
+"BlockedPf2/f32/N=1024",15,46759.3,46749.9,us,,,,,,4.59356e+10
+"Avx2BlockedPf2/f64/N=256",1495,468.132,468.027,us,,,,,,7.16934e+10
+"Avx2BlockedPf2/f64/N=512",121,5786.79,5785.32,us,,,,,,4.63994e+10
+"Avx2BlockedPf2/f64/N=1024",14,51065.3,51062.7,us,,,,,,4.20558e+10
+"Avx2BlockedPf2/f32/N=256",3123,224.278,224.267,us,,,,,,1.49618e+11
+"Avx2BlockedPf2/f32/N=512",369,1898.84,1898.27,us,,,,,,1.41411e+11
+"Avx2BlockedPf2/f32/N=1024",30,23027.8,23024.5,us,,,,,,9.32696e+10
+"Avx512BlockedPf2/f64/N=256",2191,319.301,319.232,us,,,,,,1.0511e+11
+"Avx512BlockedPf2/f64/N=512",144,4848.52,4848.39,us,,,,,,5.53658e+10
+"Avx512BlockedPf2/f64/N=1024",18,39343,39342,us,,,,,,5.4585e+10
+"Avx512BlockedPf2/f32/N=256",4569,153.256,153.252,us,,,,,,2.1895e+11
+"Avx512BlockedPf2/f32/N=512",542,1294.78,1294.73,us,,,,,,2.07329e+11
+"Avx512BlockedPf2/f32/N=1024",49,14348.4,14348,us,,,,,,1.49671e+11
+"NeonBlockedPf2/f64/N=256",,,,,,,,false,"NEON not available on this target"
+"NeonBlockedPf2/f64/N=512",,,,,,,,false,"NEON not available on this target"
+"NeonBlockedPf2/f64/N=1024",,,,,,,,false,"NEON not available on this target"
+"NeonBlockedPf2/f32/N=256",,,,,,,,false,"NEON not available on this target"
+"NeonBlockedPf2/f32/N=512",,,,,,,,false,"NEON not available on this target"
+"NeonBlockedPf2/f32/N=1024",,,,,,,,false,"NEON not available on this target"
+"SveBlockedPf2/f64/N=256",,,,,,,,false,"SVE not available on this target"
+"SveBlockedPf2/f64/N=512",,,,,,,,false,"SVE not available on this target"
+"SveBlockedPf2/f64/N=1024",,,,,,,,false,"SVE not available on this target"
+"SveBlockedPf2/f32/N=256",,,,,,,,false,"SVE not available on this target"
+"SveBlockedPf2/f32/N=512",,,,,,,,false,"SVE not available on this target"
+"SveBlockedPf2/f32/N=1024",,,,,,,,false,"SVE not available on this target"
+"BlockedPf4/f64/N=256",773,906.61,906.535,us,,,,,,3.70139e+10
+"BlockedPf4/f64/N=512",93,7532.32,7531.55,us,,,,,,3.56415e+10
+"BlockedPf4/f64/N=1024",12,60657.5,60655.9,us,,,,,,3.54044e+10
+"BlockedPf4/f32/N=256",986,704.57,704.55,us,,,,,,4.76254e+10
+"BlockedPf4/f32/N=512",123,5676.34,5676.06,us,,,,,,4.72925e+10
+"BlockedPf4/f32/N=1024",15,46578,46577.3,us,,,,,,4.61058e+10
+"Avx2BlockedPf4/f64/N=256",1490,469.948,469.914,us,,,,,,7.14055e+10
+"Avx2BlockedPf4/f64/N=512",120,5807.17,5807.03,us,,,,,,4.62259e+10
+"Avx2BlockedPf4/f64/N=1024",14,51453.6,51453.2,us,,,,,,4.17366e+10
+"Avx2BlockedPf4/f32/N=256",3123,224.303,224.301,us,,,,,,1.49595e+11
+"Avx2BlockedPf4/f32/N=512",371,1885.54,1885.45,us,,,,,,1.42372e+11
+"Avx2BlockedPf4/f32/N=1024",30,22967.7,22967.3,us,,,,,,9.3502e+10
+"Avx512BlockedPf4/f64/N=256",2210,316.726,316.72,us,,,,,,1.05943e+11
+"Avx512BlockedPf4/f64/N=512",145,4820.56,4820.54,us,,,,,,5.56857e+10
+"Avx512BlockedPf4/f64/N=1024",18,38988,38987.6,us,,,,,,5.50811e+10
+"Avx512BlockedPf4/f32/N=256",4558,153.618,153.613,us,,,,,,2.18434e+11
+"Avx512BlockedPf4/f32/N=512",537,1303.84,1303.75,us,,,,,,2.05895e+11
+"Avx512BlockedPf4/f32/N=1024",48,14505.6,14505,us,,,,,,1.48051e+11
+"NeonBlockedPf4/f64/N=256",,,,,,,,false,"NEON not available on this target"
+"NeonBlockedPf4/f64/N=512",,,,,,,,false,"NEON not available on this target"
+"NeonBlockedPf4/f64/N=1024",,,,,,,,false,"NEON not available on this target"
+"NeonBlockedPf4/f32/N=256",,,,,,,,false,"NEON not available on this target"
+"NeonBlockedPf4/f32/N=512",,,,,,,,false,"NEON not available on this target"
+"NeonBlockedPf4/f32/N=1024",,,,,,,,false,"NEON not available on this target"
+"SveBlockedPf4/f64/N=256",,,,,,,,false,"SVE not available on this target"
+"SveBlockedPf4/f64/N=512",,,,,,,,false,"SVE not available on this target"
+"SveBlockedPf4/f64/N=1024",,,,,,,,false,"SVE not available on this target"
+"SveBlockedPf4/f32/N=256",,,,,,,,false,"SVE not available on this target"
+"SveBlockedPf4/f32/N=512",,,,,,,,false,"SVE not available on this target"
+"SveBlockedPf4/f32/N=1024",,,,,,,,false,"SVE not available on this target"
+"BlockedPf8/f64/N=256",768,912.477,912.455,us,,,,,,3.67738e+10
+"BlockedPf8/f64/N=512",92,7581.03,7580.94,us,,,,,,3.54093e+10
+"BlockedPf8/f64/N=1024",11,61084.2,61082.7,us,,,,,,3.5157e+10
+"BlockedPf8/f32/N=256",977,710.006,709.988,us,,,,,,4.72606e+10
+"BlockedPf8/f32/N=512",122,5710.83,5710.4,us,,,,,,4.70082e+10
+"BlockedPf8/f32/N=1024",15,46987.9,46987.4,us,,,,,,4.57034e+10
+"Avx2BlockedPf8/f64/N=256",1492,469.259,469.242,us,,,,,,7.15077e+10
+"Avx2BlockedPf8/f64/N=512",120,5808.6,5808.36,us,,,,,,4.62154e+10
+"Avx2BlockedPf8/f64/N=1024",14,51306.2,51303.8,us,,,,,,4.18582e+10
+"Avx2BlockedPf8/f32/N=256",3121,224.31,224.292,us,,,,,,1.49601e+11
+"Avx2BlockedPf8/f32/N=512",371,1886.26,1886.15,us,,,,,,1.42319e+11
+"Avx2BlockedPf8/f32/N=1024",30,22962.1,22961.9,us,,,,,,9.35239e+10
+"Avx512BlockedPf8/f64/N=256",2213,316.366,316.36,us,,,,,,1.06064e+11
+"Avx512BlockedPf8/f64/N=512",146,4807.36,4807.05,us,,,,,,5.5842e+10
+"Avx512BlockedPf8/f64/N=1024",18,38761.2,38760.1,us,,,,,,5.54045e+10
+"Avx512BlockedPf8/f32/N=256",4563,153.367,153.362,us,,,,,,2.18793e+11
+"Avx512BlockedPf8/f32/N=512",541,1291.89,1291.83,us,,,,,,2.07794e+11
+"Avx512BlockedPf8/f32/N=1024",49,14394.3,14394.3,us,,,,,,1.49189e+11
+"NeonBlockedPf8/f64/N=256",,,,,,,,false,"NEON not available on this target"
+"NeonBlockedPf8/f64/N=512",,,,,,,,false,"NEON not available on this target"
+"NeonBlockedPf8/f64/N=1024",,,,,,,,false,"NEON not available on this target"
+"NeonBlockedPf8/f32/N=256",,,,,,,,false,"NEON not available on this target"
+"NeonBlockedPf8/f32/N=512",,,,,,,,false,"NEON not available on this target"
+"NeonBlockedPf8/f32/N=1024",,,,,,,,false,"NEON not available on this target"
+"SveBlockedPf8/f64/N=256",,,,,,,,false,"SVE not available on this target"
+"SveBlockedPf8/f64/N=512",,,,,,,,false,"SVE not available on this target"
+"SveBlockedPf8/f64/N=1024",,,,,,,,false,"SVE not available on this target"
+"SveBlockedPf8/f32/N=256",,,,,,,,false,"SVE not available on this target"
+"SveBlockedPf8/f32/N=512",,,,,,,,false,"SVE not available on this target"
+"SveBlockedPf8/f32/N=1024",,,,,,,,false,"SVE not available on this target"
+"BlockedPf16/f64/N=256",767,912.767,912.739,us,,,,,,3.67624e+10
+"BlockedPf16/f64/N=512",92,7584.85,7584.5,us,,,,,,3.53926e+10
+"BlockedPf16/f64/N=1024",11,61043.4,61040.7,us,,,,,,3.51811e+10
+"BlockedPf16/f32/N=256",998,695.01,694.994,us,,,,,,4.82802e+10
+"BlockedPf16/f32/N=512",123,5597.76,5597.62,us,,,,,,4.79552e+10
+"BlockedPf16/f32/N=1024",15,46133.3,46133,us,,,,,,4.65499e+10
+"Avx2BlockedPf16/f64/N=256",1491,469.77,469.764,us,,,,,,7.14283e+10
+"Avx2BlockedPf16/f64/N=512",120,5807.6,5807.33,us,,,,,,4.62236e+10
+"Avx2BlockedPf16/f64/N=1024",14,51365.8,51364.5,us,,,,,,4.18087e+10
+"Avx2BlockedPf16/f32/N=256",3122,224.369,224.365,us,,,,,,1.49553e+11
+"Avx2BlockedPf16/f32/N=512",372,1884.21,1884.15,us,,,,,,1.4247e+11
+"Avx2BlockedPf16/f32/N=1024",30,22962.6,22962,us,,,,,,9.35233e+10
+"Avx512BlockedPf16/f64/N=256",2217,315.62,315.612,us,,,,,,1.06315e+11
+"Avx512BlockedPf16/f64/N=512",176,3972.61,3972.6,us,,,,,,6.75718e+10
+"Avx512BlockedPf16/f64/N=1024",18,38985.8,38985,us,,,,,,5.50848e+10
+"Avx512BlockedPf16/f32/N=256",4578,152.858,152.854,us,,,,,,2.1952e+11
+"Avx512BlockedPf16/f32/N=512",528,1329.89,1329.88,us,,,,,,2.0185e+11
+"Avx512BlockedPf16/f32/N=1024",49,14364,14364.1,us,,,,,,1.49504e+11
+"NeonBlockedPf16/f64/N=256",,,,,,,,false,"NEON not available on this target"
+"NeonBlockedPf16/f64/N=512",,,,,,,,false,"NEON not available on this target"
+"NeonBlockedPf16/f64/N=1024",,,,,,,,false,"NEON not available on this target"
+"NeonBlockedPf16/f32/N=256",,,,,,,,false,"NEON not available on this target"
+"NeonBlockedPf16/f32/N=512",,,,,,,,false,"NEON not available on this target"
+"NeonBlockedPf16/f32/N=1024",,,,,,,,false,"NEON not available on this target"
+"SveBlockedPf16/f64/N=256",,,,,,,,false,"SVE not available on this target"
+"SveBlockedPf16/f64/N=512",,,,,,,,false,"SVE not available on this target"
+"SveBlockedPf16/f64/N=1024",,,,,,,,false,"SVE not available on this target"
+"SveBlockedPf16/f32/N=256",,,,,,,,false,"SVE not available on this target"
+"SveBlockedPf16/f32/N=512",,,,,,,,false,"SVE not available on this target"
+"SveBlockedPf16/f32/N=1024",,,,,,,,false,"SVE not available on this target"
+"BStride/f32/N=1984/ldb=1984/in_place",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f32/N=1984/ldb=1984/packed",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f32/N=2016/ldb=2016/in_place",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f32/N=2016/ldb=2016/packed",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f32/N=2048/ldb=2048/in_place",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f32/N=2048/ldb=2048/packed",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f32/N=2080/ldb=2080/in_place",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f32/N=2080/ldb=2080/packed",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f32/N=4000/ldb=4000/in_place",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f32/N=4000/ldb=4000/packed",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f32/N=4032/ldb=4032/in_place",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f32/N=4032/ldb=4032/packed",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f32/N=4064/ldb=4064/in_place",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f32/N=4064/ldb=4064/packed",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f32/N=4096/ldb=4096/in_place",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f32/N=4096/ldb=4096/packed",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f32/N=4128/ldb=4128/in_place",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f32/N=4128/ldb=4128/packed",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f32/N=4096/ldb=4097/in_place",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f32/N=4096/ldb=4097/packed",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f32/N=4096/ldb=4128/in_place",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f32/N=4096/ldb=4128/packed",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f32/N=4096/ldb=4160/in_place",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f32/N=4096/ldb=4160/packed",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f64/N=1984/ldb=1984/in_place",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f64/N=1984/ldb=1984/packed",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f64/N=2016/ldb=2016/in_place",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f64/N=2016/ldb=2016/packed",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f64/N=2048/ldb=2048/in_place",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f64/N=2048/ldb=2048/packed",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f64/N=2080/ldb=2080/in_place",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f64/N=2080/ldb=2080/packed",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f64/N=4000/ldb=4000/in_place",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f64/N=4000/ldb=4000/packed",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f64/N=4032/ldb=4032/in_place",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f64/N=4032/ldb=4032/packed",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f64/N=4064/ldb=4064/in_place",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f64/N=4064/ldb=4064/packed",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f64/N=4096/ldb=4096/in_place",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f64/N=4096/ldb=4096/packed",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f64/N=4128/ldb=4128/in_place",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f64/N=4128/ldb=4128/packed",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f64/N=4096/ldb=4097/in_place",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f64/N=4096/ldb=4097/packed",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f64/N=4096/ldb=4128/in_place",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f64/N=4096/ldb=4128/packed",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f64/N=4096/ldb=4160/in_place",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"
+"BStride/f64/N=4096/ldb=4160/packed",,,,,,,,false,"SME2 not available (build with -DHPC_ENABLE_SME=ON on Apple M4+)"

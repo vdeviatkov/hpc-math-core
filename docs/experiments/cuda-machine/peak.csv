@@ -1,0 +1,5 @@
+test,value,unit
+fma_f32,59.7,TFLOP/s
+fma_f64,0.82,TFLOP/s
+mma_f16_f32acc,124.4,TFLOP/s
+dram_copy,812,GB/s

@@ -50,7 +50,23 @@ void gemm_cuda_cublas_fp16(const Matrix<float>&, const Matrix<float>&, Matrix<fl
     unavailable();
 }
 
-void gemm_cuda_cublas_device_f32(const float*, const float*, float*, int, int, int) { unavailable(); }
+template <typename T>
+void gemm_cuda_naive_device(const T*, const T*, T*, int, int, int) { unavailable(); }
+template <typename T>
+void gemm_cuda_blocked_device(const T*, const T*, T*, int, int, int) { unavailable(); }
+template <typename T>
+void gemm_cuda_reg_tile_device(const T*, const T*, T*, int, int, int) { unavailable(); }
+template <typename T>
+void gemm_cuda_double_buf_device(const T*, const T*, T*, int, int, int) { unavailable(); }
+template <typename T>
+void gemm_cuda_vectorized_device(const T*, const T*, T*, int, int, int) { unavailable(); }
+template <typename T>
+void gemm_cuda_cublas_device(const T*, const T*, T*, int, int, int) { unavailable(); }
+void gemm_cuda_wmma_device(const float*, const float*, float*, int, int, int) { unavailable(); }
+void gemm_cuda_mma_ldmatrix_device(const float*, const float*, float*, int, int, int) {
+    unavailable();
+}
+double gemm_cuda_time_ms(const std::function<void()>&) { unavailable(); }
 void gemm_cuda_cublas_tf32_device(const float*, const float*, float*, int, int, int) { unavailable(); }
 void gemm_cuda_convert_f32_to_f16_device(const float*, void*, int) { unavailable(); }
 void gemm_cuda_cublas_fp16_device(const void*, const void*, float*, int, int, int) { unavailable(); }
@@ -73,5 +89,16 @@ HPC_INSTANTIATE(gemm_cuda_double_buf)
 HPC_INSTANTIATE(gemm_cuda_vectorized)
 HPC_INSTANTIATE(gemm_cuda_cublas)
 #undef HPC_INSTANTIATE
+
+#define HPC_INSTANTIATE_DEVICE(fn)                                                \
+    template void fn<float>(const float*, const float*, float*, int, int, int); \
+    template void fn<double>(const double*, const double*, double*, int, int, int);
+HPC_INSTANTIATE_DEVICE(gemm_cuda_naive_device)
+HPC_INSTANTIATE_DEVICE(gemm_cuda_blocked_device)
+HPC_INSTANTIATE_DEVICE(gemm_cuda_reg_tile_device)
+HPC_INSTANTIATE_DEVICE(gemm_cuda_double_buf_device)
+HPC_INSTANTIATE_DEVICE(gemm_cuda_vectorized_device)
+HPC_INSTANTIATE_DEVICE(gemm_cuda_cublas_device)
+#undef HPC_INSTANTIATE_DEVICE
 
 }  // namespace hpc::gemm

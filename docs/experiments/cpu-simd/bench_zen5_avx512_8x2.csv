@@ -1,0 +1,11 @@
+name,iterations,real_time,cpu_time,time_unit,bytes_per_second,items_per_second,label,error_occurred,error_message,"GFLOP/s"
+"Avx512Blocked/f64/N=64",206568,3.39127,3.39077,us,,,,,,1.54622e+11
+"Avx512Blocked/f64/N=256",3386,207.743,207.711,us,,,,,,1.61544e+11
+"Avx512Blocked/f64/N=512",280,2551.94,2551.53,us,,,,,,1.05206e+11
+"Avx512Blocked/f64/N=1024",30,23633.6,23632.7,us,,,,,,9.08692e+10
+"Avx512Blocked/f64/N=4096",1,1.78143e+06,1.78126e+06,us,,,,,,7.71581e+10
+"Avx512Blocked/f32/N=64",427765,1.63736,1.63689,us,,,,,,3.20294e+11
+"Avx512Blocked/f32/N=256",6941,100.869,100.86,us,,,,,,3.32684e+11
+"Avx512Blocked/f32/N=512",855,818.655,818.613,us,,,,,,3.27915e+11
+"Avx512Blocked/f32/N=1024",93,7546.72,7545.8,us,,,,,,2.84593e+11
+"Avx512Blocked/f32/N=4096",1,693397,693339,us,,,,,,1.98228e+11

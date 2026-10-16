@@ -1,0 +1,5 @@
+test,sm_clock_mhz,mem_clock_mhz,power_w,temp_c
+fma_f32,2827,14801,300.43,64
+fma_f64,2895,14801,102.30,49
+mma,2887,14801,114.16,49
+copy,2895,14801,159.53,46

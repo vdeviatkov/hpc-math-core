@@ -14,12 +14,12 @@
  *                         AVX2/scalar reordered on Zen 5: the loop streams B
  *                         and C, so it is limited by memory traffic, not FMA
  *                         width.
- *  gemm_avx512_blocked    tiled i → k → j with a 4×32 f32 / 4×16 f64 register
- *                         tile (4 rows × 2 ZMM). The fastest of the three.
+ *  gemm_avx512_blocked    tiled i → k → j with an 8×32 f32 / 8×16 f64 register
+ *                         tile (8 rows × 2 ZMM). The fastest of the three.
  *
  * Peak (2 FMA ports): 2 × 16 lanes × 2 FLOP = 64 FLOP/cycle f32, 32 f64.
- * The 32 ZMM registers leave room for the 8 accumulators, 4 broadcasts and
- * 2 B vectors of the micro-kernel without spilling.
+ * The 32 ZMM registers leave room for the 16 accumulators, 2 B vectors and
+ * the broadcast of the micro-kernel without spilling.
  *
  * Available on Intel Skylake-SP/X and later server/workstation parts
  * (Cascade Lake, Ice Lake, Sapphire Rapids, Rocket Lake) and AMD Zen 4+.
@@ -53,12 +53,12 @@ inline constexpr std::size_t kAvx512TileM = 64;   // outer i-tile (same as AVX2)
 inline constexpr std::size_t kAvx512TileK = 256;  // outer k-tile (same as AVX2)
 inline constexpr std::size_t kAvx512TileN = 512;  // outer j-tile — wider: 512 f32 = 2 KB/row
 
-// Micro-kernel unroll: 4 C rows × 2 ZMM vectors per row.
+// Micro-kernel unroll: 8 C rows × 2 ZMM vectors per row = 16 accumulators.
 // f32: 2 × 16 = 32 j-elements per call  (vs 16 in AVX2)
 // f64: 2 ×  8 = 16 j-elements per call  (vs  8 in AVX2)
-inline constexpr std::size_t kAvx512F32RegRows = 4;
+inline constexpr std::size_t kAvx512F32RegRows = 8;
 inline constexpr std::size_t kAvx512F32RegCols = 2;  // 2 ZMM → 32 f32
-inline constexpr std::size_t kAvx512F64RegRows = 4;
+inline constexpr std::size_t kAvx512F64RegRows = 8;
 inline constexpr std::size_t kAvx512F64RegCols = 2;  // 2 ZMM → 16 f64
 
 // ============================================================================
@@ -68,110 +68,72 @@ inline constexpr std::size_t kAvx512F64RegCols = 2;  // 2 ZMM → 16 f64
 #if HPC_HAS_AVX512
 
 /**
- * @brief AVX-512 f32 micro-kernel: C[i..i+3][j..j+31] += A[i..i+3][k_blk..k_end) × B[..][j..)
+ * @brief AVX-512 micro-kernel: C[0..8)[0..2W) += A[0..8)[0..k_len) × B[0..k_len)[0..2W)
  *
- * Live vectors per k step: 8 C accumulators (4 rows × 2 ZMM), 4 broadcasts
- * of A(i+r, k), 2 B vectors — 14 of 32 ZMM.
+ * W = 16 f32 / 8 f64 per ZMM. Per k step: 2 ZMM loads of B row k, 8
+ * broadcasts of A(i+r, k), 16 FMAs into 16 accumulators (8 rows × 2 ZMM);
+ * 16 + 2 + 1 of the 32 ZMM registers.
  *
- * Note on embedded broadcast:
- *   AVX-512 supports a memory-source broadcast operand in FMA:
- *     vfmadd231ps zmm_acc, zmm_b, [mem]{1to16}
- *   which encodes broadcast + FMA in one instruction. It doesn't pay here:
- *   each broadcast A(i+r, k) feeds 2 FMAs (two ZMM columns), so the compiler
- *   broadcasts it once into a register instead. GCC 13 -O3 -march=native on
- *   Zen 5 emits vbroadcastss/sd and no {1to16} operands for this kernel.
+ * Why 8 rows, not 4. Zen 5 retires 2 FMAs per cycle with a 4-cycle latency,
+ * so 8 independent accumulators are the bare minimum and 12 are needed for
+ * the full rate (fma_peak). With 4 rows × 2 ZMM, GCC 13 also folds the B
+ * loads into the FMAs as memory operands (vfmadd231ps (mem), …), re-loading
+ * B for every FMA: 12 loads per k step for 8 FMAs, so the kernel ran into
+ * the load ports at 60% of peak. With 8 rows it loads B once per k step and
+ * every FMA is register-only: 97% of peak on L1-resident data
+ * (simd_microkernel, docs/experiments/cpu-simd).
  *
- * @param a       Pointer to A(i, k_blk) — row-stride lda
- * @param b       Pointer to B(k_blk, j) — row-stride ldb
- * @param c0..c3  Pointers to C(i+0..3, j)
- * @param lda     Leading dimension of A (= K for row-major)
- * @param ldb     Leading dimension of B (= N for row-major)
- * @param k_len   Number of k iterations to process
+ * @param a      Pointer to A(i, k_blk) — row-stride lda
+ * @param b      Pointer to B(k_blk, j) — row-stride ldb
+ * @param c      Pointer to C(i, j)     — row-stride ldc
  */
-inline void avx512_micro_f32_4x32(const float* __restrict__ a, const float* __restrict__ b,
-                                  float* __restrict__ c0, float* __restrict__ c1,
-                                  float* __restrict__ c2, float* __restrict__ c3, std::size_t lda,
-                                  std::size_t ldb, std::size_t k_len) noexcept {
-    // Load 4×32 C tile: 8 ZMM accumulators.
-    // Each ZMM covers 16 f32 = 64 bytes = 1 cache line.
-    __m512 c00 = _mm512_loadu_ps(c0), c01 = _mm512_loadu_ps(c0 + 16);
-    __m512 c10 = _mm512_loadu_ps(c1), c11 = _mm512_loadu_ps(c1 + 16);
-    __m512 c20 = _mm512_loadu_ps(c2), c21 = _mm512_loadu_ps(c2 + 16);
-    __m512 c30 = _mm512_loadu_ps(c3), c31 = _mm512_loadu_ps(c3 + 16);
+/// ZMM operations per element type, for avx512_micro_8x2.
+template <typename T> struct Zmm;
+template <> struct Zmm<float> {
+    using V = __m512;
+    static V load(const float* p) { return _mm512_loadu_ps(p); }
+    static void store(float* p, V v) { _mm512_storeu_ps(p, v); }
+    static V splat(float x) { return _mm512_set1_ps(x); }
+    static V fma(V x, V y, V acc) { return _mm512_fmadd_ps(x, y, acc); }
+};
+template <> struct Zmm<double> {
+    using V = __m512d;
+    static V load(const double* p) { return _mm512_loadu_pd(p); }
+    static void store(double* p, V v) { _mm512_storeu_pd(p, v); }
+    static V splat(double x) { return _mm512_set1_pd(x); }
+    static V fma(V x, V y, V acc) { return _mm512_fmadd_pd(x, y, acc); }
+};
 
-    for (std::size_t k = 0; k < k_len; ++k) {
-        // Load two ZMM vectors of B row k (32 consecutive floats).
-        const __m512 b0 = _mm512_loadu_ps(b + k * ldb);
-        const __m512 b1 = _mm512_loadu_ps(b + k * ldb + 16);
+template <typename T>
+inline void avx512_micro_8x2(const T* __restrict__ a, const T* __restrict__ b, T* __restrict__ c,
+                             std::size_t lda, std::size_t ldb, std::size_t ldc,
+                             std::size_t k_len) noexcept {
+    using Z                 = Zmm<T>;
+    using V                 = typename Z::V;
+    constexpr std::size_t W = 64 / sizeof(T);
+    constexpr int R         = 8;
 
-        // Broadcast A(i+r, k) — _mm512_set1_ps replicates one scalar to all 16 lanes.
-        const __m512 a0 = _mm512_set1_ps(a[0 * lda + k]);
-        const __m512 a1 = _mm512_set1_ps(a[1 * lda + k]);
-        const __m512 a2 = _mm512_set1_ps(a[2 * lda + k]);
-        const __m512 a3 = _mm512_set1_ps(a[3 * lda + k]);
-
-        c00 = _mm512_fmadd_ps(a0, b0, c00);
-        c01 = _mm512_fmadd_ps(a0, b1, c01);
-        c10 = _mm512_fmadd_ps(a1, b0, c10);
-        c11 = _mm512_fmadd_ps(a1, b1, c11);
-        c20 = _mm512_fmadd_ps(a2, b0, c20);
-        c21 = _mm512_fmadd_ps(a2, b1, c21);
-        c30 = _mm512_fmadd_ps(a3, b0, c30);
-        c31 = _mm512_fmadd_ps(a3, b1, c31);
+    V acc[R][2];
+#pragma GCC unroll 8
+    for (int r = 0; r < R; ++r) {
+        acc[r][0] = Z::load(c + r * ldc);
+        acc[r][1] = Z::load(c + r * ldc + W);
     }
-
-    // Store 4×32 C tile back.
-    _mm512_storeu_ps(c0, c00);
-    _mm512_storeu_ps(c0 + 16, c01);
-    _mm512_storeu_ps(c1, c10);
-    _mm512_storeu_ps(c1 + 16, c11);
-    _mm512_storeu_ps(c2, c20);
-    _mm512_storeu_ps(c2 + 16, c21);
-    _mm512_storeu_ps(c3, c30);
-    _mm512_storeu_ps(c3 + 16, c31);
-}
-
-/**
- * @brief AVX-512 f64 micro-kernel: C[i..i+3][j..j+15] += A[i..i+3][k_blk..k_end) × B[..][j..)
- *
- * Same structure as the f32 kernel, with 8 f64 per ZMM.
- */
-inline void avx512_micro_f64_4x16(const double* __restrict__ a, const double* __restrict__ b,
-                                  double* __restrict__ c0, double* __restrict__ c1,
-                                  double* __restrict__ c2, double* __restrict__ c3, std::size_t lda,
-                                  std::size_t ldb, std::size_t k_len) noexcept {
-    __m512d c00 = _mm512_loadu_pd(c0), c01 = _mm512_loadu_pd(c0 + 8);
-    __m512d c10 = _mm512_loadu_pd(c1), c11 = _mm512_loadu_pd(c1 + 8);
-    __m512d c20 = _mm512_loadu_pd(c2), c21 = _mm512_loadu_pd(c2 + 8);
-    __m512d c30 = _mm512_loadu_pd(c3), c31 = _mm512_loadu_pd(c3 + 8);
-
     for (std::size_t k = 0; k < k_len; ++k) {
-        const __m512d b0 = _mm512_loadu_pd(b + k * ldb);
-        const __m512d b1 = _mm512_loadu_pd(b + k * ldb + 8);
-
-        const __m512d a0 = _mm512_set1_pd(a[0 * lda + k]);
-        const __m512d a1 = _mm512_set1_pd(a[1 * lda + k]);
-        const __m512d a2 = _mm512_set1_pd(a[2 * lda + k]);
-        const __m512d a3 = _mm512_set1_pd(a[3 * lda + k]);
-
-        c00 = _mm512_fmadd_pd(a0, b0, c00);
-        c01 = _mm512_fmadd_pd(a0, b1, c01);
-        c10 = _mm512_fmadd_pd(a1, b0, c10);
-        c11 = _mm512_fmadd_pd(a1, b1, c11);
-        c20 = _mm512_fmadd_pd(a2, b0, c20);
-        c21 = _mm512_fmadd_pd(a2, b1, c21);
-        c30 = _mm512_fmadd_pd(a3, b0, c30);
-        c31 = _mm512_fmadd_pd(a3, b1, c31);
+        const V b0 = Z::load(b + k * ldb);
+        const V b1 = Z::load(b + k * ldb + W);
+#pragma GCC unroll 8
+        for (int r = 0; r < R; ++r) {
+            const V ar = Z::splat(a[r * lda + k]);
+            acc[r][0]  = Z::fma(ar, b0, acc[r][0]);
+            acc[r][1]  = Z::fma(ar, b1, acc[r][1]);
+        }
     }
-
-    _mm512_storeu_pd(c0, c00);
-    _mm512_storeu_pd(c0 + 8, c01);
-    _mm512_storeu_pd(c1, c10);
-    _mm512_storeu_pd(c1 + 8, c11);
-    _mm512_storeu_pd(c2, c20);
-    _mm512_storeu_pd(c2 + 8, c21);
-    _mm512_storeu_pd(c3, c30);
-    _mm512_storeu_pd(c3 + 8, c31);
+#pragma GCC unroll 8
+    for (int r = 0; r < R; ++r) {
+        Z::store(c + r * ldc, acc[r][0]);
+        Z::store(c + r * ldc + W, acc[r][1]);
+    }
 }
 
 #endif  // HPC_HAS_AVX512
@@ -340,8 +302,8 @@ void gemm_avx512_reordered(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C)
  * @brief AVX-512 GEMM with cache-blocking and 512-bit register-tiled micro-kernel.
  *
  * Counterpart of gemm_avx2_blocked: i-k-j order, 3-level tiling
- * (kAvx512TileM × kAvx512TileK × kAvx512TileN = 64 × 256 × 512), and a
- * 4×32 f32 / 4×16 f64 C tile held in ZMM registers for a whole k-tile, so C
+ * (kAvx512TileM × kAvx512TileK × kAvx512TileN = 64 × 256 × 512), and an
+ * 8×32 f32 / 8×16 f64 C tile held in ZMM registers for a whole k-tile, so C
  * is stored once per kAvx512TileK steps instead of every step.
  *
  * Tile footprints (f32): A 64 KB, B 512 KB, C 128 KB. The f64 B panel is
@@ -390,27 +352,9 @@ void gemm_avx512_blocked(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
                     const T* b_ptr = B.data() + k_blk * ldb + j_blk;
 
                     std::size_t j = j_blk;
-                    for (; j + kJStep <= j_end; j += kJStep) {
-                        T* c0 = C.data() + (i + 0) * ldc + j;
-                        T* c1 = C.data() + (i + 1) * ldc + j;
-                        T* c2 = C.data() + (i + 2) * ldc + j;
-                        T* c3 = C.data() + (i + 3) * ldc + j;
-                        if constexpr (sizeof(T) == 4) {
-                            avx512_micro_f32_4x32(
-                                reinterpret_cast<const float*>(a_ptr),
-                                reinterpret_cast<const float*>(b_ptr + (j - j_blk)),
-                                reinterpret_cast<float*>(c0), reinterpret_cast<float*>(c1),
-                                reinterpret_cast<float*>(c2), reinterpret_cast<float*>(c3), lda,
-                                ldb, k_len);
-                        } else {
-                            avx512_micro_f64_4x16(
-                                reinterpret_cast<const double*>(a_ptr),
-                                reinterpret_cast<const double*>(b_ptr + (j - j_blk)),
-                                reinterpret_cast<double*>(c0), reinterpret_cast<double*>(c1),
-                                reinterpret_cast<double*>(c2), reinterpret_cast<double*>(c3), lda,
-                                ldb, k_len);
-                        }
-                    }
+                    for (; j + kJStep <= j_end; j += kJStep)
+                        avx512_micro_8x2(a_ptr, b_ptr + (j - j_blk), C.data() + i * ldc + j, lda,
+                                         ldb, ldc, k_len);
                     // Scalar j-tail (j not a multiple of kJStep)
                     for (; j < j_end; ++j)
                         for (std::size_t ii = i; ii < i + kRegRows; ++ii) {

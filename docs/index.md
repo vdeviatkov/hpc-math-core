@@ -14,10 +14,11 @@ Every number in these articles comes from code in the
 recorded with its raw samples, machine details and the exact source it was
 measured with.
 
-## Apple M4 and SME2
+## Matrix multiplication, from SIMD to Tensor Cores
 
-A two-part series on Apple's matrix unit, as exposed by ARM's Scalable
-Matrix Extension 2.
+A four-part series: the same multiplication on CPU vector units (Apple M4
+and AMD Zen 5), on Apple's SME2 matrix unit, and on an NVIDIA GPU, each
+step measured.
 
 {% assign series = site.pages | where_exp: "p", "p.series_part" | sort: "series_part" %}
 <ul class="posts">
@@ -40,10 +41,10 @@ benchmarked with Google Benchmark.
 
 | Best kernel per family | Hardware | FP32 |
 |---|---|--:|
-| Scalar, cache-blocked | Apple M4 Max | 86 GFLOP/s |
-| AVX-512, register-tiled | AMD Ryzen 9 9950X (Zen 5) | 219 GFLOP/s |
+| Scalar, cache-blocked | Apple M4 Max | 83 GFLOP/s |
+| AVX-512, register-tiled | AMD Ryzen 9 9950X (Zen 5) | 333 GFLOP/s |
 | ARM SME2, packed and blocked, one core | Apple M4 Max | 1.53 TFLOP/s |
-| CUDA Tensor Cores, pipelined WMMA | NVIDIA RTX 5080 | 100 TFLOP/s |
+| CUDA Tensor Cores, pipelined WMMA | NVIDIA RTX 5080 | 101 TFLOP/s |
 
 - [Benchmark results](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/benchmarks.md) for Apple M4 Max, AMD Zen 5 and RTX 5080
 - [Kernel map](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/README.md): every kernel and the technique it adds

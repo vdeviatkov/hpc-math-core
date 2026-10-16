@@ -65,22 +65,36 @@ std::vector<Shape> operator+(std::vector<Shape> a, const Shape& b) {
     return a;
 }
 
-// Sizes that are not multiples of 16 check WMMA's staged edge-tile store;
-// N=99/100 check gemm_cuda_vectorized's fallback (K, N not multiples of the
-// vector width); N=192 checks gemm_cuda_wmma_pipelined's fallback (not a
-// multiple of 128) and 384x160x256 its fast path with M, K, N all different.
+std::vector<Shape> operator+(std::vector<Shape> a, const std::vector<Shape>& b) {
+    a.insert(a.end(), b.begin(), b.end());
+    return a;
+}
+
+// Partial tiles in every dimension (M, K, N): all odd; one past the 128-wide
+// block tiles with K not a multiple of the 16-deep k-tile; and multiples of
+// the vector width that are not multiples of any tile, which take
+// gemm_cuda_vectorized's vector path rather than its fallback.
+const std::vector<Shape> kEdges = {{17, 33, 65}, {129, 37, 131}, {132, 68, 260}};
+
+// Every kernel with bounds checks also runs kEdges. Sizes that are not
+// multiples of 16 check WMMA's staged edge-tile store; N=99/100 check
+// gemm_cuda_vectorized's fallback (K, N not multiples of the vector width);
+// N=192 checks gemm_cuda_wmma_pipelined's fallback (not a multiple of 128)
+// and 384x160x256 its fast path with M, K, N all different.
 const std::vector<Case<float>> kF32 = {
-    {"Naive", gemm_cuda_naive<float>, Needs::kDevice, false, square({32, 64, 128, 256})},
+    {"Naive", gemm_cuda_naive<float>, Needs::kDevice, false, square({32, 64, 128, 256}) + kEdges},
     {"Blocked", gemm_cuda_blocked<float>, Needs::kDevice, false,
-     square({32, 64, 128, 256}) + Shape{100, 50, 200}},
+     square({32, 64, 128, 256}) + Shape{100, 50, 200} + kEdges},
     {"RegTile", gemm_cuda_reg_tile<float>, Needs::kDevice, false,
-     square({64, 128, 256, 512}) + Shape{200, 100, 300}},
-    {"DoubleBuf", gemm_cuda_double_buf<float>, Needs::kDevice, false, square({64, 128, 256, 512})},
-    {"Wmma", gemm_cuda_wmma, Needs::kTensorCores, true,
-     square({64, 128, 256, 512, 17, 50, 72, 100}) + Shape{40, 24, 56}},
+     square({64, 128, 256, 512}) + Shape{200, 100, 300} + kEdges},
+    {"DoubleBuf", gemm_cuda_double_buf<float>, Needs::kDevice, false,
+     square({64, 128, 256, 512}) + kEdges},
     {"Vectorized", gemm_cuda_vectorized<float>, Needs::kDevice, false,
-     square({32, 64, 128, 256, 100}) + Shape{100, 50, 200}},
-    {"MmaLdmatrix", gemm_cuda_mma_ldmatrix, Needs::kAmpere, true, square({64, 128, 256})},
+     square({32, 64, 128, 256, 100}) + Shape{100, 50, 200} + kEdges},
+    {"Wmma", gemm_cuda_wmma, Needs::kTensorCores, true,
+     square({64, 128, 256, 512, 17, 50, 72, 100}) + Shape{40, 24, 56} + kEdges},
+    {"MmaLdmatrix", gemm_cuda_mma_ldmatrix, Needs::kAmpere, true,
+     square({64, 128, 256}) + kEdges},
     {"WmmaPipelined", gemm_cuda_wmma_pipelined, Needs::kTensorCores, true,
      square({128, 256, 512, 192}) + Shape{384, 160, 256}},
     {"Cublas", gemm_cuda_cublas<float>, Needs::kDevice, false, square({64, 256, 512})},
@@ -89,11 +103,13 @@ const std::vector<Case<float>> kF32 = {
 };
 
 const std::vector<Case<double>> kF64 = {
-    {"Naive", gemm_cuda_naive<double>, Needs::kDevice, false, square({32, 64, 128, 256})},
-    {"Blocked", gemm_cuda_blocked<double>, Needs::kDevice, false, square({32, 128})},
-    {"RegTile", gemm_cuda_reg_tile<double>, Needs::kDevice, false, square({64, 256, 512})},
-    {"DoubleBuf", gemm_cuda_double_buf<double>, Needs::kDevice, false, square({64, 256, 512})},
-    {"Vectorized", gemm_cuda_vectorized<double>, Needs::kDevice, false, square({32, 128, 99})},
+    {"Naive", gemm_cuda_naive<double>, Needs::kDevice, false, square({32, 64, 128, 256}) + kEdges},
+    {"Blocked", gemm_cuda_blocked<double>, Needs::kDevice, false, square({32, 128}) + kEdges},
+    {"RegTile", gemm_cuda_reg_tile<double>, Needs::kDevice, false, square({64, 256, 512}) + kEdges},
+    {"DoubleBuf", gemm_cuda_double_buf<double>, Needs::kDevice, false,
+     square({64, 256, 512}) + kEdges},
+    {"Vectorized", gemm_cuda_vectorized<double>, Needs::kDevice, false,
+     square({32, 128, 99}) + kEdges},
     {"Cublas", gemm_cuda_cublas<double>, Needs::kDevice, false, square({64, 256})},
 };
 

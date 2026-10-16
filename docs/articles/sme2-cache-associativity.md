@@ -2,14 +2,14 @@
 title: "A Power-of-Two Stride Halves SME2 GEMM Throughput on Apple M4"
 description: "An SME2 matrix multiplication on Apple M4 Max runs at a third of its speed when B's rows are 16 KiB apart. Controlled experiments point to L2 set conflicts; padding or packing B fixes it, and packing wins."
 date: 2026-10-12
-series_part: 2
+series_part: 3
 permalink: /articles/sme2-cache-associativity.html
 ---
 # A power-of-two stride halves SME2 GEMM throughput on Apple M4
 
-*Apple M4 Max, one thread, FP32. How the kernel is built, and the
-machine's caches, TLBs and SME unit:
-[Matrix multiplication on Apple M4's SME2 unit](sme2-gemm.md).*
+*Apple M4 Max, one thread, FP32. Part 3 of a series. How the kernel is
+built, and the machine's caches, TLBs and SME unit:
+[part 2, Matrix multiplication on Apple M4's SME2 unit](sme2-gemm.md).*
 
 A matrix multiplication written for ARM's Scalable Matrix Extension (SME2)
 reached **1,494 GFLOP/s at N = 4000 and 480 GFLOP/s at N = 4096**. The larger
@@ -75,7 +75,7 @@ over 32 MiB of address space.
 Square matrices around 2048 and 4096, so the row stride is `N × 4` bytes.
 Median of 3 interleaved repetitions; each timed call includes scratch
 allocation and all packing. (This is a separate run from the step tables
-in part 1; the same kernels agree between the two within about 2%.)
+in part 2; the same kernels agree between the two within about 2%.)
 
 ![Throughput near N = 2048 and 4096, B in place and packed](assets/sme2-size-sweep.svg)
 
