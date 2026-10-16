@@ -25,11 +25,14 @@ using namespace nvcuda;
   #define HPC_HAVE_CP_ASYNC 1
 #endif
 
+#include <cassert>
+#include <climits>
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <map>
 
 // ---------------------------------------------------------------------------
 // CUDA error checking macro
@@ -83,9 +86,10 @@ __global__ void kernel_naive(const T* __restrict__ A,
 //
 // A 16x16 thread block stages each 16x16 k-tile of A and B in shared memory,
 // so each global element is loaded once per block instead of once per
-// thread: 16x fewer global loads. The shared-memory reads are a broadcast
-// (As[ty][p]) and a contiguous row (Bs[p][tx]), so they are free of bank
-// conflicts; the +1 padding is not needed for that. Each thread still owns
+// thread: 16x fewer global loads. A warp covers two 16-thread rows:
+// As[ty][p] broadcasts one value per half-warp, and Bs[p][tx] reads the same
+// contiguous segment twice. The +1 padding separates the double-precision
+// A broadcasts, which otherwise map to the same banks. Each thread still owns
 // one output, so the two __syncthreads() per k-tile pay for only 16 FMAs.
 // ============================================================================
 template <typename T>
@@ -458,16 +462,16 @@ static constexpr int kBlockK = kWMMA_K;            // 16
 // (512, 3): three 512-thread blocks fill an SM. Without the minimum the
 // compiler may use up to 64 registers per thread, which fits only two
 // blocks; the kernel needs 40.
-__global__ void __launch_bounds__(512, 3)
-kernel_wmma(const float* __restrict__ A,
+__device__ __forceinline__ void
+wmma_tile(const float* __restrict__ A,
             const float* __restrict__ B,
             float* __restrict__ C,
             int M, int K, int N) {
     // No +1 padding: wmma::load_matrix_sync requires the leading dimension of
     // a __half fragment to be a multiple of 8 elements (16 bytes). 64 is; 65
     // would fail with cudaErrorMisalignedAddress.
-    __shared__ __half As[kBlockK][kBlockM];  // transposed: As[k][m] = A(m, k)
-    __shared__ __half Bs[kBlockK][kBlockN];  // natural:    Bs[k][n] = B(k, n)
+    __shared__ alignas(32) __half As[kBlockK][kBlockM];  // transposed: As[k][m] = A(m, k)
+    __shared__ alignas(32) __half Bs[kBlockK][kBlockN];  // natural:    Bs[k][n] = B(k, n)
 
     const int row0 = blockIdx.y * kBlockM, col0 = blockIdx.x * kBlockN;
     A += row0 * K;
@@ -509,7 +513,7 @@ kernel_wmma(const float* __restrict__ A,
     // 32-byte-aligned destination, so a direct store is only safe for a tile
     // wholly inside C with N % 8 == 0. Any other tile goes through a per-warp
     // shared-memory staging tile and is copied out element by element.
-    __shared__ float Cs[kWarpM * kWarpN][kWMMA_M * kWMMA_N];
+    __shared__ alignas(32) float Cs[kWarpM * kWarpN][kWMMA_M * kWMMA_N];
     if (!active)
         return;
     if (wm + kWMMA_M <= rows && wn + kWMMA_N <= cols && N % 8 == 0) {
@@ -524,6 +528,14 @@ kernel_wmma(const float* __restrict__ A,
                 C[r * N + c] = tile[e];
         }
     }
+}
+
+// Shared with the pre-sm_80 compilation of level 6: a binary compiled for
+// sm_70 PTX may later run on a newer device. In that case use WMMA rather
+// than a no-op raw-MMA body whose instructions were compiled out.
+__global__ void __launch_bounds__(512, 3)
+kernel_wmma(const float* A, const float* B, float* C, int M, int K, int N) {
+    wmma_tile(A, B, C, M, K, N);
 }
 
 // ============================================================================
@@ -643,10 +655,7 @@ kernel_mma_ldmatrix(const float* __restrict__ A,
                 C[r * N + c] = acc[t][i];
         }
 #else
-    // Never launched below sm_80 (launch_mma_ldmatrix checks
-    // cuda_has_ampere()); this branch only keeps the file compiling for
-    // older -arch targets.
-    (void)A; (void)B; (void)C; (void)M; (void)K; (void)N;
+    wmma_tile(A, B, C, M, K, N);
 #endif
 }
 
@@ -738,8 +747,8 @@ kernel_wmma_pipelined(const __half* __restrict__ A16,   // MxK, row-major, fp16
                       const __half* __restrict__ B16,   // KxN, row-major, fp16
                       float* __restrict__ C,
                       int M, int K, int N) {
-    __shared__ alignas(16) __half As[2][kPipeBM][kPipeAsLd];  // natural: As[m][k], padded ld
-    __shared__ alignas(16) __half Bs[2][kPipeBK][kPipeBsLd];  // natural: Bs[k][n], padded ld
+    __shared__ alignas(32) __half As[2][kPipeBM][kPipeAsLd];  // natural: As[m][k], padded ld
+    __shared__ alignas(32) __half Bs[2][kPipeBK][kPipeBsLd];  // natural: Bs[k][n], padded ld
 
     // M, N and K are exact multiples of the tiles: no `rows`/`cols` clipping.
     const int row0 = blockIdx.y * kPipeBM, col0 = blockIdx.x * kPipeBN;
@@ -838,29 +847,27 @@ int cuda_device_count() noexcept {
     return count;
 }
 
-// Returns true if any device has compute capability >= the given (major, minor).
-static bool device_has_capability(int major, int minor) noexcept {
-    int devCount = 0;
-    if (cudaGetDeviceCount(&devCount) != cudaSuccess) return false;
-    for (int d = 0; d < devCount; ++d) {
-        cudaDeviceProp prop{};
-        if (cudaGetDeviceProperties(&prop, d) == cudaSuccess)
-            if (prop.major > major || (prop.major == major && prop.minor >= minor))
-                return true;
-    }
-    return false;
+// Capabilities belong to the selected device, not to some other GPU in the
+// system. Cache properties per host thread/device; cudaSetDevice may change
+// the selection between calls. Only cudaGetDevice is needed on a cache hit.
+static int device_capability() noexcept {
+    int device = 0;
+    if (cudaGetDevice(&device) != cudaSuccess)
+        return 0;
+    static thread_local std::map<int, int> cache;
+    if (const auto it = cache.find(device); it != cache.end())
+        return it->second;
+    cudaDeviceProp prop{};
+    if (cudaGetDeviceProperties(&prop, device) != cudaSuccess)
+        return 0;
+    const int capability = prop.major * 10 + prop.minor;
+    // Allocation failure must not escape a noexcept query.
+    try { cache.emplace(device, capability); } catch (...) {}
+    return capability;
 }
 
-// Queried once: every launch checks these, and a property query costs far
-// more than a launch.
-bool cuda_has_tensor_cores() noexcept {
-    static const bool has = device_has_capability(7, 0);
-    return has;
-}
-bool cuda_has_ampere() noexcept {
-    static const bool has = device_has_capability(8, 0);
-    return has;
-}
+bool cuda_has_tensor_cores() noexcept { return device_capability() >= 70; }
+bool cuda_has_ampere() noexcept { return device_capability() >= 80; }
 
 
 // ============================================================================
@@ -870,8 +877,7 @@ bool cuda_has_ampere() noexcept {
 template <typename T>
 struct DeviceBuffer {
     T*          ptr  = nullptr;
-    std::size_t size = 0;
-    explicit DeviceBuffer(std::size_t n) : size(n) {
+    explicit DeviceBuffer(std::size_t n) {
         CUDA_CHECK(cudaMalloc(&ptr, n * sizeof(T)));
     }
     ~DeviceBuffer() { if (ptr) cudaFree(ptr); }
@@ -885,8 +891,23 @@ struct DeviceBuffer {
 // isn't met, and only launches: the work runs asynchronously.
 // ============================================================================
 
+// No zero-sized grid launches or reads from empty inputs. K == 0 still
+// overwrites the nonempty output, asynchronously on the default stream.
+template <typename T>
+static bool empty_product(T* C, int M, int K, int N) {
+    if (M < 0 || K < 0 || N < 0)
+        throw std::invalid_argument("CUDA GEMM dimensions must be nonnegative");
+    if (M == 0 || N == 0)
+        return true;
+    if (K != 0)
+        return false;
+    CUDA_CHECK(cudaMemsetAsync(C, 0, static_cast<std::size_t>(M) * N * sizeof(T)));
+    return true;
+}
+
 template <typename T>
 void gemm_cuda_naive_device(const T* A, const T* B, T* C, int M, int K, int N) {
+    if (empty_product(C, M, K, N)) return;
     const dim3 block(kTile, kTile), grid((N + kTile - 1) / kTile, (M + kTile - 1) / kTile);
     kernel_naive<T><<<grid, block>>>(A, B, C, M, K, N);
     CUDA_CHECK(cudaGetLastError());
@@ -894,6 +915,7 @@ void gemm_cuda_naive_device(const T* A, const T* B, T* C, int M, int K, int N) {
 
 template <typename T>
 void gemm_cuda_blocked_device(const T* A, const T* B, T* C, int M, int K, int N) {
+    if (empty_product(C, M, K, N)) return;
     const dim3 block(kTile, kTile), grid((N + kTile - 1) / kTile, (M + kTile - 1) / kTile);
     kernel_blocked<T><<<grid, block>>>(A, B, C, M, K, N);
     CUDA_CHECK(cudaGetLastError());
@@ -901,6 +923,7 @@ void gemm_cuda_blocked_device(const T* A, const T* B, T* C, int M, int K, int N)
 
 template <typename T>
 void gemm_cuda_reg_tile_device(const T* A, const T* B, T* C, int M, int K, int N) {
+    if (empty_product(C, M, K, N)) return;
     const dim3 block(256), grid((N + kBN - 1) / kBN, (M + kBM - 1) / kBM);
     kernel_reg_tile<T><<<grid, block>>>(A, B, C, M, K, N);
     CUDA_CHECK(cudaGetLastError());
@@ -908,6 +931,7 @@ void gemm_cuda_reg_tile_device(const T* A, const T* B, T* C, int M, int K, int N
 
 template <typename T>
 void gemm_cuda_double_buf_device(const T* A, const T* B, T* C, int M, int K, int N) {
+    if (empty_product(C, M, K, N)) return;
     constexpr int BM = kDBufBM<T>, BN = kDBufBN<T>;
     // One thread per kTM x kTN sub-tile: 256 threads for float
     // (128x128 tile), 64 for double (64x64 tile -- see kDBufBM).
@@ -920,6 +944,7 @@ void gemm_cuda_double_buf_device(const T* A, const T* B, T* C, int M, int K, int
 // vector width (4 for float, 2 for double); otherwise fall back to Level 2.
 template <typename T>
 void gemm_cuda_vectorized_device(const T* A, const T* B, T* C, int M, int K, int N) {
+    if (empty_product(C, M, K, N)) return;
     constexpr int W = VecTraits<T>::kWidth;
     if (K % W != 0 || N % W != 0)
         return gemm_cuda_reg_tile_device(A, B, C, M, K, N);
@@ -930,6 +955,7 @@ void gemm_cuda_vectorized_device(const T* A, const T* B, T* C, int M, int K, int
 
 // Level 5: Tensor Cores need sm_70+; otherwise fall back to Level 3.
 void gemm_cuda_wmma_device(const float* A, const float* B, float* C, int M, int K, int N) {
+    if (empty_product(C, M, K, N)) return;
     if (!cuda_has_tensor_cores())
         return gemm_cuda_double_buf_device(A, B, C, M, K, N);
     const dim3 block(kWarpM * kWarpN * 32);  // 512 threads
@@ -941,6 +967,7 @@ void gemm_cuda_wmma_device(const float* A, const float* B, float* C, int M, int 
 // Level 6: the f16 m16n8k16 mma.sync shape needs sm_80+; otherwise fall back
 // to Level 5.
 void gemm_cuda_mma_ldmatrix_device(const float* A, const float* B, float* C, int M, int K, int N) {
+    if (empty_product(C, M, K, N)) return;
     if (!cuda_has_ampere())
         return gemm_cuda_wmma_device(A, B, C, M, K, N);
     const dim3 block(kMmaWarpM * kMmaWarpN * 32);  // 512 threads
@@ -953,6 +980,11 @@ void gemm_cuda_mma_ldmatrix_device(const float* A, const float* B, float* C, int
 // K a multiple of 32.
 void gemm_cuda_wmma_pipelined_device(const void* A16, const void* B16, float* C,
                                      int M, int K, int N) {
+    if (empty_product(C, M, K, N)) return;
+    if (M % kPipeBM || N % kPipeBN || K % kPipeBK)
+        throw std::invalid_argument("pipelined WMMA needs M/N multiples of 128 and K of 32");
+    if (!cuda_has_tensor_cores())
+        throw std::runtime_error("pipelined WMMA needs sm_70+");
     const dim3 block(kPipeNumWarps * 32), grid(N / kPipeBN, M / kPipeBM);
     kernel_wmma_pipelined<<<grid, block>>>(static_cast<const __half*>(A16),
                                            static_cast<const __half*>(B16), C, M, K, N);
@@ -962,8 +994,11 @@ void gemm_cuda_wmma_pipelined_device(const void* A16, const void* B16, float* C,
 // fp32 -> fp16 conversion of a device buffer (cp.async, used by Level 7, is a
 // same-dtype byte copy and can't convert while loading).
 void gemm_cuda_convert_f32_to_f16_device(const float* src, void* dst, int count) {
+    if (count < 0)
+        throw std::invalid_argument("conversion count must be nonnegative");
+    if (count == 0) return;
     const int threads = 256;
-    kernel_f32_to_f16<<<(count + threads - 1) / threads, threads>>>(
+    kernel_f32_to_f16<<<(count - 1) / threads + 1, threads>>>(
         src, static_cast<__half*>(dst), count);
     CUDA_CHECK(cudaGetLastError());
 }
@@ -985,17 +1020,20 @@ static void wmma_pipelined_f32(const float* A, const float* B, float* C, int M, 
 }
 
 double gemm_cuda_time_ms(const std::function<void()>& launch) {
-    cudaEvent_t start, stop;
-    CUDA_CHECK(cudaEventCreate(&start));
-    CUDA_CHECK(cudaEventCreate(&stop));
-    CUDA_CHECK(cudaEventRecord(start));
+    struct Event {
+        cudaEvent_t value{};
+        Event() { CUDA_CHECK(cudaEventCreate(&value)); }
+        ~Event() { cudaEventDestroy(value); }
+        Event(const Event&) = delete;
+        Event& operator=(const Event&) = delete;
+    };
+    Event start, stop;
+    CUDA_CHECK(cudaEventRecord(start.value));
     launch();
-    CUDA_CHECK(cudaEventRecord(stop));
-    CUDA_CHECK(cudaEventSynchronize(stop));
+    CUDA_CHECK(cudaEventRecord(stop.value));
+    CUDA_CHECK(cudaEventSynchronize(stop.value));
     float ms = 0;
-    CUDA_CHECK(cudaEventElapsedTime(&ms, start, stop));
-    cudaEventDestroy(start);
-    cudaEventDestroy(stop);
+    CUDA_CHECK(cudaEventElapsedTime(&ms, start.value, stop.value));
     return ms;
 }
 
@@ -1003,6 +1041,16 @@ double gemm_cuda_time_ms(const std::function<void()>& launch) {
 // Every Matrix<T>-based entry point goes through this.
 template <typename T, typename Launch>
 static void run_on_device(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C, Launch launch) {
+    assert(A.cols() == B.rows() && C.rows() == A.rows() && C.cols() == B.cols());
+    // Kernels and conversion counts use signed 32-bit element indices.
+    for (const std::size_t n : {A.rows(), A.cols(), B.cols(), A.size(), B.size(), C.size()})
+        if (n > INT_MAX)
+            throw std::length_error("CUDA GEMM exceeds 32-bit indexing limits");
+    if (C.size() == 0) return;
+    if (A.cols() == 0) {
+        C.zero();
+        return;
+    }
     const int M = static_cast<int>(A.rows());
     const int K = static_cast<int>(A.cols());
     const int N = static_cast<int>(B.cols());
@@ -1013,7 +1061,6 @@ static void run_on_device(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C, 
     DeviceBuffer<T> dA(a_n), dB(b_n), dC(c_n);
     CUDA_CHECK(cudaMemcpy(dA.ptr, A.data(), a_n * sizeof(T), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(dB.ptr, B.data(), b_n * sizeof(T), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemset(dC.ptr, 0, c_n * sizeof(T)));
 
     launch(dA.ptr, dB.ptr, dC.ptr, M, K, N);
 
@@ -1081,7 +1128,9 @@ void gemm_cuda_wmma_pipelined(const Matrix<float>& A, const Matrix<float>& B, Ma
 // no data movement, no transpose flags.
 // ============================================================================
 
-// Lazily-created, process-lifetime handle. Not thread-safe, matching this
+// Lazily-created, process-lifetime handle, bound to the device selected on
+// first use. Do not switch/reset that device or call cuBLAS concurrently.
+// Not thread-safe, matching this
 // file's single-threaded benchmark/test usage (every other kernel here is
 // launched the same way, with no concurrent-stream support).
 static cublasHandle_t cublas_handle() {
@@ -1104,6 +1153,7 @@ static void check_cublas(cublasStatus_t st, const char* what) {
 static void cublas_gemm_ex(const void* A, const void* B, void* C, cudaDataType in_type,
                            cudaDataType out_type, cublasComputeType_t compute,
                            int M, int K, int N, const char* what) {
+    if (empty_product(static_cast<float*>(C), M, K, N)) return;
     const float alpha = 1.0f, beta = 0.0f;
     check_cublas(cublasGemmEx(cublas_handle(), CUBLAS_OP_N, CUBLAS_OP_N, N, M, K, &alpha,
                               B, in_type, N, A, in_type, K, &beta, C, out_type, N,
@@ -1113,6 +1163,7 @@ static void cublas_gemm_ex(const void* A, const void* B, void* C, cudaDataType i
 
 template <typename T>
 void gemm_cuda_cublas_device(const T* A, const T* B, T* C, int M, int K, int N) {
+    if (empty_product(C, M, K, N)) return;
     const T alpha = T{1}, beta = T{0};
     if constexpr (std::is_same_v<T, float>)
         check_cublas(cublasSgemm(cublas_handle(), CUBLAS_OP_N, CUBLAS_OP_N,
@@ -1177,6 +1228,9 @@ void gemm_cuda_free(void* ptr) {
 }
 void gemm_cuda_memcpy_h2d(void* dst, const void* src, std::size_t bytes) {
     CUDA_CHECK(cudaMemcpy(dst, src, bytes, cudaMemcpyHostToDevice));
+}
+void gemm_cuda_memcpy_d2h(void* dst, const void* src, std::size_t bytes) {
+    CUDA_CHECK(cudaMemcpy(dst, src, bytes, cudaMemcpyDeviceToHost));
 }
 void gemm_cuda_device_synchronize() {
     CUDA_CHECK(cudaDeviceSynchronize());

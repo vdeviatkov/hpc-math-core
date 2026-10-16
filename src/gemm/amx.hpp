@@ -45,6 +45,8 @@
 
 #include <cassert>
 #include <cstddef>
+#include <limits>
+#include <stdexcept>
 #include <type_traits>
 
 namespace hpc::gemm {
@@ -68,6 +70,9 @@ void gemm_amx(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
         C.zero();
     if (M == 0 || N == 0 || K == 0)
         return;
+    constexpr auto max = static_cast<std::size_t>(std::numeric_limits<int>::max());
+    if (M > max || N > max || K > max)
+        throw std::length_error("Accelerate GEMM dimensions exceed the BLAS integer limit");
     const int m = static_cast<int>(M), n = static_cast<int>(N), k = static_cast<int>(K);
     if constexpr (std::is_same_v<T, float>)
         cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, m, n, k, 1.0f, A.data(), k,

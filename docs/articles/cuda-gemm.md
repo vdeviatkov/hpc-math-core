@@ -45,15 +45,15 @@ instruction from a warp that is ready. Latency is hidden by switching
 between resident warps, so how many warps fit on an SM, its *occupancy*,
 is set by the resources each thread block uses:
 
-| Per SM | RTX 5080 |
+| RTX 5080 | |
 |---|--:|
 | SMs | 84 |
-| FP32 lanes | 128 |
-| Tensor Cores | 4 |
-| Resident threads (warps) | 1,536 (48) |
-| Registers | 65,536 × 32 bit |
-| Shared memory | 100 KiB |
-| L2 cache (whole GPU) | 64 MiB |
+| FP32 lanes per SM | 128 |
+| Tensor Cores per SM | 4 |
+| Resident threads (warps) per SM | 1,536 (48) |
+| Registers per SM | 65,536 × 32 bit |
+| Shared memory per SM | 100 KiB |
+| L2 cache, whole GPU | 64 MiB |
 | DRAM | 16 GB, 256-bit bus |
 
 A thread block of 256 threads at 128 registers per thread uses 32,768
@@ -68,7 +68,7 @@ FMA load the board draws 300 W and runs at 2.83 GHz; under the others,
 
 | | Measured | Implied per SM per cycle |
 |---|--:|--:|
-| FP32 FMA | **59.7 TFLOP/s** | 126 flops: 98% of 128 lanes × 2 |
+| FP32 FMA | **59.7 TFLOP/s** | 251 flops: 98% of 128 lanes × 2 |
 | FP64 FMA | 0.82 TFLOP/s (GEMM kernels reach 0.96) | ~2 lanes |
 | FP16 Tensor Cores, fp32 accumulate | **124.4 TFLOP/s** | 512 flops |
 | DRAM, copy | **812 GB/s** | |
@@ -76,8 +76,8 @@ FMA load the board draws 300 W and runs at 2.83 GHz; under the others,
 Two ridge points follow: a kernel needs 59.7 / 0.812 = **74 flops per DRAM
 byte** to be compute-bound on the FMA cores and **153** on the Tensor
 Cores. A 4096 × 4096 FP32 GEMM does 137 Gflop on 192 MiB of matrices: 683
-flops per byte if every element crosses DRAM once. The problem is never
-DRAM bandwidth in principle; it is how many times each element is fetched
+flops per byte if every element crosses DRAM once. With ideal reuse this size has enough arithmetic intensity to avoid
+a DRAM bandwidth limit; it is how many times each element is fetched
 from L2 and shared memory in practice.
 
 ### How the kernels are timed
@@ -101,10 +101,10 @@ for (int k = 0; k < K; ++k)
 C[i * N + j] = acc;
 ```
 
-This kernel is stronger than it looks. The 32 threads of a warp have
-consecutive `j`, so their loads of `B[k][j]` fall in one 128-byte line and
-coalesce into a single transaction, and all 32 read the same `A[i][k]`, a
-broadcast. The L1 cache catches 87% of the requests and L2 94% of the rest.
+This kernel is stronger than it looks. With a 16x16 thread block, a warp spans two 16-thread rows. Each
+half-warp loads the same contiguous 16-element B segment and broadcasts
+its own A(i,k). These requests coalesce into aligned 32-byte sectors; a
+warp does not compute a single 32-column row segment here. The L1 cache catches 87% of the requests and L2 94% of the rest.
 What limits it is instruction count: each FMA needs two loads, and the FMA
 pipe is busy 13% of the time.
 
@@ -137,8 +137,8 @@ for (int k = 0; k < 16; ++k) {
 ```
 
 This is the micro-kernel of the CPU articles, at thread level: four FMAs
-per shared-memory load instead of one half. Global traffic per block falls
-to 32 flops per byte. The result is **6.4× Level 0**, the largest single
+per shared-memory load instead of one half. Arithmetic intensity for the A/B input traffic per block rises
+to 32 flops per byte (excluding the output store). The result is **6.4× Level 0**, the largest single
 step in the ladder.
 
 The counters also show what remains. 128 registers per thread allow two
@@ -187,10 +187,11 @@ and 46% of the FP32 peak; cuBLAS itself reaches 65% of that peak.
 
 A Tensor Core multiplies small matrix tiles in one instruction. A warp
 issues `mma.sync.m16n8k16`: a 16 × 16 fp16 tile of A times a 16 × 8 fp16
-tile of B, accumulated in fp32, 4,096 flops per instruction. The four
-Tensor Cores of an SM deliver 512 such flops per cycle, twice the 256 of
-its FMA lanes. They multiply fp16 inputs (10-bit mantissa), so results differ from
-fp32 GEMM by ~1e-3 relative.
+tile of B, accumulated in fp32, 4,096 flops per instruction. The measured `mma.sync` path sustains about 512 flops per SM per cycle,
+twice the 256-flop theoretical rate of its FMA lanes. This is the measured
+rate of this instruction path, not a bound on every Blackwell Tensor Core API. They multiply fp16 inputs (10-bit mantissa), so results
+introduce input rounding at roughly the 1e-3 scale. Output relative
+error can be much larger near cancellation; fp16 also has a smaller range.
 
 ### Level 5: WMMA — 14.6 TFLOP/s, below the FMA kernels
 
@@ -208,8 +209,9 @@ work to overlap anything with.
 
 The same tiles, one level lower: `ldmatrix` loads shared memory straight
 into the registers `mma.sync` expects, and the kernel chooses which
-address each lane supplies. **+16%**, but the structure, and its 80%
-bank-conflict rate, are unchanged. The API was not the bottleneck.
+address each lane supplies. **+16%**, but the structure is unchanged, and
+so is the problem: 80% of its shared-memory load wavefronts are bank
+conflicts. The API was not the bottleneck.
 
 ### Level 7: pipelined Tensor Cores — 100.7 TFLOP/s
 
@@ -224,7 +226,10 @@ The final kernel changes the structure, the way CUTLASS-style kernels do:
    copies bytes without converting, A and B are converted to fp16 in global
    memory first.
 4. **Padded shared memory.** Rows are padded by 8 halves (16 bytes), the
-   smallest pad that keeps `load_matrix_sync` and `cp.async` aligned.
+   smallest pad that keeps `load_matrix_sync` and `cp.async` aligned. It is
+   the fix of [part 3](sme2-cache-associativity.md) in another memory: there,
+   one extra cache line per row of B moved each row to a different cache
+   set; here, 16 extra bytes per row move each row to different banks.
 
 The padding alone was worth +24%, measured with Nsight Compute when it was
 added:
@@ -239,15 +244,17 @@ Today's profile of the kernel: Tensor pipe busy 86%, 1% bank conflicts,
 DRAM traffic 116 MB for the whole multiplication (each matrix crosses DRAM
 about once), and occupancy 32%, limited by 118 registers per thread. It
 reaches **100.7 TFLOP/s at N = 8192: 81% of the measured Tensor Core peak
-and 85% of cuBLAS FP16** at the same size (83% at N = 16384). The rest of cuBLAS's lead would
-take a deeper pipeline (three or four stages) and split-K for the large-K
-shapes.
+and 85% of cuBLAS FP16** at the same size (83% at N = 16384). Closing the
+rest of the gap is beyond this article; the usual next steps are a deeper
+pipeline (three or four stages instead of two) and split-K for shapes with
+a large K.
 
 ## The ladder, measured
 
 ![CUDA GEMM levels at N = 4096 against the measured peaks](assets/cuda-ladder.svg)
 
-TFLOP/s, GPU time of the GEMM alone, FP32 inputs and outputs:
+TFLOP/s, GPU event time of the GEMM, FP32 outputs. Levels 5–6 convert
+FP32 inputs inside the kernel; level 7 receives preconverted FP16 inputs:
 
 | Level | Kernel | N = 1024 | 4096 | 8192 | Occupancy | Registers | Pipe busy | Shared-load conflicts |
 |---|---|--:|--:|--:|--:|--:|--:|--:|
@@ -291,12 +298,14 @@ The ladder does not apply there.
 Every kernel is compared element by element with a CPU reference
 ([`tests/test_gemm_cuda.cpp`](https://github.com/vdeviatkov/hpc-math-core/blob/main/tests/test_gemm_cuda.cpp)).
 An element passes if its relative error is below 1e-4 (FP32 kernels),
-1e-10 (FP64) or 1e-2 (fp16 Tensor Core and TF32 paths), or its absolute
-error below 1e-3 / 1e-9 / 1e-2. Inputs are uniform in [−1, 1]. Every kernel
-with bounds checks runs square sizes from 17 to 512 plus shapes with
-partial tiles in every dimension (17 × 33 × 65, 129 × 37 × 131 and
-132 × 68 × 260, which is a multiple of the vector width but not of any
-tile); the fallbacks of Levels 4 and 7 have shapes of their own.
+1e-10 (FP64) or 1e-2 (fp16 Tensor Core and TF32 paths), with the relative
+denominator clamped to at least 1, or its absolute
+error below 1e-3 / 1e-9 / 1e-2. Inputs are uniform in [−1, 1]. Each kernel
+runs several square sizes between 17 and 512, and every kernel with bounds
+checks also runs shapes with partial tiles in every dimension
+(17 × 33 × 65, 129 × 37 × 131, and 132 × 68 × 260, which is a multiple of
+the vector width but not of any tile). The fallbacks of Levels 4 and 7
+have shapes of their own.
 
 ## Limitations
 
@@ -305,8 +314,10 @@ tile); the fallbacks of Levels 4 and 7 have shapes of their own.
   boards will differ by more than that.
 - **The FP16 levels are not FP32 GEMMs.** They round inputs to 10-bit
   mantissas; their TFLOP/s are not comparable with the FP32 rows.
-- **No autotuning.** Tile sizes are fixed by hand for this GPU; the kernels
-  handle any shape, but are tuned for large square ones.
+- **No autotuning.** Tile sizes are fixed by hand for this GPU; the Matrix wrappers
+  handle rectangular and empty shapes within their 32-bit indexing limit,
+  but are tuned for large square ones. The raw pipelined device entry point
+  requires exact tile multiples.
 - **The FP64 microbenchmark reads lower than the FP64 GEMMs** (0.82 vs
   0.96 TFLOP/s). Its loop compiles with padding instructions between
   dependent FMAs; the GEMM kernels are the better measure of the FP64 rate.
@@ -324,6 +335,18 @@ tile); the fallbacks of Levels 4 and 7 have shapes of their own.
 4. **Tensor Cores need the same discipline.** Dropped into a structure
    built for FMAs, they ran slower than the FMAs; restructured around them,
    they ran 3.7× faster than the best FMA kernel.
+
+## The series
+
+The same multiplication, four times: one CPU core with vector FMAs reaches
+333 GFLOP/s ([part 1](simd-gemm.md)), Apple's SME2 matrix unit 1.5 TFLOP/s
+([part 2](sme2-gemm.md)), and this GPU 27.5 TFLOP/s on its FMA cores and
+100 on its Tensor Cores. Every one of those kernels is built the same way:
+a block of C held in registers or accumulator tiles, enough independent
+accumulators to cover the latency of the multiply-add unit, operands staged
+so that each loaded byte feeds many operations, and a layout that keeps
+those loads out of each other's way, in cache sets ([part
+3](sme2-cache-associativity.md)) or in shared-memory banks.
 
 ## Reproduce
 

@@ -13,7 +13,7 @@ Registers     ~0 cycles    a few hundred bytes to a few KB
    ↕
 L1 cache      ~4 cycles    32–128 KB per core  (Zen 5: 48 KB, M4 P-core: 128 KB)
    ↕
-L2 cache     ~12–20 cycles 1–16 MB            (Zen 5: 1 MB/core, M4: 16 MB per P-cluster)
+L2 cache     ~12–30 cycles 1–16 MB            (Zen 5: 1 MB/core, M4: 16 MB per P-cluster)
    ↕
 L3 cache     ~40–50 cycles tens of MB, shared  (Zen 5: 32 MB per CCD; M4: none)
    ↕
@@ -59,7 +59,7 @@ This asymmetry is the root cause of naive GEMM's poor performance.
 
 ## 4. Reuse Distance
 
-Reuse distance is the number of distinct memory addresses accessed between two accesses to the same address. If the reuse distance exceeds the number of cache lines in a cache level, that level will not hold the data from the first access when the second access occurs — a cache miss.
+Reuse distance is the number of distinct memory locations (or cache lines, if counting lines) accessed between two accesses to the same address. When measured in distinct cache lines, reuse distance beyond a fully associative LRU cache's capacity predicts eviction. Real set-associative caches can evict lines earlier through conflicts; replacement policies and prefetching also change the result.
 
 ### Naive GEMM (i-j-k): reuse distance of B
 
@@ -151,7 +151,7 @@ For naïve GEMM in the worst case, where every access to B misses all the way to
 - DRAM bandwidth ≈ 50 GB/s, for example (dual-channel DDR4-3200)
 - Peak ≈ 50 × 0.03 = ~1.6 GFLOP/s
 
-Caches soften this at moderate N (part of B stays resident), but the trend shows in the measurements: naïve f64 on M4 Max falls from 9.5 GFLOP/s at N=64 to 0.66 at N=4096 ([benchmarks.md](benchmarks.md#apple-m4-max)).
+Caches soften this at moderate N (part of B stays resident), but the trend shows in the measurements: naïve f64 on M4 Max falls from 8.7 GFLOP/s at N=64 to 0.62 at N=4096 ([benchmarks.md](benchmarks.md#apple-m4-max)).
 
 For the reordered kernel, effective bandwidth is much higher (from caches), but tiling is needed to reach the compute roofline of:
 ```
@@ -188,4 +188,9 @@ The same latency ladder exists on a GPU, with one extra tier — per-SM shared m
 [benchmarks.md](benchmarks.md#nvidia-rtx-5080--cuda). Shared memory and L1
 share one on-chip array per SM; up to 100 KB of it can be shared memory.)
 
-Coalescing: the 32 threads of a warp issue their loads together, and when consecutive threads access consecutive addresses the hardware merges them into 128-byte transactions. In CUDA Levels 0 and 1, thread `(ty, tx)` computes `C(i, j)` with `j = blockCol·TILE + tx`, so consecutive threads of a warp differ only in `tx` and their accesses to rows of B and C coalesce.
+Coalescing: a warp's memory requests are combined into the required aligned
+32-byte sectors on the measured GPU. A contiguous aligned 128-byte span
+uses four sectors; cache lines and sectors are different units. In CUDA
+Levels 0 and 1, a 16x16 block means one warp spans two 16-thread rows.
+Each half-warp accesses a contiguous B/C row segment; the B segments are
+identical, while C segments belong to neighboring rows.

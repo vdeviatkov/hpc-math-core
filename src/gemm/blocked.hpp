@@ -59,6 +59,7 @@ inline constexpr std::size_t kDefaultTile = HPC_GEMM_TILE;
  */
 template <typename T, std::size_t TILE = kDefaultTile>
 void gemm_blocked(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
+    static_assert(TILE > 0, "GEMM tile size must be positive");
     const std::size_t M = A.rows();
     const std::size_t K = A.cols();  // == B.rows()
     const std::size_t N = B.cols();

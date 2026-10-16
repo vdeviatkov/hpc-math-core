@@ -14,7 +14,7 @@ Raw data behind the article
 | [`fma_m4.csv`](fma_m4.csv), [`fma_zen5.csv`](fma_zen5.csv) | [`fma_peak`](../../../benchmarks/experiments/fma_peak.cpp) | vector FMA latency and throughput against the number of independent accumulators |
 | [`microkernel_m4.csv`](microkernel_m4.csv), [`microkernel_zen5.csv`](microkernel_zen5.csv) | [`simd_microkernel`](../../../benchmarks/experiments/simd_microkernel.cpp) | the GEMM register-tile micro-kernel on L1-resident data: rows × vectors, B packed or with rows N apart |
 | [`bench_m4.csv`](bench_m4.csv), [`bench_zen5.csv`](bench_zen5.csv) | [`bench_gemm`](../../../benchmarks/bench_gemm.cpp) | every CPU kernel, N = 64 … 4096 (Google Benchmark CSV; GFLOP/s in the last column) |
-| [`bench_m4_neon_f64_8x4.csv`](bench_m4_neon_f64_8x4.csv), [`bench_zen5_avx512_8x2.csv`](bench_zen5_avx512_8x2.csv) | `bench_gemm` | the two kernels whose micro-kernel changed, re-measured after the change in the same session |
+| [`bench_m4_neon_f64_8x4.csv`](bench_m4_neon_f64_8x4.csv), [`bench_zen5_avx512_8x2.csv`](bench_zen5_avx512_8x2.csv) | `bench_gemm` | the two kernels whose micro-kernel changed (and their prefetch variants), re-measured after the change; the AVX-512 file is a re-run on 2026-10-16, within 1% of the same-night run quoted in the tables |
 
 Cycles are at the core clock measured at the start of each program with a
 chain of dependent integer adds ([`core_clock.hpp`](../../../benchmarks/experiments/core_clock.hpp)):
@@ -68,9 +68,10 @@ everything is in L1. Best of 5. GFLOP/s:
 
 The 4 × 2 AVX-512 kernel is slower than its 8 accumulators allow because
 GCC 13 compiles it with the B loads folded into the FMAs as memory operands
-(`vfmadd231ps (mem), …`): 32 FMAs with memory operands and no separate B
-load per two k steps, so B is re-loaded for every FMA. With 6 or more rows
-it loads B once per k step (4 loads per two k steps) and every FMA is
+(`vfmadd231ps (mem), …`): its loop body, unrolled over four k steps, has
+32 FMAs with memory operands and no separate B load, so B is re-loaded for
+every FMA. With 6 or more rows it loads B once per k step (4 loads per two
+k steps) and every FMA is
 register-only. The library kernels `gemm_avx512_blocked` and
 `gemm_neon_blocked` (f64) were changed to the 8-row tiles on this evidence;
 before and after, same session:

@@ -35,6 +35,7 @@ constexpr long kIters = 4'000'000;  // FMOPAs per tile
 
 template <int... Tiles>
 __arm_locally_streaming __arm_new("za") void fmopa_f32(long iters, float* out) {
+    svzero_za();
     const svbool_t pg   = svptrue_b32();
     const svfloat32_t a = svdup_f32(1.0f), b = svdup_f32(1e-9f);
     for (long i = 0; i < iters; ++i)
@@ -44,6 +45,7 @@ __arm_locally_streaming __arm_new("za") void fmopa_f32(long iters, float* out) {
 
 template <int... Tiles>
 __arm_locally_streaming __arm_new("za") void fmopa_f64(long iters, double* out) {
+    svzero_za();
     const svbool_t pg   = svptrue_b64();
     const svfloat64_t a = svdup_f64(1.0), b = svdup_f64(1e-9);
     for (long i = 0; i < iters; ++i)

@@ -14,8 +14,14 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <limits>
 #include <new>
 #include <type_traits>
+#include <utility>
+
+#if defined(_MSC_VER)
+    #include <malloc.h>
+#endif
 
 namespace hpc {
 
@@ -24,6 +30,7 @@ inline constexpr std::size_t kMatrixAlignment = 64;
 
 template <typename T>
 class Matrix {
+    static_assert(alignof(T) <= kMatrixAlignment, "Matrix<T> element alignment exceeds buffer alignment");
     static_assert(std::is_trivially_copyable_v<T>, "Matrix<T> copies elements with memcpy");
 
   public:
@@ -31,12 +38,13 @@ class Matrix {
 
     /// A rows×cols matrix of zeros.
     Matrix(std::size_t rows, std::size_t cols)
-        : rows_(rows), cols_(cols), data_(allocate(rows * cols)) {
+        : rows_(rows), cols_(cols), data_(allocate(element_count(rows, cols))) {
         zero();
     }
 
     Matrix(const Matrix& other) : Matrix(other.rows_, other.cols_) {
-        std::memcpy(data(), other.data(), size() * sizeof(T));
+        if (size() != 0)
+            std::memcpy(data(), other.data(), size() * sizeof(T));
     }
 
     Matrix& operator=(const Matrix& other) {
@@ -45,8 +53,19 @@ class Matrix {
         return *this;
     }
 
-    Matrix(Matrix&&) noexcept            = default;
-    Matrix& operator=(Matrix&&) noexcept = default;
+    /// Moving leaves an empty matrix, so size(), fill() and zero() remain safe.
+    Matrix(Matrix&& other) noexcept
+        : rows_(std::exchange(other.rows_, 0)), cols_(std::exchange(other.cols_, 0)),
+          data_(std::move(other.data_)) {}
+
+    Matrix& operator=(Matrix&& other) noexcept {
+        if (this != &other) {
+            data_ = std::move(other.data_);
+            rows_ = std::exchange(other.rows_, 0);
+            cols_ = std::exchange(other.cols_, 0);
+        }
+        return *this;
+    }
     ~Matrix()                            = default;
 
     /// Unchecked element access.
@@ -75,6 +94,12 @@ class Matrix {
     }
 
   private:
+    static std::size_t element_count(std::size_t rows, std::size_t cols) {
+        if (cols != 0 && rows > std::numeric_limits<std::size_t>::max() / cols)
+            throw std::bad_array_new_length{};
+        return rows * cols;
+    }
+
     struct Free {
         void operator()(T* p) const noexcept {
 #if defined(_MSC_VER)
@@ -88,6 +113,8 @@ class Matrix {
     static std::unique_ptr<T[], Free> allocate(std::size_t n) {
         if (n == 0)
             return nullptr;
+        if (n > (std::numeric_limits<std::size_t>::max() - (kMatrixAlignment - 1)) / sizeof(T))
+            throw std::bad_array_new_length{};
         // aligned_alloc requires the size to be a multiple of the alignment.
         const std::size_t bytes =
             (n * sizeof(T) + kMatrixAlignment - 1) / kMatrixAlignment * kMatrixAlignment;

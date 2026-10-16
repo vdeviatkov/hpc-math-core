@@ -144,7 +144,7 @@ Then the 4096×4096 problem with B in a wider buffer, so only its row stride
 | 4128 (+128 B) | 16,512 B | 1,465 | 1,553 | −6% | 232 | 429 | −46% |
 | 4160 (+256 B) | 16,640 B | 1,498 | 1,532 | −2% | 319 | 434 | −26% |
 
-- f32: the collapse is confined to the exact powers of two; 32 columns either side, in place is within 5% of packed. Padding each row by one cache line (ldb = 4128) recovers 3.1× with the same N, work and pages touched, so the loss follows the byte stride. That is what cache-set conflicts predict.
+- f32: the collapse is confined to the exact powers of two; 32 columns either side, in place is within 5% of packed. Padding each row by one cache line (ldb = 4128) recovers 3.1× with the same N and work, and only about 0.8% more storage, so the loss follows the byte stride. That is what cache-set conflicts predict.
 - f64: in place now loses 26–48% at almost every N around 4096, padded or not; only N = 4000 escapes. Its strips are 2,048 rows of 256 B, twice the f32 footprint, at strides twice as large; with the previous 1,024-row strips padded f64 lost only 7–8%. Why padding no longer helps f64 was not investigated further. `gemm_sme` packs B, so none of this reaches it.
 - ldb = 4097 is a control, not a fix: its row segments are no longer 128 B aligned, so each spans an extra cache line, and the loss mixes that cost with the stride effect.
 - Where the conflict happens, and the cost of each fix (f32): [experiments/sme-b-stride](experiments/sme-b-stride/README.md). With rows 16 KiB apart the macro-kernel loses 5–26% up to 576 rows per strip and breaks between 576 and 640, and the core's pointer chase at that stride holds roughly 450–600 lines in L2 against 8 in L1: the conflicts are in L2. With a padded stride, packing B costs ~2.5 ms and saves 7–8 ms of compute at N=4096; the remaining in-place cost is 4–8% across N = 1024–4224.
@@ -349,12 +349,14 @@ Packing B into contiguous strips, as `gemm_sme` does, would remove it.
 
 Software prefetch has almost no effect on Zen 5, and the distance is
 irrelevant. Across every family, precision and size, all four distances
-(D ∈ {2, 4, 8, 16}) land within ~3% of each other and of no prefetch:
+(D ∈ {2, 4, 8, 16}) land within ~3% of each other and of no prefetch (the
+AVX-512 rows from a re-run of the 8×2 kernel on 2026-10-16,
+[`bench_zen5_avx512_8x2.csv`](experiments/cpu-simd/bench_zen5_avx512_8x2.csv)):
 
 | Kernel | D=2 | D=4 | D=8 | D=16 | no prefetch |
 |---|---|---|---|---|---|
-| `Avx512BlockedPf` f32 N=1024 | 283.5 | 283.6 | 283.4 | 284.1 | 285.0 |
-| `Avx512BlockedPf` f64 N=1024 | 91.4 | 89.3 | 91.9 | 88.9 | 92.5 |
+| `Avx512BlockedPf` f32 N=1024 | 283.6 | 283.0 | 283.6 | 283.5 | 284.1 |
+| `Avx512BlockedPf` f64 N=1024 | 90.5 | 90.9 | 90.6 | 90.7 | 91.9 |
 | `Avx2BlockedPf` f32 N=256 | 149.62 | 149.59 | 149.60 | 149.55 | 150.19 |
 | `BlockedPf` f32 N=512 | 47.16 | 47.29 | 47.01 | 47.96 | 47.52 |
 
@@ -382,7 +384,9 @@ What each level adds: [src/gemm/cuda.hpp](../src/gemm/cuda.hpp).
 allocated and filled on the GPU before timing, and each iteration is one
 call of the kernel's device entry point (`gemm_cuda_*_device`). The time is
 GPU time, from CUDA events recorded on the GPU just before and after the
-launch, so host-side launch overhead is not counted; one untimed call
+launch. CPU elapsed time is not the reported metric, but GPU idle gaps
+while the host submits work can lie between the events, especially for
+small kernels; one untimed call
 precedes the loop. Copying the matrices between host and GPU is not
 included: at N=4096 it takes ~12 ms per call over PCIe (192 MiB), several
 times the GEMM itself, and in real use the data stays on the GPU between
@@ -483,12 +487,14 @@ at N=4096 compute-only:
 | Registers per thread | 126 | 126 |
 | **Throughput** | 80.8 TFLOP/s | 100.5 TFLOP/s |
 
-The kernel had been moving 6.7× more shared-memory traffic than it needs;
+The kernel had required about 6.6× as many shared-load wavefronts;
+these count bank-service work, not 6.6× as many requested data bytes;
 afterwards it is within 1% of the minimum wavefront count. Shared memory
 per block grows from 32 to 37 KB, lowering the shared-memory occupancy
 limit from 3 to 2 blocks per SM, which costs nothing: its registers (126
 per thread then, 118 now) already cap it at 2. That register pressure (occupancy 33%, ~67%
-headroom per Nsight) is what limits the kernel now; beyond it, the last
-17% to cuBLAS would take a deeper pipeline (3–4 stages) and split-K.
+unused warp slots per Nsight) constrains occupancy; it does not by itself
+prove the remaining performance bottleneck. Deeper pipelines and split-K
+are possible experiments, not measured fixes for the remaining gap.
 
 ---

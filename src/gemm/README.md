@@ -2,7 +2,8 @@
 
 Every kernel computes C = A × B, with A M×K, B K×N and C M×N, all row-major
 `hpc::Matrix<float>` or `hpc::Matrix<double>`; C is overwritten. Each file's
-header comment explains its design; this page maps the files and the
+header comment explains its design; [the detailed file guide](../../docs/kernel-design.md)
+traces data flow, edge handling and tradeoffs; this page maps the files and the
 techniques. Measurements: [docs/benchmarks.md](../../docs/benchmarks.md).
 Cache background: [docs/cache-behavior.md](../../docs/cache-behavior.md).
 
@@ -13,7 +14,7 @@ Cache background: [docs/cache-behavior.md](../../docs/cache-behavior.md).
 | [`naive.hpp`](naive.hpp) | `gemm_naive` (i-j-k, the reference every test compares against) | always |
 | [`reordered.hpp`](reordered.hpp) | `gemm_reordered` (i-k-j) | always |
 | [`blocked.hpp`](blocked.hpp) | `gemm_blocked` (cache-tiled i-k-j) | always |
-| [`avx2.hpp`](avx2.hpp) | `gemm_avx2_{naive,reordered,blocked}` | `__AVX2__` |
+| [`avx2.hpp`](avx2.hpp) | `gemm_avx2_{naive,reordered,blocked}` | `__AVX2__` + FMA |
 | [`avx512.hpp`](avx512.hpp) | `gemm_avx512_{naive,reordered,blocked}` | `__AVX512F__` |
 | [`neon.hpp`](neon.hpp) | `gemm_neon_{naive,reordered,blocked}` | AArch64 NEON |
 | [`sve.hpp`](sve.hpp) | `gemm_sve_{naive,reordered,blocked}` | `__ARM_FEATURE_SVE` |
@@ -30,7 +31,8 @@ machine: [docs/build.md](../../docs/build.md#isa-availability--skipping)).
 
 ## Techniques
 
-Each kernel adds one technique to the one before it.
+The ladders isolate techniques; CUDA levels 3 and 4 are separate extensions
+of level 2, and an added technique need not improve every shape.
 
 | Technique | What it fixes | Where |
 |---|---|---|
@@ -51,7 +53,7 @@ Each kernel adds one technique to the one before it.
 | AVX-512 | 32 × 512-bit ZMM: 16 f32 / 8 f64; C tile 8×32 f32, 8×16 f64 | `_mm512_fmadd_ps/pd`, `_mm512_set1_ps/pd` |
 | NEON | 32 × 128-bit Q: 4 f32 / 2 f64; C tile 4×16 f32, 8×4 f64 | `vfmaq_f32/f64`, `vdupq_n_f32/f64` |
 | SVE | vector length read at run time (128–2048 bit); C tile 4 rows × 2 vectors | `svmla_f32/f64_x`, `svwhilelt_b32/b64` (predicated tails) |
-| SME2 | ZA: 4 f32 / 8 f64 tiles of SVL×SVL; all used, 32×32 f32 / 16×32 f64 C block | `svmopa_za32/za64_m`, `svld1_x2`, `svld1/st1_hor_za32/64` |
+| SME2 | ZA: 4 f32 / 8 f64 tiles of SVL×SVL; all used; at M4's 512-bit SVL, 32×32 f32 / 16×32 f64 C block | `svmopa_za32/za64_m`, `svld1_x2`, `svld1/st1_hor_za32/64` |
 | Accelerate | opaque | `cblas_sgemm`, `cblas_dgemm` |
 | KleidiAI | 2VL×2VL (all four f32 ZA tiles) | `kai_run_matmul_clamp_f32_f32p2vlx1_f32p2vlx1biasf32_sme2_mopa` |
 | CUDA | 1 output per thread (Level 0) → 8×8 per thread (Level 2) → 8 WMMA fragments per warp (Level 7) | `__shared__`, `cp.async`, `wmma::mma_sync`, `ldmatrix` + `mma.sync` PTX |
@@ -61,5 +63,5 @@ Each kernel adds one technique to the one before it.
 Every CPU kernel computes in its element type. The Tensor Core kernels
 (`gemm_cuda_wmma`, `gemm_cuda_mma_ldmatrix`, `gemm_cuda_wmma_pipelined`) and
 `gemm_cuda_cublas_fp16` take fp32 matrices but multiply in fp16 and
-accumulate in fp32 (~1e-3 relative error); `gemm_cuda_cublas_tf32` multiplies
+accumulate in fp32 (roughly 1e-3 input rounding scale, not an output error bound); `gemm_cuda_cublas_tf32` multiplies
 in TF32.

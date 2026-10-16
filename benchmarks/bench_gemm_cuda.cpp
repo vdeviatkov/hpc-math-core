@@ -33,6 +33,7 @@
 #include <benchmark/benchmark.h>
 
 #include <cstddef>
+#include <memory>
 #include <random>
 #include <string>
 
@@ -75,39 +76,36 @@ bool skip(benchmark::State& state, Needs needs) {
 
 /// Square N x N inputs on the GPU: T, or fp16 when Fp16 (the kernel then
 /// receives void* buffers of halves). C is always T.
+struct DeviceFree {
+    void operator()(void* p) const noexcept { gemm_cuda_free(p); }
+};
+using DevicePtr = std::unique_ptr<void, DeviceFree>;
+
 template <typename T, bool Fp16>
 struct DeviceProblem {
-    void* A = nullptr;
-    void* B = nullptr;
-    T* C    = nullptr;
+    DevicePtr A, B, C;
 
     explicit DeviceProblem(std::size_t n) {
         hpc::Matrix<T> hA(n, n), hB(n, n);
         fill_random(hA, 1);
         fill_random(hB, 2);
         const std::size_t bytes = n * n * sizeof(T);
-        A = gemm_cuda_malloc(bytes);
-        B = gemm_cuda_malloc(bytes);
-        C = static_cast<T*>(gemm_cuda_malloc(bytes));
-        gemm_cuda_memcpy_h2d(A, hA.data(), bytes);
-        gemm_cuda_memcpy_h2d(B, hB.data(), bytes);
+        A.reset(gemm_cuda_malloc(bytes));
+        B.reset(gemm_cuda_malloc(bytes));
+        C.reset(gemm_cuda_malloc(bytes));
+        gemm_cuda_memcpy_h2d(A.get(), hA.data(), bytes);
+        gemm_cuda_memcpy_h2d(B.get(), hB.data(), bytes);
         if constexpr (Fp16) {
             static_assert(sizeof(T) == 4, "fp16 inputs are converted from fp32");
-            for (void** buf : {&A, &B}) {
-                void* half = gemm_cuda_malloc(n * n * 2);
-                gemm_cuda_convert_f32_to_f16_device(static_cast<const float*>(*buf), half,
+            for (DevicePtr* buf : {&A, &B}) {
+                DevicePtr half(gemm_cuda_malloc(n * n * 2));
+                gemm_cuda_convert_f32_to_f16_device(static_cast<const float*>(buf->get()), half.get(),
                                                     static_cast<int>(n * n));
                 gemm_cuda_device_synchronize();
-                gemm_cuda_free(*buf);
-                *buf = half;
+                *buf = std::move(half);
             }
         }
         gemm_cuda_device_synchronize();
-    }
-    ~DeviceProblem() {
-        gemm_cuda_free(A);
-        gemm_cuda_free(B);
-        gemm_cuda_free(C);
     }
     DeviceProblem(const DeviceProblem&)            = delete;
     DeviceProblem& operator=(const DeviceProblem&) = delete;
@@ -126,7 +124,7 @@ void add(const std::string& name, Launch launch, Needs needs, int precision_bits
                     return;
                 DeviceProblem<T, Fp16> p(n);
                 const int N = static_cast<int>(n);
-                auto call   = [&] { launch(p.A, p.B, p.C, N); };
+                auto call   = [&] { launch(p.A.get(), p.B.get(), static_cast<T*>(p.C.get()), N); };
                 gemm_cuda_time_ms(call);  // warm-up, untimed
                 for (auto _ : state)
                     state.SetIterationTime(gemm_cuda_time_ms(call) / 1e3);

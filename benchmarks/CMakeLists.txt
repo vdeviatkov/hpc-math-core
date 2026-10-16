@@ -5,12 +5,20 @@ target_link_libraries(bench_gemm PRIVATE hpc_math_core benchmark::benchmark)
 add_executable(bench_gemm_cuda bench_gemm_cuda.cpp)
 target_link_libraries(bench_gemm_cuda PRIVATE hpc_math_cuda benchmark::benchmark)
 
+# Low-precision GEMMs (bf16 / fp16 / INT8 / FP8): the CPU kernels of this
+# target with their FP32 baselines, and the CUDA ones (or the stub).
+add_executable(bench_gemm_lowp bench_gemm_lowp.cpp)
+target_link_libraries(bench_gemm_lowp PRIVATE hpc_math_core benchmark::benchmark)
+add_executable(bench_gemm_lowp_cuda bench_gemm_lowp_cuda.cpp)
+target_link_libraries(bench_gemm_lowp_cuda PRIVATE hpc_math_cuda benchmark::benchmark)
+
 # Experiments behind the articles in docs/articles/; their data and method
 # are in docs/experiments/.
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64|ARM64")
+if(NOT MSVC AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64|ARM64")
     add_executable(cache_chase experiments/cache_chase.cpp)
 endif()
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64|ARM64|x86_64|AMD64")
+# These experiments use GNU-style inline assembly, unavailable in MSVC.
+if(NOT MSVC AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64|ARM64|x86_64|AMD64")
     add_executable(fma_peak experiments/fma_peak.cpp)
     target_link_libraries(fma_peak PRIVATE hpc_math_core)
     add_executable(simd_microkernel experiments/simd_microkernel.cpp)
@@ -24,6 +32,8 @@ if(_HPC_SME_FOUND)
     add_executable(sme_b_layout experiments/sme_b_layout.cpp)
     add_executable(sme_b_stride_probe experiments/sme_b_stride_probe.cpp)
     add_executable(sme_fmopa experiments/sme_fmopa.cpp)
+    add_executable(sme_block_sweep experiments/sme_block_sweep.cpp)
+    target_link_libraries(sme_block_sweep PRIVATE hpc_math_core)
     target_link_libraries(sme_fmopa PRIVATE hpc_math_core)
     target_link_libraries(sme_b_layout PRIVATE hpc_math_core)
     target_link_libraries(sme_b_stride_probe PRIVATE hpc_math_core)

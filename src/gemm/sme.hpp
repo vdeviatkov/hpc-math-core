@@ -17,7 +17,7 @@
  *
  *   ZA[r][c] += a[r] * b[c]     for r, c in [0, SVL)
  *
- * With a[k] = A(i0+r, k) and b[k] = B(k, j0+c), K of these instructions
+ * With a[r] = A(i0+r, k) and b[c] = B(k, j0+c), K of these instructions
  * produce an SVL×SVL tile of C — the same primitive as GPU Tensor Cores.
  * SVL is read at runtime with svcntsw() / svcntsd(): 16 f32 / 8 f64 on
  * Apple M4, where ZA holds 4 f32 or 8 f64 tiles of SVL×SVL.
@@ -25,7 +25,7 @@
  * FMOPA, ZA loads/stores and `zero {za}` are only legal in streaming SVE
  * mode. `__arm_locally_streaming` makes Clang wrap a function in SMSTART /
  * SMSTOP; `__arm_new("za")` gives it its own ZA state (any live caller ZA
- * state is saved, and ZA starts zeroed). Gather loads are not legal in
+ * state is preserved; svzero_za explicitly initializes the accumulator). Gather loads are not legal in
  * streaming mode, so the strided column of A that FMOPA needs cannot be
  * loaded directly: every kernel here packs A ("Packing" below).
  *
@@ -192,7 +192,7 @@
  *    at N=4096; f32 is within 5% at N = 1984–2080 and 4000–4128.
  *  - The same 4096×4096 problem with only ldb changed: f32 −68% at
  *    ldb = 4096, −6% at ldb = 4128 (+128 B per row). The collapse follows
- *    the byte stride, not N, the work or the pages touched.
+ *    the byte stride, not N or the work; padding adds only ~0.8% storage.
  *  - f64 in place loses 26–48% at nearly every N around 4096, padded or
  *    not (2,048 rows of 256 B per strip); with 1,024-row strips padded f64
  *    lost only 7–8%. Packing removes it.
@@ -201,7 +201,7 @@
  *  - A pointer chase from a P-core over 1,024 lines 16 KB apart keeps only
  *    8 of them in L1 and fewer than 1,024 in L2 (100 cycles per load,
  *    against 12 for lines 16,512 B apart).
- * The conflicts are in L2: with rows 16 KiB apart the macro-kernel breaks
+ * The evidence points to L2 conflicts: with rows 16 KiB apart the macro-kernel breaks
  * between 576 and 640 rows per strip, far beyond L1's 8 ways. With a
  * padded stride, in place still trails packed by 4–8% (f32). Padding B
  * would not replace packing in a library anyway: the caller owns B's
@@ -375,26 +375,48 @@ template <typename T, int Tile, bool Load>
 }
 
 /// Move one column of tiles (top tile Col, bottom tile kCols+Col) between ZA and C.
-template <typename T, int Col, bool Load>
+template <typename T, int Col, bool Load, bool Full>
 [[gnu::always_inline]] inline void move_column(T* c, std::int64_t ldc, std::int64_t s,
                                                std::int64_t rows, std::int64_t cols) __arm_streaming
     __arm_inout("za") {
+    if constexpr (Full) {
+        const svbool_t pg = kF32<T> ? svptrue_b32() : svptrue_b64();
+        move_tile<T, Col, Load>(c + Col * s, ldc, s, pg);
+        move_tile<T, kCols<T> + Col, Load>(c + s * ldc + Col * s, ldc, s, pg);
+        return;
+    }
     const std::int64_t top = std::min(rows, s);
+    // Predication suppresses accesses, not C++ pointer arithmetic. Clamp
+    // entirely inactive columns and do not form a nonexistent bottom row.
+    const std::int64_t offset = std::min<std::int64_t>(Col * s, cols);
     const svbool_t pg      = kF32<T> ? svwhilelt_b32(Col * s, cols) : svwhilelt_b64(Col * s, cols);
-    move_tile<T, Col, Load>(c + Col * s, ldc, top, pg);
-    move_tile<T, kCols<T> + Col, Load>(c + s * ldc + Col * s, ldc, rows - top, pg);
+    move_tile<T, Col, Load>(c + offset, ldc, top, pg);
+    const std::int64_t bottom = rows > top ? s * ldc + offset : 0;
+    move_tile<T, kCols<T> + Col, Load>(c + bottom, ldc, rows - top, pg);
 }
 
 /// Load (Load=true) or store the whole micro-tile accumulator.
-template <typename T, bool Load>
-[[gnu::always_inline]] inline void move_c(T* c, std::int64_t ldc, std::int64_t s, std::int64_t rows,
+template <typename T, bool Load, bool Full>
+[[gnu::always_inline]] inline void move_c_columns(T* c, std::int64_t ldc, std::int64_t s, std::int64_t rows,
                                           std::int64_t cols) __arm_streaming __arm_inout("za") {
-    move_column<T, 0, Load>(c, ldc, s, rows, cols);
-    move_column<T, 1, Load>(c, ldc, s, rows, cols);
+    move_column<T, 0, Load, Full>(c, ldc, s, rows, cols);
+    move_column<T, 1, Load, Full>(c, ldc, s, rows, cols);
     if constexpr (kCols<T> == 4) {
-        move_column<T, 2, Load>(c, ldc, s, rows, cols);
-        move_column<T, 3, Load>(c, ldc, s, rows, cols);
+        move_column<T, 2, Load, Full>(c, ldc, s, rows, cols);
+        move_column<T, 3, Load, Full>(c, ldc, s, rows, cols);
     }
+}
+
+// Keep the common full-tile transfers free of edge-address bookkeeping.
+// Both paths remain inlined into the ZA owner, without mode switches.
+template <typename T, bool Load>
+[[gnu::always_inline]] inline void move_c(T* c, std::int64_t ldc, std::int64_t s,
+                                          std::int64_t rows, std::int64_t cols)
+    __arm_streaming __arm_inout("za") {
+    if (rows == 2 * s && cols == kCols<T> * s)
+        move_c_columns<T, Load, true>(c, ldc, s, rows, cols);
+    else
+        move_c_columns<T, Load, false>(c, ldc, s, rows, cols);
 }
 
 /// Macro-kernel (streaming): C[mc×nc] (+)= Apack[mc×kc] · B[kc×nc], all ZA
@@ -442,7 +464,7 @@ void macro_kernel(const T* __restrict Ap, const T* __restrict B, std::int64_t b_
                 mopa<T, kC + 0>(pt, a1, svget2(b, 0));
                 mopa<T, kC + 1>(pt, a1, svget2(b, 1));
                 if constexpr (kC == 4) {  // f64: columns 2–3 use the other 4 za64 tiles
-                    const auto b2 = svld1_x2(pb1, b_strip + k * ldb + 2 * s);
+                    const auto b2 = svld1_x2(pb1, b_strip + k * ldb + (cols > 2 * s ? 2 * s : 0));
                     mopa<T, 2>(pt, a0, svget2(b2, 0));
                     mopa<T, 3>(pt, a0, svget2(b2, 1));
                     mopa<T, 6>(pt, a1, svget2(b2, 0));

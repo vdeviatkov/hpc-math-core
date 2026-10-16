@@ -28,7 +28,7 @@ them. The Tensor Core instruction count was checked with `ncu`
 | FP16 `mma.sync`, fp32 accumulate | 124.4 TFLOP/s | 2,887 MHz | 114 W |
 | DRAM copy, read + write | 812 GB/s | 2,895 MHz | 160 W |
 
-FP32: 59.7 TFLOP/s at 2.83 GHz is 126 flops per SM per cycle, 98% of
+FP32: 59.7 TFLOP/s at 2.83 GHz is about 251 flops per SM per cycle, 98% of
 128 lanes × 2. FP16 Tensor Cores: 513 flops per SM per cycle. FP64: the
 microbenchmark compiles to 128 DFMA and 640 NOP instructions per loop
 body and reads 0.82 TFLOP/s with 4, 16 or 32 chains; the FP64 GEMM

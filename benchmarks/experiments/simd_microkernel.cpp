@@ -110,14 +110,14 @@ int main() {
     std::printf("isa,type,rows,vectors_per_row,accumulators,b_layout,gflops,cycles_per_k\n");
 #if HPC_HAS_NEON
     sweep<NeonF32, 4, 2, 3, 4, 5, 6>();  // library: 4 x 4 vectors = 16 accumulators
-    sweep<NeonF64, 2, 4, 6, 8, 10>();    // library: 4 x 2 vectors = 8
+    sweep<NeonF64, 2, 4, 6, 8, 10>();    // library: 8 x 2 vectors = 16
 #endif
 #if HPC_HAS_AVX2
     sweep<Avx2F32, 2, 4, 5, 6>();        // library: 4 x 2 = 8 (16 registers in all)
     sweep<Avx2F64, 2, 4, 5, 6>();
 #endif
 #if HPC_HAS_AVX512
-    sweep<Avx512F32, 2, 4, 6, 8, 12>();  // library: 4 x 2 = 8
+    sweep<Avx512F32, 2, 4, 6, 8, 12>();  // library: 8 x 2 = 16
     sweep<Avx512F64, 2, 4, 6, 8, 12>();
 #endif
     std::fprintf(stderr, "core clock after: %.3f GHz\n", hpc::experiments::core_ghz());

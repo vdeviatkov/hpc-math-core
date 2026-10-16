@@ -1,7 +1,7 @@
 # SME2 GEMM and B's row stride: experiment data
 
 Raw data behind the article
-[*A power-of-two stride halves SME2 GEMM throughput on Apple M4*](../../articles/sme2-cache-associativity.md).
+[*A power-of-two stride cuts SME2 GEMM throughput by two thirds on Apple M4*](../../articles/sme2-cache-associativity.md).
 Apple M4 Max, single thread, FP32. Machine, compiler, commands and source
 hashes: [`metadata.json`](metadata.json). The size and padding sweeps of
 `bench_gemm --benchmark_filter=BStride` are in

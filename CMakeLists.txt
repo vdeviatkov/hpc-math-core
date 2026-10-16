@@ -57,21 +57,31 @@ option(HPC_ENABLE_SME "Enable ARM SME (Scalable Matrix Extension) instructions" 
 if(HPC_ENABLE_SME)
     include(CheckCXXSourceRuns)
 
-    # Probe: zero ZA, one FMOPA, one horizontal-slice store from ZA — the
-    # instruction types gemm_sme uses.
+    # Probe every required feature: SME2 multi-vector loads, fp32/fp64
+    # FMOPA and ZA slice stores. Observe the result so optimization cannot
+    # remove the instructions whose execution is being checked.
     set(HPC_SME_PROBE_SRC [[
 #include <arm_sme.h>
+#ifndef __ARM_FEATURE_SME2
+#error SME2 required
+#endif
 __arm_locally_streaming __arm_new("za")
-static void probe() {
+static double probe() {
     svzero_za();
-    svfloat32_t a = svdup_f32(1.0f);
-    svfloat32_t b = svdup_f32(2.0f);
-    svbool_t pg = svptrue_b32();
-    svmopa_za32_f32_m(0, pg, pg, a, b);
-    float out[64] = {0};
-    svst1_hor_za32(0, 0, pg, out);
+    float input[128];
+    for (float& value : input) value = 1.0f;
+    const auto a = svld1_f32_x2(svptrue_c32(), input);
+    svmopa_za32_f32_m(0, svptrue_b32(), svptrue_b32(), svget2(a, 0), svget2(a, 1));
+    float out32[64] = {};
+    svst1_hor_za32(0, 0, svptrue_b32(), out32);
+    svzero_za();
+    const auto d = svdup_f64(2.0);
+    svmopa_za64_f64_m(0, svptrue_b64(), svptrue_b64(), d, d);
+    double out64[32] = {};
+    svst1_hor_za64(0, 0, svptrue_b64(), out64);
+    return out32[0] + out64[0];
 }
-int main() { probe(); return 0; }
+int main() { return probe() == 5.0 ? 0 : 1; }
 ]])
 
     set(_HPC_SME_FOUND FALSE)
@@ -82,7 +92,7 @@ int main() { probe(); return 0; }
         if(_HPC_SME_FOUND)
             break()
         endif()
-        string(MAKE_C_IDENTIFIER "HPC_SME_RUNS_${FLAG}" _HPC_SME_CHECK_VAR)
+        string(MAKE_C_IDENTIFIER "HPC_SME2_F64_RUNS_V2_${FLAG}" _HPC_SME_CHECK_VAR)
         set(CMAKE_REQUIRED_FLAGS "${FLAG} -std=c++20")
         check_cxx_source_runs("${HPC_SME_PROBE_SRC}" ${_HPC_SME_CHECK_VAR})
         unset(CMAKE_REQUIRED_FLAGS)
@@ -164,7 +174,7 @@ if(HPC_ENABLE_AVX512)
             string(MAKE_C_IDENTIFIER "HAS_${FLAG}" FLAG_VAR)
             check_cxx_compiler_flag(${FLAG} ${FLAG_VAR})
             if(${FLAG_VAR})
-                add_compile_options(${FLAG})
+                add_compile_options($<$<COMPILE_LANGUAGE:CXX>:${FLAG}>)
             endif()
         endforeach()
     endif()
@@ -376,13 +386,14 @@ if(CMAKE_CUDA_COMPILER)
 
     message(STATUS "CUDA architectures: ${CMAKE_CUDA_ARCHITECTURES}")
 
-    add_library(hpc_math_cuda STATIC src/cuda/gemm_kernels.cu)
+    add_library(hpc_math_cuda STATIC src/cuda/gemm_kernels.cu src/cuda/gemm_lowp.cu)
     set_target_properties(hpc_math_cuda PROPERTIES CUDA_STANDARD 17 CUDA_STANDARD_REQUIRED ON)
-    # cuBLAS backs the reference entry points (gemm_cuda_cublas*).
-    target_link_libraries(hpc_math_cuda PUBLIC hpc_math_core CUDA::cudart CUDA::cublas)
+    # cuBLAS backs the reference entry points (gemm_cuda_cublas*); cuBLASLt
+    # the FP8 one (gemm_cuda_cublas_lowp_device).
+    target_link_libraries(hpc_math_cuda PUBLIC hpc_math_core CUDA::cudart CUDA::cublas CUDA::cublasLt)
 else()
     message(STATUS "No CUDA compiler found — building the CPU-only CUDA stub")
-    add_library(hpc_math_cuda STATIC src/cuda/gemm_kernels_stub.cpp)
+    add_library(hpc_math_cuda STATIC src/cuda/gemm_kernels_stub.cpp src/cuda/gemm_lowp_stub.cpp)
     target_link_libraries(hpc_math_cuda PUBLIC hpc_math_core)
 endif()
 

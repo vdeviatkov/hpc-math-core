@@ -1,11 +1,11 @@
 ---
-title: "A Power-of-Two Stride Halves SME2 GEMM Throughput on Apple M4"
+title: "A Power-of-Two Stride Cuts SME2 GEMM Throughput by Two Thirds on Apple M4"
 description: "An SME2 matrix multiplication on Apple M4 Max runs at a third of its speed when B's rows are 16 KiB apart. Controlled experiments point to L2 set conflicts; padding or packing B fixes it, and packing wins."
 date: 2026-10-12
 series_part: 3
 permalink: /articles/sme2-cache-associativity.html
 ---
-# A power-of-two stride halves SME2 GEMM throughput on Apple M4
+# A power-of-two stride cuts SME2 GEMM throughput by two thirds on Apple M4
 
 *Apple M4 Max, one thread, FP32. Part 3 of a series. How the kernel is
 built, and the machine's caches, TLBs and SME unit:
@@ -70,7 +70,7 @@ Mc block, one after another, so the strip must stay cached between those
 `ldb = 4096`, it is 2,048 pieces of 128 bytes spaced 16 KiB apart, spread
 over 32 MiB of address space.
 
-## N = 4096 runs at half the speed of N = 4000
+## N = 4096 runs at a third of the speed of N = 4000
 
 Square matrices around 2048 and 4096, so the row stride is `N × 4` bytes.
 Median of 3 interleaved repetitions; each timed call includes scratch
@@ -111,8 +111,9 @@ row stride `ldb` changes. The padding columns are never read.
 | 4160 | 16,640 B | 1,498 | 1,532 |
 
 One extra cache line per row (`ldb = 4128`) makes B 0.5 MiB larger and the
-in-place kernel **3.1× faster**. The arithmetic, the useful data and the
-number of 16 KiB pages touched are unchanged; only the stride moved.
+in-place kernel **3.1× faster**. The arithmetic and useful data are unchanged; the allocation and page
+footprint grow by about 0.8%. The 3.1× gain follows the stride, despite
+that small increase in footprint.
 `ldb = 4097` recovers less because its 128-byte row segments no longer
 start on a cache-line boundary, so each one spans two lines.
 
@@ -263,8 +264,7 @@ measurable directly: the same driver with a clock around each phase, N =
 
 The copy is cheap because each element of B is copied once, while the
 compute reads it once per A strip: 32 times per A block, `M / 32` times in
-all. At these sizes it pays for
-itself several times over.
+all. At these sizes it pays for itself several times over.
 
 ## Limitations
 
@@ -291,8 +291,10 @@ to be precise about what they do not establish:
 ## Rules of thumb
 
 1. **Look at strides in bytes, not dimensions.** A row stride that is a
-   power of two of 8 KiB or more leaves few cache sets for all the rows a
-   loop reuses. 4096 FP32 columns and 2048 FP64 columns are both 16 KiB.
+   large power of two leaves few cache sets for all the rows a loop reuses:
+   here 8 KiB and up, in L2; on Zen 5's 48 KiB L1 a 4 KiB stride already
+   costs the AVX-512 kernel 22% ([part 1](simd-gemm.md)). 4096 FP32 columns
+   and 2048 FP64 columns are both 16 KiB.
 2. **Test with a padded leading dimension.** Running the same problem with
    `ldb = N + one cache line` separates a stride effect from everything
    else in one measurement.
@@ -336,3 +338,7 @@ experiment CSVs; [render_charts.py](assets/render_charts.py) regenerates the
 three figures. The kernel is part of
 [hpc-math-core](https://github.com/vdeviatkov/hpc-math-core), a set of GEMM
 implementations from scalar C++ to SME2 and CUDA Tensor Cores.
+
+**Next:** [part 4](cuda-gemm.md) builds the same multiplication on an NVIDIA
+GPU, where the bank structure of shared memory plays the role the cache
+sets play here.

@@ -38,6 +38,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
+#include <cstdint>
 #include <type_traits>
 #include <vector>
 
@@ -80,8 +81,7 @@ inline constexpr std::size_t kSveRegCols = 2;
  * never written to C.
  *
  * @param a      A(i, k_blk) — row stride lda
- * @param b0     B(k_blk, j) — first SVE-width block
- * @param b1     B(k_blk, j + svcntw()) — second SVE-width block
+ * @param b      B(k_blk, j), with the second vector at b + svcntw()
  * @param c0..c3 C(i+0..3, j)
  * @param pg0/1  Predicates for the two B/C vector blocks (all-true or tail)
  */
@@ -90,7 +90,9 @@ inline void sve_micro_f32_4x2v(const float* __restrict__ a, const float* __restr
                                float* __restrict__ c2, float* __restrict__ c3, std::size_t lda,
                                std::size_t ldb, std::size_t k_len, svbool_t pg0,
                                svbool_t pg1) noexcept {
-    const std::uint64_t vl = svcntw();  // elements per SVE vector (runtime)
+    const std::uint64_t vl = svptest_any(svptrue_b32(), pg1) ? svcntw() : 0;
+    // Reuse the first address for an inactive second vector: even masked
+    // loads/stores must not form a pointer beyond the allocation.
 
     // Load 4×2 SVE-vector C tile.
     svfloat32_t c00 = svld1_f32(pg0, c0), c01 = svld1_f32(pg1, c0 + vl);
@@ -142,7 +144,7 @@ inline void sve_micro_f64_4x2v(const double* __restrict__ a, const double* __res
                                double* __restrict__ c2, double* __restrict__ c3, std::size_t lda,
                                std::size_t ldb, std::size_t k_len, svbool_t pg0,
                                svbool_t pg1) noexcept {
-    const std::uint64_t vl = svcntd();
+    const std::uint64_t vl = svptest_any(svptrue_b64(), pg1) ? svcntd() : 0;
 
     svfloat64_t c00 = svld1_f64(pg0, c0), c01 = svld1_f64(pg1, c0 + vl);
     svfloat64_t c10 = svld1_f64(pg0, c1), c11 = svld1_f64(pg1, c1 + vl);
@@ -372,7 +374,7 @@ void gemm_sve_blocked(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
     assert(B.rows() == K && C.rows() == M && C.cols() == N);
     C.zero();
 
-    // VL is queried once here; it is guaranteed constant for the process lifetime.
+    // Query this thread's VL for this call; callers must not change it mid-call.
     const std::size_t vl     = (sizeof(T) == 4) ? svcntw() : svcntd();
     const std::size_t kJStep = kSveRegCols * vl;  // j-elements per micro-kernel call
 

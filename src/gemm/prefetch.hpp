@@ -23,8 +23,9 @@
  *
  *   rw        0 = prefetch for read       (PREFETCHT* / PRFM PLDL*KEEP)
  *             1 = prefetch for read+write  (PREFETCHW  / PRFM PSTL*KEEP)
- *   locality  2 → L2     ← used for A/B data used in ~4–16 iterations
- *             3 → L1     ← used for C data we are about to write
+ *   locality  2 = moderate temporal locality (A/B)
+ *             3 = high temporal locality (C)
+ * These are target-dependent hints, not guaranteed cache placement.
  *
  *
  * ============================================================
@@ -66,7 +67,7 @@ namespace hpc::gemm {
 /// Default prefetch distance in micro-kernel rows.
 inline constexpr std::size_t kDefaultPrefetchDist = 4;
 
-/// Prefetch helper. rw: 0=read, 1=write. loc: 2=L2, 3=L1.
+/// Prefetch helper. rw: 0=read, 1=write; loc: temporal locality 0..3.
 template <int Rw = 0, int Loc = 2>
 inline void pf(const void* addr) noexcept {
 #if defined(_MSC_VER)
@@ -87,6 +88,7 @@ inline void pf(const void* addr) noexcept {
 template <typename T, std::size_t PfDist = kDefaultPrefetchDist,
           std::size_t Tile = kDefaultTile>
 void gemm_blocked_prefetch(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
+    static_assert(Tile > 0, "GEMM tile size must be positive");
     static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>);
     const std::size_t M   = A.rows();
     const std::size_t K   = A.cols();

@@ -307,8 +307,9 @@ void gemm_avx512_reordered(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C)
  * is stored once per kAvx512TileK steps instead of every step.
  *
  * Tile footprints (f32): A 64 KB, B 512 KB, C 128 KB. The f64 B panel is
- * 1 MiB — exactly Zen 5's per-core L2, which matches the f64 drop between
- * N=256 and N=512 in docs/benchmarks.md.
+ * 1 MiB — exactly Zen 5's per-core L2, before A and C are counted.
+ * Capacity and B row-stride conflicts can both affect the f64 drop;
+ * the stride probe isolates the latter (docs/experiments/cpu-simd).
  */
 #if !HPC_HAS_AVX512
 template <typename T>

@@ -47,10 +47,11 @@ ctest --test-dir build --output-on-failure
 ./build/benchmarks/bench_gemm_cuda
 ```
 
-### Windows (MSVC)
+### Windows (MSVC x64)
 
 ```powershell
 # 1. Configure (MSVC uses a multi-config generator — no CMAKE_BUILD_TYPE needed)
+#    Release defaults to /arch:AVX2 and requires a compatible x64 CPU.
 cmake -B build
 
 # 2. Build in Release mode (--config Release is essential for optimised numbers)
@@ -70,18 +71,28 @@ ctest --test-dir build --build-config Release --output-on-failure
 
 | Option | Default | Effect |
 |---|---|---|
-| `CMAKE_BUILD_TYPE` | — | Use `Release` for benchmark numbers (single-config generators only). |
+| `CMAKE_BUILD_TYPE` | `Release` for single-config generators | Use `Release` for benchmark numbers (single-config generators only). |
 | `HPC_MARCH` | `native` | Value passed to `-march=`. Set to `x86-64-v3` for a portable AVX2 build (used by CI); empty string disables the flag. Ignored by MSVC. |
 | `HPC_ENABLE_AVX512` | `OFF` | Adds AVX-512 compile flags (`-mavx512f…` / MSVC `/arch:AVX512`). Not needed with the default `-march=native` on an AVX-512 CPU, which already enables AVX-512; use it for MSVC or a non-native `HPC_MARCH`. ⚠ SIGILL on CPUs without AVX-512. |
-| `HPC_ENABLE_SME` | `OFF` | ARM SME2 kernels. Runs a compile-*and-execute* probe at configure time; supersedes `HPC_MARCH` with `-mcpu=apple-m4`. See below. |
+| `HPC_ENABLE_SME` | `OFF` | ARM SME2 kernels. Runs a compile-*and-execute* probe for SME2 loads and FP32/FP64 FMOPA at configure time; supersedes `HPC_MARCH` with `-mcpu=apple-m4`. See below. |
 | `HPC_ENABLE_AMX` | `ON` on Apple, `OFF` elsewhere | Apple AMX via Accelerate.framework (`cblas_sgemm`/`cblas_dgemm`). See below. |
 | `HPC_ENABLE_KLEIDIAI` | `ON` when the SME probe passed, else `OFF` | Fetches Arm KleidiAI v1.31.0 (FetchContent) for its SME2 f32 reference GEMM. |
 | `HPC_ENABLE_LTO` | `OFF` | Link-time optimisation for Release builds. |
 | `CMAKE_CUDA_ARCHITECTURES` | `native` | The GPU in the build machine. CUDA is detected automatically; without nvcc a CPU stub is built. If the GPU is newer than the toolkit can target, the build falls back to the newest PTX that toolkit can emit and warns — see below. |
 
+The optional CPU experiments use GNU-style inline assembly and are omitted
+under MSVC. SME needs a compiler with the required ACLE SME2 intrinsics
+(the recorded build uses Apple Clang 17); the general C++20 minimum does
+not guarantee support for every optional ISA.
+
 ### CUDA architecture selection
 
-The default is `native` — the GPU in the build machine. Two cases need care:
+The default is `native` — the GPU in the build machine. A visible GPU is
+needed for native detection. For a headless build, specify an architecture
+explicitly, such as `-DCMAKE_CUDA_ARCHITECTURES=80`. This source uses WMMA
+and requires targets at least sm_70; include an sm_80+ target for the raw
+`mma.sync.m16n8k16` path. Runtime capability checks do not supply code
+excluded by the compilation target. Two cases need care:
 
 **The GPU is newer than the CUDA toolkit.** nvcc refuses any architecture newer than itself, so `native` fails outright (e.g. CUDA 12.0, which predates Blackwell, on an RTX 50-series card: `Unsupported gpu architecture 'compute_120'`). The configure step probes for this and falls back to the newest *virtual* architecture the toolkit can emit, which the driver JIT-compiles forward onto the actual GPU. The kernels then run correctly, at the cost of a JIT pause on first launch — but do not benchmark in this configuration; install a toolkit new enough to target the card.
 
@@ -118,7 +129,7 @@ prologue with `CNTD`, a non-streaming SVE instruction, and Apple Silicon has
 no non-streaming SVE. `-mcpu=apple-m4` avoids it, and combining it with the
 default `-march=native` silently drops the SME features, so the option clears
 `HPC_MARCH`. Since only running the code shows either failure, configure
-compiles and runs a small SME program with each candidate flag
+compiles and runs a small SME2/FP64 program with each candidate flag
 (`-mcpu=apple-m4`, `-mcpu=native`, `-march=armv9-a+sme2`) and keeps the
 first that works. KleidiAI (`HPC_ENABLE_KLEIDIAI`) follows SME by default.
 
@@ -148,7 +159,7 @@ Which kernel families exist in a build is decided once, at compile time, by the 
 |---|---|---|
 | **Apple M-series** (default build — `HPC_ENABLE_AMX` defaults ON) | Scalar · NEON · Scalar-Pf · NEON-Pf · **AMX** | AVX2 · AVX-512 · SVE · SME · CUDA |
 | **Apple M4 Max, `-DHPC_ENABLE_SME=ON`** (the run recorded in [benchmarks.md](benchmarks.md)) | Scalar · NEON · Scalar-Pf · NEON-Pf · **SME** · **AMX** · **KleidiAI** | AVX2 · AVX-512 · SVE · CUDA |
-| Intel Mac (Accelerate present, but no Apple AMX coprocessor — dispatches to AVX/AVX-512 internally instead) | Scalar · AVX2 · AVX-512 · all Pf · **AMX**\* | NEON · SVE · SME · CUDA |
+| Intel Mac (Accelerate present; internal dispatch depends on the CPU) | Scalar · supported x86 SIMD/Pf · **AMX**\* | Unsupported x86 SIMD · NEON · SVE · SME · CUDA |
 | Intel Skylake (Linux/Windows, AVX2, no AVX-512, no GPU) | Scalar · AVX2 · Scalar-Pf · AVX2-Pf | AVX-512 · NEON · SVE · SME · AMX · CUDA |
 | Intel Skylake + NVIDIA GPU | Scalar · AVX2 · Scalar-Pf · AVX2-Pf · **CUDA** | AVX-512 · NEON · SVE · SME · AMX |
 | Intel Sapphire Rapids + NVIDIA GPU | Scalar · AVX2 · AVX-512 · all Pf · **CUDA** | NEON · SVE · SME · AMX |
@@ -192,7 +203,8 @@ sources are cached between runs.
 | `linux-arm` | `ubuntu-24.04-arm` | GCC 14 | scalar, NEON, prefetch (SVE if the runner has it) |
 | `macos` | `macos-14` | Apple Clang | scalar, NEON, prefetch, AMX via Accelerate |
 
-No hosted runner has a GPU, a CUDA toolkit or an SME-capable CPU, so every
+These jobs do not enable SME. The configured hosted runners are expected
+to have no CUDA toolkit/GPU, so every
 job builds the CUDA stub and none compiles the SME or KleidiAI kernels; the
 SME, AMX and CUDA numbers in [benchmarks.md](benchmarks.md) come from local
 runs. `linux-x86` also checks that every CUDA benchmark reports SKIPPED, and

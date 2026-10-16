@@ -3,7 +3,8 @@
  * @brief The CUDA API of gemm/cuda.hpp for builds without a CUDA toolkit.
  *
  * cuda_device_count() returns 0, so tests and benchmarks skip before calling
- * anything else; every other function throws if it is reached anyway.
+ * a kernel. Capability queries return false and free is a no-op; compute,
+ * allocation, copies, synchronization and timing throw if reached anyway.
  */
 
 #include "gemm/cuda.hpp"
@@ -77,6 +78,7 @@ void gemm_cuda_wmma_pipelined_device(const void*, const void*, float*, int, int,
 void* gemm_cuda_malloc(std::size_t) { unavailable(); }
 void gemm_cuda_free(void*) {}  // nothing can have been allocated
 void gemm_cuda_memcpy_h2d(void*, const void*, std::size_t) { unavailable(); }
+void gemm_cuda_memcpy_d2h(void*, const void*, std::size_t) { unavailable(); }
 void gemm_cuda_device_synchronize() { unavailable(); }
 
 #define HPC_INSTANTIATE(fn)                                                                  \

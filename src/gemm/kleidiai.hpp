@@ -15,7 +15,7 @@
  *   - LHS packed by kai_lhs_pack_f32p2vlx1_f32_sme (2VL-row strips)
  *   - RHS packed by kai_rhs_pack_kxn_f32p2vlx1biasf32_f32_f32_sme
  *     (2VL-column strips plus a bias vector; bias = 0 here)
- *   - clamp disabled (±FLT_MAX)
+ *   - clamp bounds ±FLT_MAX (inactive for the finite test range)
  *
  * Both packing steps run on every call, so timings include them. gemm_sme
  * packs on every call too, which keeps the comparison fair.

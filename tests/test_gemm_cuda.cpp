@@ -23,6 +23,7 @@
 #include <cstddef>
 #include <random>
 #include <string>
+#include <stdexcept>
 #include <vector>
 
 namespace {
@@ -124,11 +125,13 @@ void run_case(const Case<T>& c) {
 
     const double rel = c.reduced_precision ? 1e-2 : (sizeof(T) == 4 ? 1e-4 : 1e-10);
     const double abs = c.reduced_precision ? 1e-2 : (sizeof(T) == 4 ? 1e-3 : 1e-9);
-    for (const Shape& s : c.shapes) {
+    for (const Shape& s : c.shapes + std::vector<Shape>{{3, 0, 4}, {0, 5, 3}, {4, 5, 0},
+                                                        {0, 0, 0}, {11, 19, 23}}) {
         Matrix<T> A(s.M, s.K), B(s.K, s.N), C_ref(s.M, s.N), C(s.M, s.N);
         fill_random(A, unsigned(s.M + s.K));
         fill_random(B, unsigned(s.K + s.N + 1));
         gemm_naive(A, B, C_ref);
+        C.fill(T{123});  // every path must overwrite existing output
         c.kernel(A, B, C);
         for (std::size_t i = 0; i < s.M; ++i) {
             for (std::size_t j = 0; j < s.N; ++j) {
@@ -151,5 +154,39 @@ TEST_P(CudaF64, MatchesNaive) { run_case(GetParam()); }
 auto case_name = [](const auto& info) { return std::string(info.param.name); };
 INSTANTIATE_TEST_SUITE_P(Kernels, CudaF32, ::testing::ValuesIn(kF32), case_name);
 INSTANTIATE_TEST_SUITE_P(Kernels, CudaF64, ::testing::ValuesIn(kF64), case_name);
+
+TEST(CudaDevice, EmptyProductsAndInvalidPipelinedShape) {
+    if (cuda_device_count() == 0)
+        GTEST_SKIP() << "No CUDA device available";
+    using Fn = void (*)(const float*, const float*, float*, int, int, int);
+    const Fn kernels[] = {gemm_cuda_naive_device<float>, gemm_cuda_blocked_device<float>,
+                          gemm_cuda_reg_tile_device<float>, gemm_cuda_double_buf_device<float>,
+                          gemm_cuda_vectorized_device<float>, gemm_cuda_wmma_device,
+                          gemm_cuda_mma_ldmatrix_device, gemm_cuda_cublas_device<float>,
+                          gemm_cuda_cublas_tf32_device};
+    Matrix<float> out(3, 4);
+    auto* device = static_cast<float*>(gemm_cuda_malloc(out.size() * sizeof(float)));
+    struct FreeDevice {
+        float* p;
+        ~FreeDevice() { gemm_cuda_free(p); }
+    } cleanup{device};
+    for (const auto fn : kernels) {
+        out.fill(123);
+        gemm_cuda_memcpy_h2d(device, out.data(), out.size() * sizeof(float));
+        fn(nullptr, nullptr, device, 3, 0, 4);
+        gemm_cuda_memcpy_d2h(out.data(), device, out.size() * sizeof(float));
+        for (std::size_t i = 0; i < out.size(); ++i)
+            EXPECT_EQ(out.data()[i], 0);
+        fn(nullptr, nullptr, nullptr, 0, 5, 3);
+        fn(nullptr, nullptr, nullptr, 4, 5, 0);
+        EXPECT_THROW(fn(nullptr, nullptr, nullptr, -1, 5, 3), std::invalid_argument);
+    }
+    EXPECT_NO_THROW(gemm_cuda_convert_f32_to_f16_device(nullptr, nullptr, 0));
+    EXPECT_THROW(gemm_cuda_wmma_pipelined_device(nullptr, nullptr, device, 3, 32, 4),
+                 std::invalid_argument);
+    gemm_cuda_wmma_pipelined_device(nullptr, nullptr, device, 3, 0, 4);
+    gemm_cuda_cublas_fp16_device(nullptr, nullptr, device, 3, 0, 4);
+    gemm_cuda_device_synchronize();
+}
 
 }  // namespace

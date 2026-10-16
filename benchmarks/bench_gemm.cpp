@@ -193,7 +193,7 @@ void add_prefetch() {
 //   1. N around 2048 and 4096 with ldb = N: a collapse confined to the exact
 //      powers of two points at the row stride, not at N.
 //   2. The 4096×4096 problem with ldb = 4096, 4097, 4128, 4160: the work and
-//      the pages touched stay the same, only the stride changes. ldb = 4097
+//      useful data stay the same; padding slightly increases the page footprint. ldb = 4097
 //      is a misalignment control (32-float row segments no longer 128 B
 //      aligned, so each spans two cache lines).
 //

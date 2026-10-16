@@ -17,7 +17,7 @@
  * 2 × 8 lanes × 2 FLOP = 32 FLOP/cycle f32, 16 f64.
  *
  * Available on Intel Haswell+ and AMD Zen+; not on Apple Silicon.
- * HPC_HAS_AVX2 (hpc/isa.hpp) follows __AVX2__; where it is 0 the kernels
+ * HPC_HAS_AVX2 (hpc/isa.hpp) requires AVX2 and FMA; where it is 0 the kernels
  * are declared `= delete`.
  */
 
@@ -183,7 +183,7 @@ void gemm_avx2_naive(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
                 for (; k + W <= K; k += W) {
                     const __m256 a_vec = _mm256_loadu_ps(A.data() + i * lda + k);
                     // Manual gather of B column j: B(k,j), B(k+1,j), ..., B(k+7,j)
-                    // Each is ldb floats apart — not sequential, not cacheable.
+                    // Each is ldb floats apart — not sequential; cache reuse depends on the working set.
                     alignas(32) float b_col[8] = {
                         B.data()[(k + 0) * ldb + j], B.data()[(k + 1) * ldb + j],
                         B.data()[(k + 2) * ldb + j], B.data()[(k + 3) * ldb + j],

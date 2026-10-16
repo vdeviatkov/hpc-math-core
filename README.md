@@ -4,7 +4,7 @@
 
 Progressive GEMM optimization and benchmarking across scalar C++, SIMD, ARM SME, Apple AMX and CUDA Tensor Cores.
 
-Starting from readable scalar code, each step adds one layer of hardware exploitation — cache-friendly loop order, cache blocking, explicit SIMD (AVX2 · AVX-512 · NEON · SVE), software prefetch, CUDA (shared-memory tiling through Tensor Cores), and matrix-engine hardware (ARM SME2, Apple AMX). Every kernel is benchmarked with Google Benchmark, cross-validated against a scalar reference by a Google Test suite, and documented with memory-access diagrams and cache analysis.
+Starting from readable scalar code, each step adds one layer of hardware exploitation — cache-friendly loop order, cache blocking, explicit SIMD (AVX2 · AVX-512 · NEON · SVE), software prefetch, CUDA (shared-memory tiling through Tensor Cores), and matrix-engine hardware (ARM SME2, Apple AMX). Google Benchmark registers every kernel family; available kernels are checked against a scalar reference by Google Test and documented with memory-access diagrams and cache analysis. SVE still lacks hardware validation.
 
 ---
 
@@ -48,6 +48,8 @@ A family is compiled only where its ISA exists; elsewhere its kernels are
 declared `= delete`, and the benchmarks list them as `SKIPPED`. Every family
 has run on real hardware except SVE, for which no machine was available.
 Files, techniques and intrinsics: [src/gemm/README.md](src/gemm/README.md).
+Detailed reasoning, contracts and tradeoffs for each source file:
+[docs/kernel-design.md](docs/kernel-design.md).
 
 ---
 
@@ -89,9 +91,11 @@ docs/                         Benchmark results, build guide, cache background, 
 |---|---|
 | [Matrix multiplication with SIMD on Apple M4 and AMD Zen 5](docs/articles/simd-gemm.md) | Article 1: loop order, cache blocking and SIMD register tiles, with FMA latency and throughput measured on both CPUs |
 | [Matrix multiplication on Apple M4's SME2 unit](docs/articles/sme2-gemm.md) | Article 2: the SME2 GEMM step by step, from outer products to 1.5 TFLOP/s, with the machine measured down to its TLBs |
-| [A power-of-two stride halves SME2 GEMM throughput on Apple M4](docs/articles/sme2-cache-associativity.md) | Article 3: L2 set conflicts at a 16 KiB row stride, located and measured, and the two fixes |
+| [A power-of-two stride cuts SME2 GEMM throughput by two thirds on Apple M4](docs/articles/sme2-cache-associativity.md) | Article 3: L2 set conflicts at a 16 KiB row stride, located and measured, and the two fixes |
 | [Matrix multiplication on an RTX 5080](docs/articles/cuda-gemm.md) | Article 4: eight CUDA kernels from 3.7 to 100 TFLOP/s, with the GPU's peaks, occupancy and bank conflicts measured |
 | [src/gemm/README.md](src/gemm/README.md) | Map of the kernels: files, techniques, registers and intrinsics per family. Each kernel's design is in its own header. |
+| [docs/review-20261016.md](docs/review-20261016.md) | Repository review: fixes, validation, performance evidence and limitations |
+| [docs/kernel-design.md](docs/kernel-design.md) | File-by-file design: algorithms, layouts, edges, precision, benchmark methodology and supporting files |
 | [docs/benchmarks.md](docs/benchmarks.md) | All measurements and their analysis: Apple M4 Max, AMD Zen 5, RTX 5080 |
 | [docs/build.md](docs/build.md) | Build on Linux, macOS and Windows, CMake options, SME/AMX flags, what runs where, CI |
 | [docs/cache-behavior.md](docs/cache-behavior.md) | Background: cache lines, reuse distance, working sets, memory-bound limits, GPU memory hierarchy |

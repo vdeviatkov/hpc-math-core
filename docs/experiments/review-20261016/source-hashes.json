@@ -1,0 +1,42 @@
+{
+  "baseline_commit": "7a9adcee60bf0639410936b3d6ff17c9d65099e5",
+  "candidate_sha256": {
+    "CMakeLists.txt": "f16d2176cf0c38f84a6a45a05d7ba343ab8a8f83dceb222d1c18bae07b280bee",
+    "benchmarks/CMakeLists.txt": "7b38796574ab13f9d5d53252e9ef89b0aed843cb9699616a404ad996e9159a4a",
+    "benchmarks/bench_gemm.cpp": "74873e381fd107701f323155ee746682f62c3e70d5a7fe930f8727cb18c9a547",
+    "benchmarks/bench_gemm_cuda.cpp": "8ac0d870768eada6057f51f16e42f88230a0c0b0756d64ee9a43048bf9f4065e",
+    "benchmarks/experiments/cache_chase.cpp": "ec7865248af130308bfdf4de61d54ebc204946a902d217520de9d21a0db10cad",
+    "benchmarks/experiments/core_clock.hpp": "340e9a0677355aacbe5407697b03122938b5d921d5d4dda27e7b18841ccd7004",
+    "benchmarks/experiments/cuda_peak.cu": "af7fc990fdaff5a40c2b1ea30396a1b7aed969607e23ed08db610efe5ba10f07",
+    "benchmarks/experiments/fma_peak.cpp": "e3235a481b1fde250c88301d1d36bd9ea9cdd5dbaafd9eb9b0b03d1a02dd81ed",
+    "benchmarks/experiments/simd_isa.hpp": "89768138a9029d3b814c5ae2f5c0c1318262ae89027ffc9e325d7e611669ee60",
+    "benchmarks/experiments/simd_microkernel.cpp": "0b7d43fe8670d3460596c26bc1cb4c9baec3bb5014396f80562fb8114bfd29cb",
+    "benchmarks/experiments/sme_b_layout.cpp": "d89af28b3e071acd8b5048bed0d445f6b5e76338b5e77e51f6fb0aba54bc0b60",
+    "benchmarks/experiments/sme_b_stride_probe.cpp": "f46a587314b03e206d099d9c506678ccf153626ef7f25493b48472c0f1d06602",
+    "benchmarks/experiments/sme_block_sweep.cpp": "c1f0b5da35cc6966990e1082fa1146dad9b78e3b522b494a88008e22f78b6b61",
+    "benchmarks/experiments/sme_fmopa.cpp": "7092d21bd2f75ebac788947dd2f88d2f14e609b495702efe6d5e872a74fed65a",
+    "include/hpc/isa.hpp": "ad7d8be952571d3442f1bc17e6a0c6dd93e532164a6ffc7f15d7279682978b72",
+    "include/hpc/matrix.hpp": "f33d1b7f4f66802c62f6bb5686a61dd11d2f2615f09be15beaca2db30e0a64e4",
+    "src/cuda/gemm_kernels.cu": "8efd6470a3f499a640b38055dd9c5e2ea9cfc118a43ae7a9a846bb0aa5d0d844",
+    "src/cuda/gemm_kernels_stub.cpp": "6d163b5119b76bd5bc18ee7e1068a81e6b473188a80ffeb2ae52d3462d6ef8d9",
+    "src/gemm/amx.hpp": "2ffbc9e6c4a2bf8d8f9292d69a9347e68c2f8122e76b1d50996f71bc60804bd1",
+    "src/gemm/avx2.hpp": "db3a955b6daaecd90c7ad7ee1ef6d0951f1e12e112bc96972975a2a52cc6d7d0",
+    "src/gemm/avx512.hpp": "4b7f510c4609fdb7b6cfa4e6e7c2ff7a9208ac68173acbf4e33c6fb93d31857d",
+    "src/gemm/blocked.hpp": "4f0dc7c034507a7cf6286ca4349559f8a546e5d294974fd9db2a0b9d59cb0a81",
+    "src/gemm/cuda.hpp": "50c54a5ec3a01734243b5c3ceec7747306b1e672d8b2466317100781c28fef78",
+    "src/gemm/kleidiai.hpp": "25686fa1c43c3b7ff49bc3e700c6c491c5860e4e39ec2e40cefc474bf2d639a6",
+    "src/gemm/naive.hpp": "b815d0714c2fafbfdc58ba22077f825a50134cb4fb90ce4ef63a9250e265c3a9",
+    "src/gemm/neon.hpp": "048387ff49fc42836d80314d3bc1b3ca8d75fcb24f0ffecb792302d621dd2b42",
+    "src/gemm/prefetch.hpp": "83a22efcc0882f44e15c49913aac58ba45ce1688c987cb8cd8b04b5a7eb3d727",
+    "src/gemm/reordered.hpp": "be1a53da496e9ede33bb72f647e7e56f4c74d3b0526390b0b4ba5ba63f3f261b",
+    "src/gemm/sme.hpp": "76aeb936643f2b3b0918fdc29ea18201f3626653cda589f316fcb3d8bc6da096",
+    "src/gemm/sve.hpp": "54da81bbbf1aeb834c65f8f24c44c7bc46060b7ce0864b9f7a055ba9c40508c7",
+    "tests/CMakeLists.txt": "8c6233cdf0898cd8681995e61d296b42aebf3aa97ce312397716dcc5fd861cea",
+    "tests/test_gemm.cpp": "3473287536db1304e94f8831396b2a4b2d62dfe8653ada078e32da3d83e54e8e",
+    "tests/test_gemm_cuda.cpp": "ef04f0a8214130c0461b8c637a357da0bb4f4661312410b7e9fae26a09b92bfd",
+    "tests/test_matrix.cpp": "898cbb0fae120b202b3c8291843f365801774db1bb673466eb5a9b665f935f61"
+  },
+  "excluded_concurrent_source_files": [
+    "include/hpc/lowp.hpp"
+  ]
+}

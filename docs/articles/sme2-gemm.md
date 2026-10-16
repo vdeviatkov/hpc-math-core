@@ -30,13 +30,16 @@ the caches and the TLB.
   with an 8 MiB A block resident in L2 (up to 3.4× at large N), and pack
   the B operand (up to 3.1× at power-of-two sizes).
 - The result reaches 85–94% of Apple's own Accelerate library on the same
-  core for N ≥ 1024 and beats Arm's KleidiAI micro-kernel at N = 4096
-  (1,504 vs 1,019 GFLOP/s), because KleidiAI does no cache blocking.
+  core for N ≥ 1024 and beats Arm's KleidiAI micro-kernel called on the
+  whole matrix at N = 4096 (1,504 vs 1,019 GFLOP/s): KleidiAI leaves cache
+  blocking to its caller.
 
 ## The idea in three pictures
 
-A conventional SIMD GEMM builds C one row segment at a time. SME2 builds
-it one square block at a time:
+A conventional SIMD GEMM builds C one row segment at a time (the register
+tile of [part 1](simd-gemm.md) is several row segments, 4 × 16 values on
+NEON, built from 16 vector FMAs per k step). SME2 builds it one square
+block at a time:
 
 ```text
 Conventional SIMD GEMM (NEON)         SME2 outer-product GEMM
@@ -196,8 +199,8 @@ a, b)` is one FMOPA.
 One step of the kernel developed below loads two A vectors and two B
 vectors (256 bytes) and issues four FMOPAs (2,048 flops): 8 flops per
 byte. At one FMOPA per cycle that is **64 bytes of operands every cycle**,
-about 250 GB/s, from wherever the operands live. The rest of this article is about keeping that
-traffic in a cache close enough to deliver it.
+about 250 GB/s, from wherever the operands live. The rest of this article
+is about keeping that traffic in a cache close enough to deliver it.
 
 ## Step 1: one accumulator tile — 472 GFLOP/s
 
@@ -315,9 +318,8 @@ This is GotoBLAS's classic arrangement, A resident and B streamed, one
 cache level further out. Classic GotoBLAS keeps the A block in L2 and
 reuses each B micro-panel from L1. Here B strips are reused from L2,
 because the SME unit is a cluster resource and its operands come from L2:
-the [follow-up article](sme2-cache-associativity.md) shows SME loads
-conflicting in L2 sets, at a capacity hundreds of times what one L1 set
-holds.
+[part 3](sme2-cache-associativity.md) shows SME loads conflicting in L2
+sets, at a capacity hundreds of times what one L1 set holds.
 
 The packing code that writes the blocks runs on the core, and its TLBs
 cover them: a B strip (16 pages) fits the 128-entry first-level TLB, and
@@ -343,7 +345,9 @@ the next one was needed, and the panel, which competes with A and C for
 the same 16 MiB, kept partly falling out.
 
 A sweep of the complete kernel (step 4 below) over Mc and Kc, N = 4096 and
-Nc = 4096, median of 3 interleaved runs, shows where the optimum is:
+Nc = 4096, median of 3 interleaved runs
+([`sme_block_sweep`](https://github.com/vdeviatkov/hpc-math-core/blob/main/benchmarks/experiments/sme_block_sweep.cpp)),
+shows where the optimum is:
 
 | GFLOP/s by Mc (rows), Kc (depth) | Kc = 1024 | 2048 | 4096 |
 |---|--:|--:|--:|
@@ -389,7 +393,7 @@ may have optima further from the fixed set.
 Both operands are copied into **strips**: narrow blocks laid out so that
 each step of the micro-kernel reads one contiguous run of memory. This
 section summarises why each operand needs them; part 3 of this series,
-[*A power-of-two stride halves SME2 GEMM throughput*](sme2-cache-associativity.md),
+[*A power-of-two stride cuts SME2 GEMM throughput by two thirds*](sme2-cache-associativity.md),
 takes the B strips apart in detail: how their rows map to cache sets, where
 the conflicts happen, and what packing them costs and saves.
 
@@ -421,10 +425,10 @@ B in place. But consecutive rows of a strip are then `N × 4` bytes apart:
 16 KiB at N = 4096, 8 KiB at N = 2048. At such a power-of-two stride the
 2,048 rows of a strip map to a handful of L2 cache sets and evict each
 other before the next A strip reuses them; throughput falls to a third at
-N = 4096 (489 GFLOP/s) and to under half at N = 2048 (633). Packing copies each strip into
-2,048 contiguous 128-byte rows, which fill all sets evenly whatever N
-is. The [follow-up
-article](sme2-cache-associativity.md) traces that cliff in detail.
+N = 4096 (489 GFLOP/s) and to under half at N = 2048 (633). Packing copies
+each strip into 2,048 contiguous 128-byte rows, which fill all sets evenly
+whatever N is. [Part 3](sme2-cache-associativity.md) traces that cliff in
+detail.
 
 | N | 256 | 512 | 1024 | 2048 | 4000 | 4096 |
 |---|--:|--:|--:|--:|--:|--:|
@@ -438,9 +442,10 @@ packing A takes 3.8 ms and packing B 4.9 ms of a 91 ms call, about 10%
 together, and the compute takes 82 ms whatever B's original stride was:
 1,670 GFLOP/s, 85% of peak. Packing B is itself slowed by the 16 KiB
 stride it reads from; with rows padded to 16,512 B it takes 2.5 ms and
-the two copies 7% of the call. At small N the copy shows: below N = 1024 the
-unpacked kernels are faster (989 vs 835 GFLOP/s at N = 256), because the
-whole problem fits in L2 anyway. Packing is an investment that pays off once data stops fitting.
+the two copies 7% of the call. At small N the copy shows: below N = 1024
+the unpacked kernels are faster (989 vs 835 GFLOP/s at N = 256), because
+the whole problem fits in L2 anyway. Packing is an investment that pays off
+once data stops fitting.
 
 ## Engineering details that decide the result
 
@@ -540,8 +545,9 @@ step tables above.
   (allocating and packing buffers, entering streaming mode) are not
   amortised.
 - KleidiAI uses the same 2 × 2-tile micro-kernel, written in assembly by
-  Arm, and packs both operands, but has no cache blocking: it leads at
-  N ≤ 1024 and falls to 1,019 GFLOP/s at N = 4096.
+  Arm, and packs both operands. It is a micro-kernel library and leaves
+  cache blocking to the caller; called once on the whole matrix, as here,
+  it leads at N ≤ 1024 and falls to 1,019 GFLOP/s at N = 4096.
 - With all cores, Accelerate roughly doubles its one-thread throughput
   from N = 1024 up (1.9–2.0×), as two SME units predict.
 
@@ -564,6 +570,10 @@ step tables above.
    packed to make performance independent of the caller's layout. Together
    the copies cost 7–10% and remove a 3× cliff.
 
+**Next:** [part 3](sme2-cache-associativity.md) takes that cliff apart: why
+a 16 KiB row stride cuts the throughput to a third, which cache the
+conflicts are in, and what padding and packing each cost.
+
 ## Reproduce
 
 ```bash
@@ -581,7 +591,10 @@ VECLIB_MAXIMUM_THREADS=1 ./build/benchmarks/bench_gemm --benchmark_filter=Amx
 
 The kernels are in
 [`src/gemm/sme.hpp`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/sme.hpp),
-all four as templates over FP32 and FP64. Full benchmark tables:
+all four as templates over FP32 and FP64. Raw data for every table here:
+[experiments/sme2-gemm](https://github.com/vdeviatkov/hpc-math-core/tree/main/docs/experiments/sme2-gemm)
+and [experiments/sme2-machine](https://github.com/vdeviatkov/hpc-math-core/tree/main/docs/experiments/sme2-machine);
+full benchmark tables:
 [docs/benchmarks.md](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/benchmarks.md).
 Benchmarks are medians of repeated runs on a desktop machine under
 moderate load; each experiment's folder records its conditions.

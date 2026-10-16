@@ -6,7 +6,7 @@
  *        translation unit.
  *
  * Every HPC_HAS_* macro is always defined, to 0 or 1, so `#if HPC_HAS_AVX2`
- * works and a typo is not silently false the way `#ifdef` would be.
+ * tests the feature value. `#ifdef` would also accept a macro defined to 0.
  *
  * No silent fallback: where an ISA is absent, that family's gemm_* functions
  * are declared `= delete` (see each src/gemm/<isa>.hpp), so calling
@@ -18,7 +18,7 @@
  * Detection is compile-time: the default build uses -march=native (or an
  * -mcpu=), so the build CPU is the run CPU.
  *
- *   AVX2      __AVX2__
+ *   AVX2      __AVX2__ and FMA support (__FMA__, or MSVC /arch:AVX2)
  *   AVX-512   __AVX512F__ (-march=native on a capable CPU, or HPC_ENABLE_AVX512=ON)
  *   NEON      __ARM_NEON && __aarch64__ (32-bit ARMv7 NEON lacks f64 lanes)
  *   SVE       __ARM_FEATURE_SVE
@@ -29,7 +29,7 @@
  *   KleidiAI  HPC_KLEIDIAI_AVAILABLE && __ARM_FEATURE_SME2 (HPC_ENABLE_KLEIDIAI=ON)
  */
 
-#if defined(__AVX2__)
+#if defined(__AVX2__) && (defined(__FMA__) || defined(_MSC_VER))
     #define HPC_HAS_AVX2 1
 #else
     #define HPC_HAS_AVX2 0

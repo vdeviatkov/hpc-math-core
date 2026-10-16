@@ -17,7 +17,8 @@
  *                                cp.async double buffering
  *
  * Levels 5-7 are float-only: fp32 in and out, fp16 multiply, fp32
- * accumulate (~1e-3 relative error). A level whose requirement is not met
+ * accumulate (input rounding at roughly the 1e-3 scale; output relative
+ * error is not bounded near cancellation, and fp16 has a smaller range). A level whose requirement is not met
  * runs a level below it instead:
  *
  *   Level 4  needs K, N multiples of 4 (f32) / 2 (f64)      else Level 2
@@ -48,9 +49,9 @@ namespace hpc::gemm {
 
 /// Number of CUDA devices; 0 in a build without CUDA.
 int cuda_device_count() noexcept;
-/// True if any device is sm_70+ (Tensor Cores).
+/// True if the selected device is sm_70+ (Tensor Cores).
 bool cuda_has_tensor_cores() noexcept;
-/// True if any device is sm_80+ (cp.async, mma.sync m16n8k16, TF32).
+/// True if the selected device is sm_80+ (cp.async, mma.sync m16n8k16, TF32).
 bool cuda_has_ampere() noexcept;
 
 // Levels 0-7 (see the file comment).
@@ -69,16 +70,22 @@ void gemm_cuda_mma_ldmatrix(const Matrix<float>& A, const Matrix<float>& B, Matr
 void gemm_cuda_wmma_pipelined(const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C);
 
 // cuBLAS reference. _tf32 and _fp16 run on Tensor Cores via cublasGemmEx;
-// _fp16 converts the inputs to fp16 first.
+// _fp16 converts the inputs to fp16 first. cuBLAS wrappers use one
+// process-lifetime handle: one host thread and a fixed device after first use.
 template <typename T>
 void gemm_cuda_cublas(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C);
 void gemm_cuda_cublas_tf32(const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C);
 void gemm_cuda_cublas_fp16(const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C);
 
 // ---------------------------------------------------------------------------
+// Preconditions: dimensions and linear indices fit signed int; input/output
+// fixed 2-D launch grids fit device limits; buffers do not overlap and are aligned for the selected path (16-byte
+// vector loads, 32-byte WMMA output). Negative dimensions throw. K=0 clears
+// C; M=0 or N=0 returns. Matrix wrappers also check the indexing limit.
+//
 // Device entry points: the same GEMMs on buffers the caller has allocated and
-// filled on the GPU (row-major, M x K times K x N). Each only launches the
-// kernel, asynchronously, with the same fallback as its Matrix-based
+// filled on the GPU (row-major, M x K times K x N). Each enqueues work on the default
+// stream, asynchronously, with the same fallback as its Matrix-based
 // counterpart.
 //
 // fp16 buffers are typed void*, not __half*: this header is also compiled
@@ -112,8 +119,10 @@ void gemm_cuda_cublas_fp16_device(const void* dA16, const void* dB16, float* dC,
 void gemm_cuda_convert_f32_to_f16_device(const float* src, void* dst, int count);
 
 // GPU time of the work `launch` enqueues, in milliseconds: CUDA events are
-// recorded on the GPU before and after it, so host-side launch overhead and
-// scheduling noise are not counted. Waits for the work to finish.
+// recorded on the GPU before and after it, so CPU work and
+// scheduling noise outside the event interval are not counted. GPU idle
+// gaps while the host submits work can be included, especially for tiny
+// kernels. Waits for the work to finish.
 double gemm_cuda_time_ms(const std::function<void()>& launch);
 
 // Device-memory helpers for the benchmarks, so they need not include
@@ -121,6 +130,7 @@ double gemm_cuda_time_ms(const std::function<void()>& launch);
 void* gemm_cuda_malloc(std::size_t bytes);
 void  gemm_cuda_free(void* ptr);
 void  gemm_cuda_memcpy_h2d(void* dst, const void* src, std::size_t bytes);
+void  gemm_cuda_memcpy_d2h(void* dst, const void* src, std::size_t bytes);
 void  gemm_cuda_device_synchronize();
 
 // ---------------------------------------------------------------------------
