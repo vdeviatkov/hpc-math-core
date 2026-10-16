@@ -1,0 +1,10 @@
+isa,instruction,ops_per_instruction,accumulators,cycles_per_instruction,instructions_per_cycle,gops
+avx512,vfmadd231ps,32,1,4.014,0.25,45.4
+avx512,vfmadd231ps,32,8,0.553,1.81,329.6
+avx512,vfmadd231ps,32,16,0.510,1.96,357.5
+avx512,vdpbf16ps,64,1,6.020,0.17,60.6
+avx512,vdpbf16ps,64,8,0.758,1.32,481.1
+avx512,vdpbf16ps,64,16,0.512,1.95,712.7
+avx512,vpdpbusd,128,1,4.017,0.25,181.6
+avx512,vpdpbusd,128,8,0.553,1.81,1318.3
+avx512,vpdpbusd,128,16,0.509,1.97,1434.7

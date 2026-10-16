@@ -50,7 +50,7 @@ is always packed into strips where each column segment is contiguous. B's
 32 values are already adjacent, so B can be read **in place**: row `k` of
 the segment is at `B + k·ldb + j`. Or B can be **packed**: each 32-column
 strip of a `Kc`-row block is copied into a contiguous buffer, 128 bytes per
-row.
+row ([`pack_b`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/sme.hpp)).
 
 Both variants run one driver, `sme_detail::blocked_driver<float, PackB>`
 ([source](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/sme.hpp)),
@@ -99,7 +99,8 @@ B shows no cliff at all.
 
 Changing N also changes the work and the memory footprint. The decisive
 test fixes `M = N = K = 4096` and stores B in a wider buffer, so only the
-row stride `ldb` changes. The padding columns are never read.
+row stride `ldb` changes. The padding columns are never read
+(`BStride` in [`bench_gemm.cpp`](https://github.com/vdeviatkov/hpc-math-core/blob/main/benchmarks/bench_gemm.cpp)).
 
 ![Same 4096 × 4096 multiplication with four leading dimensions of B](assets/sme2-padding.svg)
 
@@ -181,7 +182,8 @@ experiments: the padding test above and the capacity measurements below.
 
 Which cache? The number of rows a strip can have before the conflict bites
 measures the capacity of the conflicting sets, so the next experiment
-varies the strip height `Kc` while timing only the macro-kernel (A packed
+varies the strip height `Kc` while timing only the macro-kernel
+([`sme_b_stride_probe`](https://github.com/vdeviatkov/hpc-math-core/blob/main/benchmarks/experiments/sme_b_stride_probe.cpp); A packed
 and B laid out once, N = 1024, Mc = 1024, 9 shuffled repetitions).
 
 ![Macro-kernel throughput against rows per B strip, rows 16 KiB vs 16,512 B apart](assets/sme2-strip-height.svg)
@@ -244,7 +246,8 @@ fix, for two reasons:
 
 Packing copies each strip once per `Kc` block and lets every reuse read a
 contiguous 128-byte stream, whatever the caller's stride. The cost is
-measurable directly: the same driver with a clock around each phase, N =
+measurable directly: the same driver with a clock around each phase
+([`sme_b_layout`](https://github.com/vdeviatkov/hpc-math-core/blob/main/benchmarks/experiments/sme_b_layout.cpp)), N =
 4096, 15 shuffled repetitions, medians in milliseconds.
 
 | ldb | B | End to end | Pack A | Pack B | Compute |

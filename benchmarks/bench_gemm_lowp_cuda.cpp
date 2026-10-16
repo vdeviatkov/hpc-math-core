@@ -155,6 +155,8 @@ void add(const char* format_name, CudaLowp f, bool cublas) {
             for (auto _ : state)
                 state.SetIterationTime(gemm_cuda_time_ms(call) / 1e3);
             state.counters["err"] = sampled_error(f, a, bt, C.get(), n);
+            if (f == CudaLowp::fp8_e4m3 && !cublas)
+                state.SetLabel(cuda_lowp_fp8_block_scaled() ? "block-scaled mma (sm_120a)" : "sm_89 mma");
             state.counters["GFLOP/s"] = benchmark::Counter(2.0 * double(n) * double(n) * double(n),
                                                            benchmark::Counter::kIsIterationInvariantRate,
                                                            benchmark::Counter::OneK::kIs1000);

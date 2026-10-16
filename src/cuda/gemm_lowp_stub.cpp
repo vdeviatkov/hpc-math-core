@@ -21,6 +21,8 @@ int cuda_lowp_k_multiple(CudaLowp format) noexcept {
     return format == CudaLowp::int8 || format == CudaLowp::fp8_e4m3 ? 64 : 32;
 }
 
+bool cuda_lowp_fp8_block_scaled() { return false; }
+
 void gemm_cuda_lowp_device(CudaLowp, const void*, const void*, void*, int, int, int) { no_cuda(); }
 void gemm_cuda_cublas_lowp_device(CudaLowp, const void*, const void*, void*, int, int, int) { no_cuda(); }
 

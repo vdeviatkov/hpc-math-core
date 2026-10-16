@@ -1,0 +1,11 @@
+test,value,unit
+fma_f32,59.7,TFLOP/s
+fma_f64,0.82,TFLOP/s
+mma_f16_f32acc,124.4,TFLOP/s
+mma_bf16_f32acc,124.4,TFLOP/s
+mma_f16_f16acc,248.6,TFLOP/s
+mma_s8_s32acc,497.2,TFLOP/s
+mma_e4m3_f32acc,248.7,TFLOP/s
+mma_e4m3_f16acc,497.0,TFLOP/s
+mma_e4m3_f32acc_block_scaled,496.7,TFLOP/s
+dram_copy,813,GB/s

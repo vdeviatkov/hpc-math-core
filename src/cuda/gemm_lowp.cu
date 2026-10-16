@@ -14,6 +14,10 @@
  *     32 of an 8-bit type, and mma.sync's register layout is the same
  *     either way (m16n8k16 for 16-bit, m16n8k32 for 8-bit).
  *   - A kStages-deep cp.async pipeline (16-byte chunks, no conversion).
+ *     Two stages (40 KiB of shared memory) let two blocks share an SM;
+ *     three or four stages (60 / 80 KiB) allow only one and measured
+ *     10–15% slower on an RTX 5080 at every size and format.
+ *   - Grouped block order (kGroupM, below), for L2 reuse.
  *   - Shared-memory rows padded by 16 bytes (80-byte stride): the eight
  *     16-byte rows one ldmatrix phase reads start in banks 0, 20, 8, 28,
  *     16, 4, 24, 12, so they never conflict.
@@ -97,11 +101,30 @@ struct Int8 {
                      : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]));
     }
 };
+// FP8 has two instructions on sm_120 (RTX 50). The sm_89 form below runs
+// at half the Tensor Core rate with an fp32 accumulator (249 vs 497
+// TFLOP/s on an RTX 5080, benchmarks/experiments/cuda_peak.cu). The
+// block-scaled "MX" form runs at full rate: it multiplies each operand by a
+// per-32-element power-of-two scale (UE8M0), and with every scale = 2^0 its
+// result is the plain product. It needs the arch-specific target, so it is
+// used when the library is built with CMAKE_CUDA_ARCHITECTURES=120a.
+#if defined(__CUDA_ARCH_FAMILY_SPECIFIC__) && __CUDA_ARCH_FAMILY_SPECIFIC__ == 1200
+#define HPC_LOWP_FP8_BLOCK_SCALED 1
+#endif
 struct Fp8 {
     static constexpr int kBytes = 1, kAccRegs = 4;
     using Acc                   = float;
     __device__ static void mma(Acc* c, const unsigned* a, const unsigned* b) {
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 890
+#if defined(HPC_LOWP_FP8_BLOCK_SCALED)
+        const unsigned scale = 0x7f7f7f7fu;  // UE8M0 127 = 2^0, in every byte
+        const unsigned short selector = 0;   // which byte of `scale` (one scale per operand row)
+        asm volatile("mma.sync.aligned.m16n8k32.row.col.kind::mxf8f6f4.block_scale.scale_vec::1X"
+                     ".f32.e4m3.e4m3.f32.ue8m0 "
+                     "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3}, %10, {%11,%11}, %10, {%11,%11};\n"
+                     : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
+                     : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]), "r"(scale),
+                       "h"(selector));
+#elif defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 890
         asm volatile("mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 "
                      "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
                      : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
@@ -121,7 +144,7 @@ struct Fp8 {
 constexpr int kBM = 128, kBN = HPC_LOWP_BN;  // block tile
 constexpr int kBK = 64;               // bytes of K per pipeline stage
 #ifndef HPC_LOWP_STAGES
-#define HPC_LOWP_STAGES 3
+#define HPC_LOWP_STAGES 2
 #endif
 #ifndef HPC_LOWP_GROUP_M
 #define HPC_LOWP_GROUP_M 8
@@ -135,7 +158,7 @@ constexpr int kThreads = (kBM / kWarpM) * kWarpsN * 32;  // 256
 constexpr int kFragM = kWarpM / 16;                      // 4 m16 tiles per warp
 constexpr int kFragN = kWarpN / 8;                       // 4 n8 tiles per warp
 constexpr int kStageBytes = (kBM + kBN) * kRowBytes;     // 20,480
-constexpr int kSmemBytes = kStages * kStageBytes;        // 61,440
+constexpr int kSmemBytes = kStages * kStageBytes;        // 40,960
 
 __device__ __forceinline__ unsigned smem_addr(const void* p) {
     return static_cast<unsigned>(__cvta_generic_to_shared(p));
@@ -263,6 +286,14 @@ kernel_lowp(const unsigned char* __restrict__ A, const unsigned char* __restrict
             }
 #else
     __trap();
+#endif
+}
+
+__global__ void kernel_fp8_probe(int* out) {
+#if defined(HPC_LOWP_FP8_BLOCK_SCALED)
+    *out = 1;
+#else
+    *out = 0;
 #endif
 }
 
@@ -465,6 +496,19 @@ bool cuda_lowp_supported(CudaLowp format) noexcept {
 }
 
 int cuda_lowp_k_multiple(CudaLowp format) noexcept { return kBK / element_bytes(format); }
+
+bool cuda_lowp_fp8_block_scaled() {
+    if (!cuda_lowp_supported(CudaLowp::fp8_e4m3))
+        return false;
+    int* d = nullptr;
+    int h  = 0;
+    LOWP_CUDA_CHECK(cudaMalloc(&d, sizeof(int)));
+    kernel_fp8_probe<<<1, 1>>>(d);
+    const cudaError_t e = cudaMemcpy(&h, d, sizeof(int), cudaMemcpyDeviceToHost);
+    cudaFree(d);
+    LOWP_CUDA_CHECK(e);
+    return h == 1;
+}
 
 void gemm_cuda_lowp_device(CudaLowp f, const void* A, const void* Bt, void* C, int M, int K, int N) {
     if (prepare(f, C, M, K, N))

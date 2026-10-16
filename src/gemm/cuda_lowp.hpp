@@ -13,6 +13,7 @@
  *   fp16_acc16  m16n8k16 .f16.f16.f16.f16         fp16        fp16
  *   int8        m16n8k32 .s32.s8.s8.s32           int32       int32
  *   fp8_e4m3    m16n8k32 .f32.e4m3.e4m3.f32       fp32        float
+ *               (or kind::mxf8f6f4.block_scale with unit scales, built for sm_120a)
  *
  * Both operands are K-major: A is M x K row-major and B is passed
  * transposed, Bt = N x K row-major. An mma.sync fragment of an 8-bit
@@ -47,6 +48,9 @@ enum class CudaLowp { bf16, fp16, fp16_acc16, int8, fp8_e4m3 };
 bool cuda_lowp_supported(CudaLowp format) noexcept;
 /// K must be a multiple of this on the device entry points.
 int cuda_lowp_k_multiple(CudaLowp format) noexcept;
+/// True if the FP8 kernel runs the full-rate block-scaled mma (library built
+/// for sm_120a, see gemm_lowp.cu); false for the half-rate sm_89 form.
+bool cuda_lowp_fp8_block_scaled();
 
 // Device entry points. A: M x K, Bt: N x K, C: M x N, all row-major. Element
 // types by format (see the table above); the buffers are void* because this

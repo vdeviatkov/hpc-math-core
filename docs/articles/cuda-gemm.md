@@ -61,7 +61,7 @@ registers, so two blocks fit and occupancy is 16 of 48 warps (33%). That
 arithmetic decides several of the steps below.
 
 The peaks are measured, not taken from the data sheet, by kernels that do
-nothing else (`cuda_peak`): FMA chains on registers, `mma.sync` on
+nothing else ([`cuda_peak`](https://github.com/vdeviatkov/hpc-math-core/blob/main/benchmarks/experiments/cuda_peak.cu)): FMA chains on registers, `mma.sync` on
 registers, and a 1 GiB copy. The SM clock depends on power: under the FP32
 FMA load the board draws 300 W and runs at 2.83 GHz; under the others,
 2.89 GHz.
@@ -87,10 +87,14 @@ B and C are allocated and filled on the GPU before timing, one untimed
 call runs first, and the time is GPU time from CUDA events recorded
 immediately before and after the launch. Copying the matrices over PCIe is
 excluded: at N = 4096 it takes about 12 ms, several times the GEMM itself,
-and in real use the data stays on the GPU. Counters come from Nsight
+and in real use the data stays on the GPU
+([`gemm_cuda_time_ms`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/cuda/gemm_kernels.cu),
+[`bench_gemm_cuda.cpp`](https://github.com/vdeviatkov/hpc-math-core/blob/main/benchmarks/bench_gemm_cuda.cpp)). Counters come from Nsight
 Compute at N = 4096 at the GPU's normal clock (`--clock-control none`).
 
 ## Level 0: one thread per output — 3.7 TFLOP/s
+
+Code: [`kernel_naive`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/cuda/gemm_kernels.cu).
 
 ```cuda
 const int i = blockIdx.y * blockDim.y + threadIdx.y;
@@ -110,6 +114,8 @@ pipe is busy 13% of the time.
 
 ## Level 1: shared-memory tiles — 3.4 TFLOP/s, slower
 
+Code: [`kernel_blocked`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/cuda/gemm_kernels.cu).
+
 A 16 × 16 thread block copies 16 × 16 tiles of A and B to shared memory and
 computes from there, which cuts global loads 16-fold. It runs 8% *slower*.
 The counters show why: the kernel still issues two loads per FMA, now from
@@ -119,6 +125,8 @@ already served by L1; moving them to shared memory saved nothing that
 mattered. Reuse has to happen in registers.
 
 ## Level 2: register tiling — 23.5 TFLOP/s
+
+Code: [`kernel_reg_tile`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/cuda/gemm_kernels.cu).
 
 Each thread now computes an 8 × 8 block of C held in 64 registers. A block
 of 256 threads covers 128 × 128 outputs and stages 128 × 16 tiles of A and
@@ -156,6 +164,8 @@ level 27% faster and the next one 36%.
 
 ## Level 3: double buffering — 25.6 TFLOP/s
 
+Code: [`kernel_double_buf`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/cuda/gemm_kernels.cu).
+
 Two shared-memory buffers alternate: while the block computes on tile k,
 the copy of tile k + 1 is in flight. On sm_80 and later the copy uses
 `cp.async`, which moves data from global to shared memory without going
@@ -163,6 +173,8 @@ through registers and without blocking the thread, so the FMAs and the
 copy overlap. **+9%**, and the fastest FMA kernel so far.
 
 ## Level 4: 128-bit loads — 27.5 TFLOP/s, 71% of cuBLAS
+
+Code: [`kernel_vectorized`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/cuda/gemm_kernels.cu).
 
 The A and B tiles are loaded with `float4` instructions, four elements per
 load, and an XOR swizzle of the shared-memory layout replaces the +1
@@ -195,6 +207,8 @@ error can be much larger near cancellation; fp16 also has a smaller range.
 
 ### Level 5: WMMA — 14.6 TFLOP/s, below the FMA kernels
 
+Code: [`kernel_wmma`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/cuda/gemm_kernels.cu).
+
 The `wmma::` API wraps `mma.sync` in fragments. The first kernel gives
 each warp one 16 × 16 output tile, a block of 4 × 4 warps a 64 × 64 tile,
 and converts each fp32 tile to fp16 on its way into shared memory. At 14.6
@@ -207,6 +221,8 @@ work to overlap anything with.
 
 ### Level 6: raw `ldmatrix` + `mma.sync` — 17.0 TFLOP/s
 
+Code: [`kernel_mma_ldmatrix`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/cuda/gemm_kernels.cu).
+
 The same tiles, one level lower: `ldmatrix` loads shared memory straight
 into the registers `mma.sync` expects, and the kernel chooses which
 address each lane supplies. **+16%**, but the structure is unchanged, and
@@ -214,6 +230,8 @@ so is the problem: 80% of its shared-memory load wavefronts are bank
 conflicts. The API was not the bottleneck.
 
 ### Level 7: pipelined Tensor Cores — 100.7 TFLOP/s
+
+Code: [`kernel_wmma_pipelined`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/cuda/gemm_kernels.cu).
 
 The final kernel changes the structure, the way CUTLASS-style kernels do:
 
@@ -254,7 +272,9 @@ a large K.
 ![CUDA GEMM levels at N = 4096 against the measured peaks](assets/cuda-ladder.svg)
 
 TFLOP/s, GPU event time of the GEMM, FP32 outputs. Levels 5–6 convert
-FP32 inputs inside the kernel; level 7 receives preconverted FP16 inputs:
+FP32 inputs inside the kernel; level 7 receives preconverted FP16 inputs.
+The cuBLAS rows call `gemm_cuda_cublas*` in
+[`gemm_kernels.cu`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/cuda/gemm_kernels.cu):
 
 | Level | Kernel | N = 1024 | 4096 | 8192 | Occupancy | Registers | Pipe busy | Shared-load conflicts |
 |---|---|--:|--:|--:|--:|--:|--:|--:|

@@ -23,6 +23,8 @@ if(NOT MSVC AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64|ARM64|x86_64|AMD64
     target_link_libraries(fma_peak PRIVATE hpc_math_core)
     add_executable(simd_microkernel experiments/simd_microkernel.cpp)
     target_link_libraries(simd_microkernel PRIVATE hpc_math_core)
+    add_executable(lowp_peak experiments/lowp_peak.cpp)
+    target_link_libraries(lowp_peak PRIVATE hpc_math_core)
 endif()
 if(CMAKE_CUDA_COMPILER)
     add_executable(cuda_peak experiments/cuda_peak.cu)

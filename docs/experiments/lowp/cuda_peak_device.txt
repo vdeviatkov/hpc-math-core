@@ -1,0 +1,1 @@
+NVIDIA GeForce RTX 5080, sm_120: 84 SMs, 1536 threads and 65536 registers per SM, 100 KiB shared memory per SM (99 KiB per block opt-in), 64 MiB L2, 15.6 GiB memory on a 256-bit bus

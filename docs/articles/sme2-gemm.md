@@ -114,7 +114,7 @@ core (`sysctl hw`), and what had to be measured:
 macOS reports neither the clock nor the TLBs, so both are measured. A
 chain of dependent integer adds runs at exactly one add per cycle, which
 gives the clock. Latencies come from a dependent pointer chase in random
-order, which defeats the prefetcher. The TLB sizes come from the same chase
+order ([`cache_chase`](https://github.com/vdeviatkov/hpc-math-core/blob/main/benchmarks/experiments/cache_chase.cpp)), which defeats the prefetcher. The TLB sizes come from the same chase
 with one line per page, compared against the same lines packed densely:
 latency rises from 136 pages on (128 entries) and jumps again between
 3,072 and 3,328 pages. Method and raw data:
@@ -125,7 +125,8 @@ latency rises from 136 pages on (128 entries) and jumps again between
 SME instructions do not run in the CPU core's own vector pipelines. They
 run on a matrix unit shared by a cluster, which the core drives in a
 separate *streaming mode*. A loop of outer-product instructions (`FMOPA`)
-on constant inputs, with no memory traffic, measures it directly:
+on constant inputs, with no memory traffic
+([`sme_fmopa`](https://github.com/vdeviatkov/hpc-math-core/blob/main/benchmarks/experiments/sme_fmopa.cpp)), measures it directly:
 
 | | Accumulator tiles in use | Cycles per FMOPA | GFLOP/s |
 |---|--:|--:|--:|
@@ -222,6 +223,8 @@ dependent FMOPA chain allows: the kernel is entirely latency bound. Every
 FMOPA waits for the previous one on the same tile, while three quarters of
 the unit's issue slots stay empty.
 
+Code: [`gemm_sme_1tile` and `one_tile_kernel`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/sme.hpp).
+
 ## Step 2: all four tiles — 1,447 GFLOP/s
 
 Four tiles accumulate a 32 × 32 block of C as a 2 × 2 grid of 16 × 16
@@ -245,7 +248,8 @@ now feeds two FMOPAs instead of one, halving the bytes per flop. SME2's
 multi-vector load `svld1_x2` fetches two consecutive vectors in one
 instruction. (A four-vector `svld1_x4`, loading two k steps at once,
 measured within noise of it: the loop is limited by FMOPA issue and operand
-delivery, not by load instructions.)
+delivery, not by load instructions.) Code: [`gemm_sme_tiles` and its
+`macro_kernel`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/sme.hpp).
 
 For FP64 the micro-tile is 2 × 4 tiles (16 × 32 elements, all eight FP64
 tiles): eight FMOPAs per 384 bytes loaded instead of four per 256 bytes,
@@ -287,6 +291,8 @@ for jc in 0 .. N step Nc:                  Nc = 4096 columns of B and C
             for k in 0 .. Kc-1:  4 FMOPAs  (the step-2 micro-kernel)
             store ZA to C
 ```
+
+Code: [`gemm_sme_blocked` and `blocked_driver`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/sme.hpp).
 
 Each loop level fixes one operand while the levels inside it reuse it:
 
@@ -413,7 +419,7 @@ strip[k * 32 + r] = A(i0 + r, pc + k)      r in 0..31, k in 0..Kc-1
 The copy is a transpose. It is done with NEON 4 × 4 in-register
 transposes (`vtrn1q_f32`, `vtrn2q_f32`, then swapping 64-bit halves with
 `vcombine_f32`), which doubled packing bandwidth over a scalar loop and
-made the whole GEMM about 10% faster. Packing runs before the macro-kernel
+made the whole GEMM about 10% faster ([`pack_a`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/sme.hpp)). Packing runs before the macro-kernel
 enters streaming mode, in the core's own NEON pipes; the SME unit only
 ever sees packed data, and the mode switch happens once per 1024 × 2048 ×
 4096 block.
@@ -427,8 +433,9 @@ B in place. But consecutive rows of a strip are then `N × 4` bytes apart:
 other before the next A strip reuses them; throughput falls to a third at
 N = 4096 (489 GFLOP/s) and to under half at N = 2048 (633). Packing copies
 each strip into 2,048 contiguous 128-byte rows, which fill all sets evenly
-whatever N is. [Part 3](sme2-cache-associativity.md) traces that cliff in
-detail.
+whatever N is ([`pack_b`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/sme.hpp); [`gemm_sme`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/sme.hpp)
+is the blocked driver with both operands packed).
+[Part 3](sme2-cache-associativity.md) traces that cliff in detail.
 
 | N | 256 | 512 | 1024 | 2048 | 4000 | 4096 |
 |---|--:|--:|--:|--:|--:|--:|
@@ -522,7 +529,9 @@ comparison is with Accelerate restricted to one thread
 (`VECLIB_MAXIMUM_THREADS=1`); Accelerate's default, multi-threaded figures
 are listed separately. Peak is 1,963 GFLOP/s FP32 and 500 FP64 for one SME
 unit, twice that for two. `gemm_sme` comes from a separate run than the
-step tables above.
+step tables above. The libraries are called through thin wrappers:
+[`gemm_kleidiai`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/kleidiai.hpp) and, for Accelerate's
+`cblas_sgemm` / `cblas_dgemm`, [`gemm_amx`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/amx.hpp).
 
 | One thread | N = 256 | 512 | 1024 | 2048 | 4096 | best, % of one unit's peak |
 |---|--:|--:|--:|--:|--:|--:|

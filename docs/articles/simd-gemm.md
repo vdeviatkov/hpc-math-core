@@ -63,7 +63,7 @@ The clock is measured with a chain of dependent integer adds, one per cycle
 on both cores. The M4 clock moves with the load on the other cores:
 3.94–3.99 GHz in part 2's measurements, 3.96–4.13 GHz here. Cache sizes
 and line lengths are what the operating systems report (`sysctl hw` on
-macOS, `lscpu` on Linux). FMA latency and throughput come from `fma_peak`, a loop of
+macOS, `lscpu` on Linux). FMA latency and throughput come from [`fma_peak`](https://github.com/vdeviatkov/hpc-math-core/blob/main/benchmarks/experiments/fma_peak.cpp), a loop of
 FMAs on C independent register accumulators and no memory traffic. With
 one accumulator each FMA waits for the previous one; with more, they
 overlap until the FMA pipes are full:
@@ -96,6 +96,8 @@ for (i = 0; i < N; ++i)
     }
 ```
 
+Code: [`gemm_naive`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/naive.hpp).
+
 The inner loop reads A along a row, which is contiguous, and B down a
 column, N elements apart. Every B(k,j) is on a different cache line, and
 the line holding B(k,j) is needed again for B(k,j+1) only after the loop
@@ -112,7 +114,8 @@ there it collapses. At N = 4096 one FP32 multiplication takes about 328 s
 on Zen 5 (312 s for FP64), and FP32 and FP64 run at the same speed (0.42
 and 0.44 GFLOP/s): element width does not matter to a loop that waits on
 memory. Vector instructions do not rescue it either: the AVX2, AVX-512 and
-NEON versions of this loop gather B's column into a vector element by
+NEON versions of this loop (`gemm_neon_naive`, `gemm_avx2_naive`,
+`gemm_avx512_naive`) gather B's column into a vector element by
 element; they help at mid sizes (NEON: 3.5 against 2.5 GFLOP/s at
 N = 256), but at N = 4096 run within a few percent of the scalar loop.
 
@@ -129,6 +132,8 @@ for (i = 0; i < N; ++i)
             C[i*N + j] += a * B[k*N + j];          // B and C: contiguous rows
     }
 ```
+
+Code: [`gemm_reordered`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/reordered.hpp).
 
 B and C are now read along rows, every byte of every cache line is used,
 the hardware prefetcher can run ahead, and the compiler vectorises the
@@ -148,7 +153,8 @@ falls to 30 GFLOP/s.
 
 ## Step 3: cache blocking
 
-Tiling the three loops into 64 × 64 blocks keeps the working set of the
+Tiling the three loops into 64 × 64 blocks
+([`gemm_blocked`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/blocked.hpp)) keeps the working set of the
 inner loops at 3 × 64 × 64 elements (48 KiB in FP32) whatever N is, so each
 tile of B is reused from cache by 64 rows of A:
 
@@ -186,6 +192,12 @@ for (k = 0; k < kc; ++k) {
 }
 ```
 
+Code: the micro-kernels
+[`neon_micro_f32_4x16`, `neon_micro_f64_8x4`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/neon.hpp),
+[`avx2_micro_f32_4x16`, `avx2_micro_f64_4x8`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/avx2.hpp) and
+[`avx512_micro_8x2`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/avx512.hpp), each called by the
+`gemm_<isa>_blocked` driver in the same file.
+
 Per k step: 2 vector loads and 8 broadcasts for 16 FMAs, against a load,
 a store and a load per FMA in step 2. C is loaded once before the loop and
 stored once after it, every kc = 256 steps. Around the micro-kernel, a
@@ -208,7 +220,7 @@ instruction.
 
 The AVX-512 kernel first had a 4 × 2 tile, 8 accumulators, which the FMA
 measurement says is enough for 92% of peak. It ran at 60%. To find out
-why, `simd_microkernel` runs the micro-kernel alone on data that stays in
+why, [`simd_microkernel`](https://github.com/vdeviatkov/hpc-math-core/blob/main/benchmarks/experiments/simd_microkernel.cpp) runs the micro-kernel alone on data that stays in
 L1, varying the number of rows:
 
 | Zen 5, AVX-512 FP32, L1-resident | Accumulators | GFLOP/s | % of peak |
@@ -305,7 +317,7 @@ detail.
   NEON versions of the reordered loop run at or below the speed of the
   scalar one, which the compiler already vectorises; vector versions of
   the textbook loop gain at mid sizes and nothing at N = 4096.
-- **Software prefetch.** Prefetching A, B and C 2 to 16 tile rows ahead of
+- **Software prefetch** ([`prefetch.hpp`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/prefetch.hpp)). Prefetching A, B and C 2 to 16 tile rows ahead of
   the current register-tile kernels changes their throughput by −3% to
   +1% (Zen 5, AVX-512) and −2% to +2% (M4, NEON) at N = 256 to 1024: the
   hardware prefetchers already follow these streaming patterns. On the
