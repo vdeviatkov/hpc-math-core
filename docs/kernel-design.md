@@ -48,16 +48,15 @@ skip-only rows. An ISA-enabled binary must run on compatible hardware.
 Accelerate's availability macro describes a library, not proof of Apple AMX
 hardware or a particular internal dispatch choice.
 
-### Concurrent addition: `include/hpc/lowp.hpp`
+### `include/hpc/lowp.hpp`
 
-This header appeared while the review was running. It introduces two-byte
-bf16/fp16 storage structs, software float conversions and elementwise Matrix
-conversion; int8 uses the standard integer type. Conversion uses integer bit
-manipulation to implement ties-to-even rounding, with explicit subnormal,
-overflow and NaN handling. It is not integrated into the GEMM API reviewed
-here. Its numerical edge cases and bitwise agreement with hardware conversion
-were not validated by this review; in particular, NaN payload/canonicalization
-and fast-math behavior need dedicated tests before making a bit-for-bit claim.
+Storage types for the low-precision GEMMs: `bf16`, `fp16` and `fp8_e4m3` are
+bit patterns in a struct, so `Matrix<bf16>` and friends work on every
+compiler; kernels reinterpret them as the hardware types. INT8 is plain
+`std::int8_t`. Conversions from float round to nearest, ties to even, with
+subnormals, overflow (fp16: to infinity; E4M3: saturating to ±448) and NaN.
+The tests check every bit pattern round-trips (NaNs are recognised by their
+bits, because `-ffast-math` may fold `std::isnan`) and the rounding of ties.
 
 ## Scalar kernels
 
@@ -208,6 +207,23 @@ unclamped infinity behavior. Both packing steps are timed. The wrapper calls
 the micro-kernel once over the whole matrix and supplies no cache blocking,
 which explains why this particular integration loses speed at large N.
 
+## Low-precision kernels
+
+All compute `C = A · B` with bf16 / fp16 / FP8 inputs and FP32 output, or
+INT8 inputs and INT32 output. The narrow instructions add a dot product of
+G consecutive k values (G = 2 for 16-bit, 4 for 8-bit) into each 32-bit
+lane, so every CPU kernel packs B with G rows interleaved and pads K to a
+multiple of G. Article: [part 5](articles/lowp-gemm.md).
+
+| File | Design |
+|---|---|
+| `src/gemm/lowp_reference.hpp` | `gemm_lowp_reference`: products summed in double (exactly in int64 for INT8), rounded once. The tests' reference; `lowp_out_t<In>` names the output type. |
+| `src/gemm/avx512_lowp.hpp` | `gemm_avx512_bf16` (`VDPBF16PS`), `gemm_avx512_i8` (`VPDPBUSD`). Part 1's 8 × 32 tile, 16 accumulators. `VPDPBUSD` is unsigned × signed, so A is stored + 128 and 128 · Σ B(k, j) is subtracted at the end (column sums computed while packing B): exact. Mc = 128, Kc = 1024 bytes of k, Nc = 512. |
+| `src/gemm/neon_lowp.hpp` | `gemm_neon_bf16` (`BFMMLA`) and `gemm_neon_i8` (`SMMLA`): 2 × 2-tile matrix instructions arranged as an 8 × 8 C block in 16 registers. `gemm_neon_f16` (`FMLAL`, FP32 accumulate) and `gemm_neon_f16_acc` (`FMLA .8h`, fp16 accumulate, widened on store) keep part 1's 4-row tile. |
+| `src/gemm/sme_lowp.hpp` | `gemm_sme_widening<fp16 \| bf16 \| int8_t>`: `gemm_sme`'s structure with widening `FMOPA` / `SMOPA` into the four 32-bit ZA tiles. A packed by NEON transposes of 32-bit words, B by zipping G rows. Blocks keep the FP32 kernel's sizes in bytes (8 MiB A block). |
+| `src/gemm/cuda_lowp.hpp`, `src/cuda/gemm_lowp.cu` | One `mma.sync` kernel template per format struct (`Bf16`, `Fp16`, `Fp16Acc16`, `Int8`, `Fp8`), in two kernels: `kernel_lowp` (cp.async, 2 stages, padded rows, 128 × 128) and `kernel_tma` (Level 8). Both take A and B K-major (B transposed), so one non-transposing `ldmatrix` serves 8- and 16-bit formats. FP8 uses the block-scaled `kind::mxf8f6f4` instruction with unit scales in an `sm_120a` build (full rate), the sm_89 form otherwise. cuBLAS / cuBLASLt references on the same buffers. Matrix wrappers pad, transpose B and select the implementation (`CudaLowpImpl`). |
+| `src/cuda/gemm_lowp_stub.cpp` | The same symbols without CUDA; every format reports unsupported and kernels throw. |
+
 ## CUDA interface and implementation
 
 ### `src/gemm/cuda.hpp`
@@ -285,9 +301,11 @@ coverage and explicit skip behavior without pretending CPU work is CUDA.
 | `tests/test_gemm.cpp` | Hand-checked reference products, then a table of available CPU kernels against that reference. Boundary shapes exercise vector/register/cache tails, rectangular matrices, split K accumulation and empty dimensions. C starts as junk to distinguish overwrite from accumulation. SME additionally checks bit-preserving A packing and padded B strides. |
 | `tests/test_matrix.cpp` | Checks alignment, deep copies, shape-preserving empty copies, safe moved-from objects and overflow rejection before allocation. These are storage invariants all kernels depend on. |
 | `tests/test_gemm_cuda.cpp` | Per-kernel shape tables exercise CUDA bounds, vector and pipelined fallbacks, reduced precision, empty products and rectangular vendor calls. Direct device checks cover zero-K clearing and rejection of invalid launch shapes. Missing GPUs skip explicitly. |
+| `tests/test_gemm_lowp.cpp`, `tests/test_gemm_lowp_cuda.cpp` | Low-precision kernels against `gemm_lowp_reference` on the same converted inputs: INT8 exact, FP32 accumulation within 2·K·2⁻²⁴·Σ\|ab\|, fp16 accumulation with 2⁻¹¹. Exhaustive conversion round-trips. The CUDA test runs both kernels and cuBLAS, with shapes that select both Level 8 tiles. |
 | `tests/CMakeLists.txt` | Links CPU tests and CUDA-or-stub tests separately. PRE_TEST discovery delays executing binaries until ctest. A binary built for another ISA still needs compatible execution hardware. |
 | `benchmarks/bench_gemm.cpp` | Fixed-size square template registrations allow inlining and constant-size optimization. Allocation/random initialization are outside timing, but each kernel's zeroing and packing are inside. Uses thread CPU time except Accelerate's wall time. Prefetch distances and padded B experiments are separate registrations. |
-| `benchmarks/bench_gemm_cuda.cpp` | Allocates device problems once, warms up, then reports event durations as manual time. Host transfers and preconversion for level 7/cuBLAS FP16 are excluded; level 5/6 tile conversion remains included. Precision counters distinguish storage/compute paths but do not specify error bounds. |
+| `benchmarks/bench_gemm_cuda.cpp` | Allocates device problems once, warms up, then reports event durations as manual time. Host transfers and preconversion for levels 7-8/cuBLAS FP16 are excluded; level 5/6 tile conversion remains included. Precision counters distinguish storage/compute paths but do not specify error bounds. |
+| `benchmarks/bench_gemm_lowp.cpp`, `benchmarks/bench_gemm_lowp_cuda.cpp` | Low-precision kernels with the FP32 kernel of the same unit (CPU), or `Mma` / `Tma` / `Cublas` per format (GPU, event time). Inputs converted before timing. The GPU benchmark also reports `err`: the worst of 256 sampled elements against a double-precision recomputation. |
 | `benchmarks/CMakeLists.txt` | Registers experiments only for compatible architectures/toolchains, GPU experiments only with CUDA, and SME experiments only after the runtime probe passes. GNU inline-assembly CPU probes are omitted on MSVC. |
 
 ## Experiment files
@@ -307,7 +325,9 @@ does not automatically preserve a cycle or cache interpretation.
 | `sme_b_layout.cpp` | Compares identical logical products with padded or packed B. Both full-driver timing and intrusive phase clocks are recorded in shuffled order; phase medians need not sum to end-to-end medians. Validates every layout before timing. |
 | `sme_b_stride_probe.cpp` | Packs A and constructs B before timing only the macro-kernel. Height sweeps expose reused-strip capacity; width sweeps measure remaining costs after padding. kNr=32 encodes the measured M4 SVL. Nine shuffled repetitions. |
 | `sme_block_sweep.cpp` | Repeats the packed driver with runtime Mc/Kc/Nc combinations and reports medians. Includes allocation and packing, allowing end-to-end block-size comparisons. Unlike the shuffled stride probes, configurations run in a fixed order; account for clock/load drift when interpreting small gains. |
-| `cuda_peak.cu` | Separate FMA chains, raw MMA chains and a large copy estimate rates for the tested compute/copy instruction paths, not universal hardware ceilings. Best-of-five events; hold mode permits external clock/power sampling. The launch count is based on the thread limit; registers can prevent all nominal blocks residing at once. The FP64 probe understates the measured GEMM rate. |
+| `lowp_peak.cpp` | `fma_peak`'s method for the low-precision instructions (NEON `FMLAL`, `FMLA .8h`, `BFDOT`, `BFMMLA`, `SDOT`, `SMMLA`; AVX-512 `VDPBF16PS`, `VPDPBUSD`; SME widening `FMOPA` / `SMOPA`), next to FP32 on the same unit. |
+| `lowp_accuracy.cpp` | Relative Frobenius error of each format, from FP32 inputs, against the exact product; INT8 with per-row / per-column scales; fp16 accumulation emulated by rounding every partial sum. |
+| `cuda_peak.cu` | Separate FMA chains, raw MMA chains and a large copy estimate rates for the tested compute/copy instruction paths, not universal hardware ceilings. Best-of-five events; hold mode permits external clock/power sampling. Also measures every low-precision `mma.sync` form; the block-scaled FP8 row appears only in an `sm_120a` build. The launch count is based on the thread limit; registers can prevent all nominal blocks residing at once. The FP64 probe understates the measured GEMM rate. |
 
 ## Build, publishing and data files
 
@@ -321,16 +341,15 @@ does not automatically preserve a cycle or cache interpretation.
 | `LICENSE` | MIT license for project code; fetched dependencies retain their own licenses. |
 | `README.md`, `src/gemm/README.md` | Entry point and compact kernel map. Headline results are measured best-size values, not hardware specifications or universal speed guarantees. |
 | `docs/build.md`, `docs/benchmarks.md`, `docs/cache-behavior.md` | Build instructions, historical measured tables and explanatory cache models. Timings from distinct sessions must remain labeled rather than being combined into a synthetic experiment. |
-| `docs/articles/*.md` | Four connected investigations: CPU SIMD, SME2 design, SME2 stride conflicts, and CUDA. Front matter supplies publishing metadata; explanatory pseudocode can omit guards present in the source. |
+| `docs/articles/*.md` | Five connected investigations: CPU SIMD, SME2 design, SME2 stride conflicts, CUDA, and low-precision formats. Front matter supplies publishing metadata; explanatory pseudocode can omit guards present in the source. |
 | `docs/index.md`, `docs/_layouts/article.html`, `docs/_config.yml` | Article index, shared HTML/CSS template and Jekyll settings. Only index/articles publish; project guides and experiments remain linked on GitHub. |
 | `docs/articles/assets/render_charts.py` | Standard-library SVG generator. CSVs beside it hold curated chart values; strip-height medians are calculated from raw experiment samples. Labels distinguish categorical x axes from numerical spacing. |
 | `docs/articles/assets/*.csv`, `*.svg` | Curated numeric inputs and generated charts. Keep SVGs reproducible from those inputs; do not edit generated numbers independently. |
 | `docs/experiments/cpu-simd/*` | Raw FMA, micro-kernel and GEMM runs, plus focused post-tile-change measurements. README identifies compiler, load and which rows replace the older tile. |
-| `docs/experiments/sme2-gemm/*` | Concurrently added raw SME ladder, block-sweep and vendor-comparison samples. The accompanying README records their provenance; the review leaves those historical samples intact. |
+| `docs/experiments/sme2-gemm/*` | Raw SME ladder, block-sweep and vendor-comparison samples behind part 2; the README records their provenance. |
+| `docs/experiments/lowp/*` | Instruction peaks, CPU and GPU GEMM runs, accuracy and Nsight counters behind part 5; the README lists machines, builds and method. |
 | `docs/experiments/sme2-machine/*` | Cache/TLB/FMOPA samples and metadata for the M4 machine model. TLB capacities and cluster sharing are experimental inferences. |
 | `docs/experiments/sme-b-stride/*` | Phase timings and stride/height/width/chase data; metadata includes commands and source hashes for historical reproduction. |
-| `docs/experiments/review-20261016/*` | Before/after duration tables, source hashes and review-only Mac timing harnesses. The harness loads namespace-isolated before/after libraries, randomizes paired order and offers a same-buffer SME probe. Machine load limits the conclusions; see the accompanying README. |
-| `docs/review-20261016.md` | Audit scope, fixes, test evidence and explicit performance/hardware limitations. |
 | `docs/experiments/cuda-machine/*` | GPU peaks, clock samples, full GEMM output and Nsight counters. Profiling perturbs timings; profile rates and benchmark rates need not coincide. |
 
 Primary specifications for the architectural contracts:

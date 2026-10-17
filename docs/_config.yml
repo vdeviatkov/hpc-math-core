@@ -19,5 +19,4 @@ exclude:
   - build.md
   - cache-behavior.md
   - kernel-design.md
-  - review-20261016.md
   - experiments/

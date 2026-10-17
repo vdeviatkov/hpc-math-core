@@ -11,7 +11,9 @@ permalink: /articles/simd-gemm.html
 core. Every number was measured on those machines; the code is in
 [hpc-math-core](https://github.com/vdeviatkov/hpc-math-core). Part 1 of a
 series: [part 2](sme2-gemm.md) moves the same multiplication to Apple's
-matrix unit, [part 4](cuda-gemm.md) to an NVIDIA GPU.*
+matrix unit, [part 3](sme2-cache-associativity.md) analyses its cache-set
+conflicts, [part 4](cuda-gemm.md) moves it to an NVIDIA GPU and
+[part 5](lowp-gemm.md) to 16- and 8-bit formats.*
 
 Matrix multiplication, C = A · B, is the operation the rest of this series
 optimises on ever more specialised hardware. Before matrix units and GPUs,
@@ -26,7 +28,7 @@ independent accumulators the inner loop keeps in registers.
 
 - The textbook i-j-k loop runs at **0.4–0.6 GFLOP/s** at N = 4096: it
   touches a new cache line of B for every multiply-add. Changing the loop
-  order to i-k-j is **25–73× faster**, with no other change.
+  order to i-k-j is **52–73× faster** in FP32, with no other change.
 - The peak is set by the FMA units: measured, **362 GFLOP/s FP32 on a
   Zen 5 core (AVX-512)** and **~130 on an M4 P-core (NEON)**. To reach it a
   kernel needs FMA latency × FMA pipes independent accumulators: 8–12 on
@@ -54,7 +56,7 @@ column is N elements apart.
 | L1 data cache | 128 KiB, 128-byte lines | 48 KiB, 64-byte lines |
 | L2 cache | 16 MiB, shared by 6 cores | 1 MiB, private |
 | Last-level cache | system-level cache, shared by the chip | L3, 32 MiB per 8 cores |
-| FMA latency, measured | ~3.3 cycles | 4.0 cycles |
+| FMA latency, measured | 3.3–3.5 cycles | 4.0 cycles |
 | FMAs per cycle, measured | up to ~4 | 2 |
 | FP32 peak | ~130 GFLOP/s | **362 GFLOP/s** (AVX2: 182) |
 | FP64 peak | ~65 GFLOP/s | 180 GFLOP/s (AVX2: 91) |
@@ -75,10 +77,12 @@ overlap until the FMA pipes are full:
 
 Zen 5 retires two 512-bit FMAs per cycle with a latency of exactly 4
 cycles: 8 accumulators come close and 12 reach the full rate. The M4 core
-has four 128-bit FMA pipes and a shorter latency, ~3.3 cycles; it needs
+has four 128-bit FMA pipes and a shorter latency, 3.3–3.5 cycles; it needs
 16 accumulators to come near its peak (3.97 FMAs per cycle measured in
-FP64 with 20). The two cores do the same work per cycle by different
-means: Zen 5 with wide vectors, M4 with more of them.
+FP64 with 20). The two cores get their throughput in different ways: Zen 5
+from wide vectors, M4 from more pipes. Zen 5 still does twice the FP32
+work per cycle (2 × 16 lanes against 4 × 4) and, at its higher clock,
+nearly three times the GFLOP/s.
 
 That rule, **accumulators ≥ latency × pipes**, decides the design of every
 fast kernel below, and of the SME2 and GPU kernels in the rest of the
@@ -116,10 +120,11 @@ and 0.44 GFLOP/s): element width does not matter to a loop that waits on
 memory. Vector instructions do not rescue it either: the AVX2, AVX-512 and
 NEON versions of this loop (`gemm_neon_naive`, `gemm_avx2_naive`,
 `gemm_avx512_naive`) gather B's column into a vector element by
-element; they help at mid sizes (NEON: 3.5 against 2.5 GFLOP/s at
-N = 256), but at N = 4096 run within a few percent of the scalar loop.
+element. Only the NEON FP32 version helps, at mid sizes (3.5 against
+2.5 GFLOP/s at N = 256); the AVX2 and AVX-512 versions run at or below the
+scalar loop, and at N = 4096 all run within a few percent of it.
 
-## Step 2: loop order — 25–73× faster
+## Step 2: loop order — 52–73× faster
 
 Swapping the two inner loops makes the innermost loop walk rows
 (C must be zeroed before this accumulation loop):
@@ -164,12 +169,14 @@ tile of B is reused from cache by 64 rows of A:
 | M4 | 83.0 | 80.5 | 41.1 | 28.8 |
 
 On Zen 5 throughput is now flat, 1.4× the reordered loop at N = 4096, but
-at N = 256 it is half the reordered loop's speed: 64-element inner loops
-leave the auto-vectoriser less to work with than full rows. On the M4 it
-is fast up to N = 256 and then decays, to below the reordered loop at
-N = 4096; its 64 rows of each B tile are N elements apart, the access
-pattern the last section of this article measures. Either way the inner
-loop is unchanged: a load, an FMA and a store of C per vector.
+at N = 256 it is half the reordered loop's speed (the cause was not
+isolated; the inner loops are only 64 elements long). On the M4 it is
+fast up to N = 256 and then decays, to below the reordered loop at
+N = 4096. Its 64 rows of each B tile are N elements apart, but the
+row-stride penalty the M4's micro-kernel shows in isolation is small (7%
+at 4 KiB), so the stride alone does not explain the decay; this article
+did not isolate it. Either way the inner loop is unchanged: a load, an FMA
+and a store of C per vector.
 
 ## Step 4: a register tile
 
@@ -206,7 +213,7 @@ three-level blocking like step 3's (64 rows × 256 k × 256 or, for AVX-512,
 
 | Kernel | Register tile of C | Accumulators | Registers used |
 |---|---|--:|--:|
-| NEON, FP32 | 4 × 16 (4 rows × 4 vectors) | 16 | 24 of 32 |
+| NEON, FP32 | 4 × 16 (4 rows × 4 vectors) | 16 | up to 24 of 32 |
 | NEON, FP64 | 8 × 4 (8 rows × 2 vectors) | 16 | 19 of 32 |
 | AVX2, FP32 / FP64 | 4 × 16 / 4 × 8 (4 rows × 2 vectors) | 8 | 11–14 of 16 |
 | AVX-512, FP32 / FP64 | 8 × 32 / 8 × 16 (8 rows × 2 vectors) | 16 | 19 of 32 |
@@ -244,8 +251,10 @@ Every FMA re-loads its vector of B: 8 loads of B plus 4 broadcasts per k
 step for 8 FMAs, 12 loads where 6 suffice. Zen 5 performs at most two
 512-bit loads per cycle (AMD's documented limit, not measured here), so
 such a k step cannot take fewer than 6 cycles,
-while its 8 FMAs need 4. Measured, it takes 10.2 cycles in isolation and
-6.7 in the library kernel: the loads, not the FMA units, set the pace. With
+while its 8 FMAs need 4. Measured, it takes 6.7 cycles in the library
+kernel, at the load bound, and 10.2 in the isolated micro-kernel, which
+the load bound alone does not explain: either way the loads, not the FMA
+units, set the pace. With
 6 or more rows the compiler loads B into registers once per k step (4 loads
 per two steps) and every FMA is register-only.
 
@@ -264,7 +273,7 @@ accumulators for a core that needs 12–16. On L1-resident data, 8 rows
 instead of 4 nearly doubled it (31.0 → 58.2 GFLOP/s); in the full
 multiplication it is 26–38% faster from N = 256 up (31.5 → 39.6 GFLOP/s at
 N = 256, 24.0 → 33.1 at N = 4096) and unchanged at N = 64 (38.2 → 37.3). The FP32 NEON kernel already had 16 accumulators; 20 would add
-5%. The AVX2 kernel keeps its 4 × 2 tile at 83% of the AVX2 peak: a 6-row
+5% in isolation. The AVX2 kernel keeps its 4 × 2 tile at 83% of the AVX2 peak: a 6-row
 tile is 15% faster in isolation, but needs 15 of AVX2's 16 registers and
 does not divide the 64-row block.
 
@@ -272,15 +281,20 @@ does not divide the 64-row block.
 
 | GFLOP/s, FP32 | N = 64 | 256 | 512 | 1024 | 4096 |
 |---|--:|--:|--:|--:|--:|
-| Zen 5, AVX-512 | 320.3 | **332.7** | 327.9 | 284.6 | 198.2 |
+| Zen 5, AVX-512 | 321.2 ¹ | **332.7** | 327.9 | 284.6 | 198.2 |
 | Zen 5, AVX2 | 151.2 | 150.2 | 143.4 | 93.5 | 75.9 |
 | M4, NEON | 93.5 | 94.4 | **95.0** | 91.2 | 69.8 |
 
 | GFLOP/s, FP64 | N = 64 | 256 | 512 | 1024 | 4096 |
 |---|--:|--:|--:|--:|--:|
-| Zen 5, AVX-512 | 154.6 | **161.5** | 105.2 | 90.9 | 77.2 |
+| Zen 5, AVX-512 | 154.3 ¹ | **161.5** | 105.2 | 90.9 | 77.2 |
 | Zen 5, AVX2 | 75.1 | 71.3 | 46.0 | 41.7 | 37.3 |
 | M4, NEON | 37.3 | **39.6** | 39.2 | 37.9 | 33.1 |
+
+¹ From the committed re-run of the 8-row kernel
+([`bench_zen5_avx512_8x2.csv`](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/experiments/cpu-simd/bench_zen5_avx512_8x2.csv));
+the other AVX-512 cells are the same-night run recorded in the experiment
+README, within 1% of the re-run.
 
 ![FP32 GEMM on one Zen 5 core, N = 512](assets/simd-zen5.svg)
 
@@ -316,10 +330,11 @@ detail.
 - **Wider vectors on a memory-bound loop.** Explicit AVX2, AVX-512 and
   NEON versions of the reordered loop run at or below the speed of the
   scalar one, which the compiler already vectorises; vector versions of
-  the textbook loop gain at mid sizes and nothing at N = 4096.
+  the textbook loop gain only on NEON FP32 at mid sizes, and nothing at
+  N = 4096.
 - **Software prefetch** ([`prefetch.hpp`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/prefetch.hpp)). Prefetching A, B and C 2 to 16 tile rows ahead of
   the current register-tile kernels changes their throughput by −3% to
-  +1% (Zen 5, AVX-512) and −2% to +2% (M4, NEON) at N = 256 to 1024: the
+  +0.5% (Zen 5, AVX-512) and −2% to +1.4% (M4, NEON) at N = 256 to 1024: the
   hardware prefetchers already follow these streaming patterns. On the
   earlier 4-row AVX-512 kernel, which was bound by its loads, prefetching
   gained up to 6%, and 21% in one outlier (FP64, N = 512, 16 rows ahead).
@@ -349,7 +364,7 @@ before and after the tile changes.
 - **The M4 ran with background load.** Two unrelated processes kept two
   cores busy during the M4 measurements; the core clock moved between 3.96
   and 4.13 GHz from one program to the next. Treat M4 figures as ±5%.
-- **No hardware counters on the CPUs.** macOS exposes none to user code,
+- **No hardware counters on the CPUs.** macOS has no public counter API,
   and the Linux machine restricts them. The explanations rest on controlled
   experiments and on reading the generated machine code.
 

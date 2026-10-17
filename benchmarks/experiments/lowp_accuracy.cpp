@@ -23,7 +23,8 @@
  *
  * Input rounding dominates every format except fp16_acc16: the products of
  * rounded inputs are summed almost exactly, but the rounding of each input
- * (relative 2^-9 for bf16, 2^-12 for fp16, 2^-5 for E4M3) is already done.
+ * (relative at most 2^-8 for bf16, 2^-11 for fp16, 2^-4 for E4M3) is
+ * already done.
  */
 
 #include "hpc/lowp.hpp"

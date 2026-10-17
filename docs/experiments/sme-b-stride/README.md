@@ -10,7 +10,7 @@ hashes: [`metadata.json`](metadata.json). The size and padding sweeps of
 | File | Program | What it measures |
 |---|---|---|
 | [`phases.csv`](phases.csv) | [`sme_b_layout`](../../../benchmarks/experiments/sme_b_layout.cpp) | full driver, end to end and by phase, B in place vs packed, ldb = 4096 / 4128 / 4160 |
-| [`height.csv`](height.csv) | [`sme_b_stride_probe height`](../../../benchmarks/experiments/sme_b_stride_probe.cpp) | macro-kernel only, strip height Kc = 8 … 1024 rows, B rows 16 KiB vs 16,512 B apart |
+| [`height.csv`](height.csv) | [`sme_b_stride_probe height`](../../../benchmarks/experiments/sme_b_stride_probe.cpp) | macro-kernel only, strip height Kc = 8 … 2048 rows, B rows 16 KiB vs 16,512 B apart |
 | [`width.csv`](width.csv) | [`sme_b_stride_probe width`](../../../benchmarks/experiments/sme_b_stride_probe.cpp) | macro-kernel only, N = 1024 … 4224, B in place with one line of padding vs packed |
 | [`chase.csv`](chase.csv) | [`cache_chase`](../../../benchmarks/experiments/cache_chase.cpp) | CPU core load latency over L lines 16 KiB / 16,512 B apart |
 

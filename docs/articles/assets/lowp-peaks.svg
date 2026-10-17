@@ -33,9 +33,9 @@
 <text x="318" y="184" font-size="14" text-anchor="end">M4 NEON · fp16 → fp16 (FMLA .8h)</text>
 <rect x="330" y="170" width="132.7" height="20" fill="#8c96a3"/>
 <text x="470.6666666666667" y="185" font-size="13" text-anchor="start">1.99×</text>
-<text x="318" y="216" font-size="14" text-anchor="end">M4 NEON · int8 (SDOT, SMMLA)</text>
-<rect x="330" y="202" width="254.0" height="20" fill="#8c96a3"/>
-<text x="592.0" y="217" font-size="13" text-anchor="start">3.81×</text>
+<text x="318" y="216" font-size="14" text-anchor="end">M4 NEON · int8 (SMMLA; SDOT 3.84×)</text>
+<rect x="330" y="202" width="252.0" height="20" fill="#8c96a3"/>
+<text x="590.0" y="217" font-size="13" text-anchor="start">3.78×</text>
 <text x="318" y="248" font-size="14" text-anchor="end">M4 SME · fp16, bf16 (widening FMOPA)</text>
 <rect x="330" y="234" width="66.7" height="20" fill="#2f9e6e"/>
 <text x="404.6666666666667" y="249" font-size="13" text-anchor="start">1.00×</text>

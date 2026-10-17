@@ -2,9 +2,12 @@
  * @file gemm_lowp.cu
  * @brief Low-precision Tensor Core GEMM: bf16, fp16, int8 and FP8 inputs.
  *
- * The public API and the format table are in gemm/cuda_lowp.hpp. This is
- * the raw mma.sync kernel of Level 6 (gemm_kernels.cu) grown to the tile
- * sizes and pipeline of Level 7:
+ * The public API and the format table are in gemm/cuda_lowp.hpp. Two
+ * kernels share the format structs below: kernel_lowp, described here, and
+ * kernel_tma (Level 8 of gemm/cuda.hpp), described at its definition.
+ *
+ * kernel_lowp is the raw mma.sync kernel of Level 6 (gemm_kernels.cu) grown
+ * to the tile sizes and pipeline of Level 7:
  *
  *   - 128 x 128 block tile, 64 bytes of K per stage (32 16-bit or 64 8-bit
  *     elements), 8 warps of 64 x 32 each.
@@ -140,22 +143,25 @@ struct Fp8 {
 };
 
 // ============================================================================
-// Tiling
+// Tiling of kernel_lowp. HPC_LOWP_BN / _STAGES / _GROUP_M override the
+// measured defaults (docs/experiments/lowp/tuning_cp_async.csv was swept
+// with -DCMAKE_CUDA_FLAGS="-DHPC_LOWP_STAGES=3 ..."); normal builds leave
+// them alone.
 // ============================================================================
 #ifndef HPC_LOWP_BN
 #define HPC_LOWP_BN 128
 #endif
-constexpr int kBM = 128, kBN = HPC_LOWP_BN;  // block tile
-constexpr int kBK = 64;               // bytes of K per pipeline stage
 #ifndef HPC_LOWP_STAGES
 #define HPC_LOWP_STAGES 2
 #endif
 #ifndef HPC_LOWP_GROUP_M
 #define HPC_LOWP_GROUP_M 8
 #endif
-constexpr int kStages = HPC_LOWP_STAGES;  // cp.async pipeline depth
-constexpr int kGroupM = HPC_LOWP_GROUP_M; // block rasterization, see kernel_lowp
-constexpr int kRowBytes = kBK + 16;   // padded shared-memory row: 80 B
+constexpr int kBM = 128, kBN = HPC_LOWP_BN;  // block tile
+constexpr int kBK = 64;                     // bytes of K per pipeline stage
+constexpr int kStages = HPC_LOWP_STAGES;    // cp.async pipeline depth
+constexpr int kGroupM = HPC_LOWP_GROUP_M;   // block rasterization, see kernel_lowp
+constexpr int kRowBytes = kBK + 16;         // padded shared-memory row: 80 B
 constexpr int kWarpsN = 4;
 constexpr int kWarpM = 64, kWarpN = kBN / kWarpsN;
 constexpr int kThreads = (kBM / kWarpM) * kWarpsN * 32;  // 256
@@ -348,7 +354,7 @@ void launch(const void* A, const void* Bt, void* C, int M, int K, int N) {
 //      128 x 128 tile (4 consumer warps, 6 stages) runs instead (launch_tma).
 //
 // Measured on an RTX 5080 at N = 2048 and 8192, all formats: 128 x 256 with
-// 3 or 4 stages is 3-9% faster than 128 x 128 with 4, 5 or 6 stages; the
+// 3 or 4 stages is 3-11% faster than 128 x 128 with 4, 5 or 6 stages; the
 // stage count changes little once there are 3.
 //
 // Shapes must be tile multiples, M and N of 128 (the wrappers pad).
@@ -552,8 +558,9 @@ void launch_tma_tile(const void* A, const void* Bt, void* C, int M, int K, int N
 
 // Tile choice by wave quantisation. One block runs per SM, so a grid of B
 // blocks takes ceil(B / SMs) waves and the last one may run part-empty:
-// the useful fraction is B / (ceil(B / SMs) * SMs). The 128 x 256 tile is
-// about 5% faster per block (measured at N = 2048 and 8192); it is chosen
+// the useful fraction is B / (ceil(B / SMs) * SMs). The 128 x 256 tile
+// makes the GEMM 3-11% faster when both tiles fill the GPU equally
+// (measured at N = 2048 and 8192); the rule assumes 5% and chooses it
 // unless the 128 x 128 tile's twice as many, smaller blocks fill the waves
 // more than 5% better. On an RTX 5080 (84 SMs) that picks 128 x 128 at
 // N = 1024 (32 wide blocks: 38% of one wave) and N = 4096 (512 wide blocks:

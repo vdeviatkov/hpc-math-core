@@ -1,10 +1,11 @@
 #pragma once
 /**
  * @file cuda.hpp
- * @brief Host interface to the CUDA GEMM kernels (src/cuda/gemm_kernels.cu).
+ * @brief Host interface to the CUDA GEMM kernels (src/cuda/gemm_kernels.cu;
+ *        Level 8 in src/cuda/gemm_lowp.cu).
  *
- * Eight levels, each adding one technique to the one it builds on. Levels
- * 0-4 run on the FMA (SIMT) cores in f32 and f64, Levels 5-7 on Tensor Cores:
+ * Nine levels, each adding one technique to the one it builds on. Levels
+ * 0-4 run on the FMA (SIMT) cores in f32 and f64, Levels 5-8 on Tensor Cores:
  *
  *   0  gemm_cuda_naive           one thread per C(i,j), global memory only
  *   1  gemm_cuda_blocked         16x16 shared-memory tiles
@@ -61,7 +62,7 @@ bool cuda_has_ampere() noexcept;
 /// True if the selected device is sm_90+ (TMA, mbarrier transactions): Level 8.
 bool cuda_has_tma() noexcept;
 
-// Levels 0-7 (see the file comment).
+// Levels 0-8 (see the file comment).
 template <typename T>
 void gemm_cuda_naive(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C);
 template <typename T>

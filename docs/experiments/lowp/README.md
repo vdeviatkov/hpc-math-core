@@ -41,15 +41,18 @@ benchmarks report GPU-event time of the GEMM alone, as in part 4.
   double from the same converted inputs; max |C − C_ref| / Σ_k |A(i,k)·B(k,j)|.
   It measures accumulation error only. Both hand-written kernels and cuBLAS
   give identical values for every format and size.
-- **Kernel tuning (CUDA, cp.async kernel).** Swept on N = 4096, 8192, 16384, all formats:
-  pipeline stages 2 / 3 / 4, block order row-major / grouped by 8 rows of
-  tiles, block tile 128 × 128 / 128 × 256. Best everywhere: 2 stages
-  (two 40 KiB blocks per SM), grouped order, 128 × 128. The grouped order
-  matters most for the fast formats: INT8 at N = 16384 goes from 181 to
-  308 TOP/s.
+- **Kernel tuning (CUDA, cp.async kernel).** Swept on N = 4096, 8192,
+  16384, all formats, one run each in an sm_120 build
+  (`tuning_cp_async.csv`): pipeline stages 2 / 3 / 4, block order row-major
+  / grouped by 8 rows of tiles; a 128 × 256 block tile was also tried and
+  was not faster. Best everywhere: 2 stages (two 40 KiB blocks per SM, 8–18%
+  faster than 3 or 4), grouped order. The grouped order matters most for
+  the fast formats: INT8 at N = 16384 goes from 181 to 308 TOP/s, bf16 from
+  97 to 110 TFLOP/s. (The final run, `bench_lowp_cuda_sm120a.csv`, is a
+  later session; its values differ from the sweep by up to 2%.)
 - **Kernel tuning (Level 8).** Swept at N = 2048 and 8192, all formats:
   128 × 128 tiles with 4, 5, 6 stages and 128 × 256 tiles with 3, 4
-  stages. 128 × 256 is 3–9% faster per block; the stage count changes
+  stages (`tuning_level8.csv`). 128 × 256 makes the GEMM 3–11% faster; the stage count changes
   little from 3 on. With one block per SM the tile is chosen by how full
   the last wave of blocks is (see `launch_tma` in `gemm_lowp.cu`).
 - **cuBLAS FP8.** Nsight Compute shows cuBLASLt's FP8 kernel executing

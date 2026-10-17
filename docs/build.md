@@ -45,6 +45,8 @@ ctest --test-dir build --output-on-failure
 # 4. Run the CPU and CUDA benchmarks (CUDA rows report SKIPPED without a GPU)
 ./build/benchmarks/bench_gemm
 ./build/benchmarks/bench_gemm_cuda
+./build/benchmarks/bench_gemm_lowp        # bf16 / fp16 / INT8 kernels of this CPU
+./build/benchmarks/bench_gemm_lowp_cuda   # bf16 / fp16 / INT8 / FP8 on the GPU
 ```
 
 ### Windows (MSVC x64)
@@ -91,8 +93,18 @@ The default is `native` — the GPU in the build machine. A visible GPU is
 needed for native detection. For a headless build, specify an architecture
 explicitly, such as `-DCMAKE_CUDA_ARCHITECTURES=80`. This source uses WMMA
 and requires targets at least sm_70; include an sm_80+ target for the raw
-`mma.sync.m16n8k16` path. Runtime capability checks do not supply code
-excluded by the compilation target. Two cases need care:
+`mma.sync.m16n8k16` path and the low-precision kernels (FP8 needs sm_89+,
+Level 8's TMA sm_90+). Runtime capability checks do not supply code
+excluded by the compilation target.
+
+**Architecture-specific targets.** On an RTX 50-series GPU,
+`-DCMAKE_CUDA_ARCHITECTURES=120a` (tested with CMake 3.28) lets the FP8 kernels use
+the block-scaled `mma` that runs at full rate with an FP32 accumulator;
+with plain `120`/`native` they use the half-rate sm_89 instruction.
+Everything else is identical. `cuda_lowp_fp8_block_scaled()` reports which
+one a build has.
+
+Two cases need care:
 
 **The GPU is newer than the CUDA toolkit.** nvcc refuses any architecture newer than itself, so `native` fails outright (e.g. CUDA 12.0, which predates Blackwell, on an RTX 50-series card: `Unsupported gpu architecture 'compute_120'`). The configure step probes for this and falls back to the newest *virtual* architecture the toolkit can emit, which the driver JIT-compiles forward onto the actual GPU. The kernels then run correctly, at the cost of a JIT pause on first launch — but do not benchmark in this configuration; install a toolkit new enough to target the card.
 

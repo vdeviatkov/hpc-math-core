@@ -40,6 +40,17 @@ massif.out.*
 *.ncu-rep
 *.nsys-rep
 
+# Jekyll preview of docs/ and Python helpers (docs/articles/assets/render_charts.py)
+_site/
+.jekyll-cache/
+.sass-cache/
+__pycache__/
+*.pyc
+.venv/
+
+# Local tool settings
+.claude/settings.local.json
+
 # Editors and IDEs
 .idea/
 .vscode/

@@ -35,28 +35,29 @@ measures what each format costs in accuracy.
   fp16, at an error that grows with K: 0.2% relative at K = 256, 1.9% at
   K = 16,384.
 - **FP8 on the RTX 5080 has two instructions.** The portable one runs at
-  249 TFLOP/s with FP32 accumulation; the block-scaled "MX" one at 497. Only
-  the second, which needs an `sm_120a` build, lets FP8 beat fp16. cuBLAS
+  249 TFLOP/s with FP32 accumulation; the block-scaled "MX" one at 497, the
+  only FP32-accumulating Tensor Core instruction here that runs at full
+  rate. It needs an `sm_120a` build. cuBLAS
   uses it; switching the hand-written kernels to it took FP8 from 214 to
   291 TFLOP/s (cp.async kernel) and from 233 to 387 (part 4's Level 8).
 - **The kernels:** INT8 reaches 3,525 GOP/s on one M4 SME2 unit and 922
   on one Zen 5 core, 2.3× and 4.0× their FP32 kernels at N = 2,048, and
-  419 TOP/s on the RTX 5080 (98% of cuBLAS). Each CUDA kernel serves all
+  419 TOP/s on the RTX 5080 at N = 16,384 (98% of cuBLAS). Each CUDA kernel serves all
   five formats; only the `mma.sync` instruction and the element width
   change. Part 4's Level 8 reaches 97–102% of cuBLAS in every format.
 
 ## The formats
 
-| Format | Bits: sign / exponent / mantissa | Largest value | Relative rounding of one input | Typical accumulator |
+| Format | Bits: sign / exponent / mantissa | Largest value | Largest relative rounding of one input | Typical accumulator |
 |---|---|--:|--:|---|
 | FP32 | 1 / 8 / 23 | 3.4 × 10³⁸ | 2⁻²⁴ ≈ 6 × 10⁻⁸ | FP32 |
-| bf16 | 1 / 8 / 7 | 3.4 × 10³⁸ | 2⁻⁹ ≈ 2 × 10⁻³ | FP32 |
-| fp16 | 1 / 5 / 10 | 65,504 | 2⁻¹² ≈ 2.4 × 10⁻⁴ | FP32 or fp16 |
+| bf16 | 1 / 8 / 7 | 3.4 × 10³⁸ | 2⁻⁸ ≈ 3.9 × 10⁻³ | FP32 |
+| fp16 | 1 / 5 / 10 | 65,504 | 2⁻¹¹ ≈ 4.9 × 10⁻⁴ | FP32 or fp16 |
 | FP8 E4M3 | 1 / 4 / 3 | 448 | 2⁻⁴ ≈ 6 × 10⁻² | FP32 |
 | INT8 | integer, with a scale | ±127 × scale | depends on the scale | INT32 |
 
-bf16 keeps FP32's exponent and drops mantissa bits, so it converts from
-FP32 without overflow; fp16 keeps more mantissa and loses range. E4M3 has
+bf16 keeps FP32's exponent and drops mantissa bits, so it has FP32's
+range; fp16 keeps more mantissa and loses range. E4M3 has
 one significant decimal digit. INT8 values are integers: a real matrix is
 stored as `scale × q` with `q` in −127 … 127, and the scale is chosen per
 row, per column or per tensor.
@@ -80,8 +81,9 @@ With a wide accumulator, the error is the rounding of the inputs and does
 not grow with K: each product of rounded inputs is exact in FP32, and the
 sum adds little. With an fp16 accumulator the sum's own rounding dominates
 and grows with K, past bf16's error from K ≈ 256 on. (The fp16 row rounds
-after every addition; Tensor Cores round once per 16- or 32-term `mma`, so
-they sit below it.) With normally distributed inputs INT8's error roughly
+after every addition; a Tensor Core `mma` adds 16 products per
+instruction and presumably rounds less often, so it should sit below
+that row, which is the pessimistic end.) With normally distributed inputs INT8's error roughly
 doubles (1.0–1.4 × 10⁻²): a few large values stretch the scale and
 coarsen every other value. Which of these errors a workload tolerates is a
 question about the workload; this article measures the cost and the speed.
@@ -138,8 +140,8 @@ keeps part 4's structure.
 ## The peaks
 
 Every instruction was measured as in part 1's `fma_peak`: a loop on
-constant registers with 1, 8 or 16 independent accumulators, no memory
-traffic
+constant registers with 1, 8 or 16 independent accumulators (on SME2,
+1 or 4 ZA tiles), no memory traffic
 ([`lowp_peak`](https://github.com/vdeviatkov/hpc-math-core/blob/main/benchmarks/experiments/lowp_peak.cpp);
 GPU: [`cuda_peak`](https://github.com/vdeviatkov/hpc-math-core/blob/main/benchmarks/experiments/cuda_peak.cu)).
 Rates count a multiply-add as 2 operations for every format, so they
@@ -172,7 +174,9 @@ compare directly:
 tile. The FP32 rows differ from earlier parts by a few percent because the
 clocks differ between sessions: the M4 P-core ran at 4.47 GHz here and at
 3.96–4.13 GHz in part 1 (NEON: 135 against ~130 GFLOP/s), and the FP32
-`FMOPA` peak is 2,018 GFLOP/s here, 1,963 in part 2. Zen 5's 358 against
+`FMOPA` peak is 2,018 GFLOP/s here, 1,963 in part 2: the SME unit gained 3% while the
+core clock gained 10%, so its rate does not follow the core clock, and its
+cycle counts here are in core cycles. Zen 5's 358 against
 part 1's 362 is run-to-run variation at the same clock (5.70–5.71 GHz).
 Every ratio in this table compares rows from the same run.)
 
@@ -190,10 +194,10 @@ packed, which matters below; the arithmetic is not faster.
 
 **The accumulator width is the second axis.** On NEON, fp16 → fp16
 (`FMLA .8h`, 8 lanes) is twice FP32; fp16 → FP32 is not. On the RTX 5080,
-a GeForce card, every Tensor Core instruction with an FP32 accumulator
-runs at half the rate of its 16-bit-accumulator form: 124 against 249 for
-fp16, 249 against 497 for FP8. INT8 accumulates in INT32 and is not
-affected.
+a GeForce card, every `mma.sync` with an FP32 accumulator runs at half
+the rate of its 16-bit-accumulator form, 124 against 249 for fp16 and 249
+against 497 for FP8, except the block-scaled FP8 form (below), which runs
+at the full 497. INT8 accumulates in INT32 and is not affected.
 
 **INT8 is the format every unit accelerates:** 3.8× FP32 on NEON, 2× on
 SME2, 4× on AVX-512, and the same 497 TOP/s as the fastest FP8 form on the
@@ -201,8 +205,9 @@ GPU.
 
 ## CPU kernels
 
-All five CPU kernels reuse the FP32 kernels' register tiles and cache
-blocking, with the k-group packing above. Inputs are converted before
+The CPU kernels keep the FP32 kernels' structure: a register tile of C,
+three-level cache blocking and packing, now with the k-group packing above
+and block sizes re-chosen in bytes. Inputs are converted before
 timing, as a real workload stores them; packing is timed, as in parts 1–2
 ([`bench_gemm_lowp`](https://github.com/vdeviatkov/hpc-math-core/blob/main/benchmarks/bench_gemm_lowp.cpp)).
 Medians of 3 repetitions, one thread:
@@ -219,9 +224,9 @@ contiguous in row-major A).
 
 `VPDPBUSD` multiplies *unsigned* bytes by signed bytes, and Zen 5 has no
 signed × signed form. The kernel stores A + 128 (flipping each byte's sign
-bit makes it unsigned) and subtracts the excess, 128 · Σₖ B(k,j), from
-every C(i,j) at the end; the column sums of B are computed while packing
-it. The result is exact.
+bit makes it unsigned) and starts every accumulator of C(i,j) at
+−128 · Σₖ B(k,j), which cancels the excess; the column sums of B are
+computed while packing it. The result is exact.
 
 | GFLOP/s or GOP/s | N = 256 | 1,024 | 2,048 | 4,096 | best, % of peak |
 |---|--:|--:|--:|--:|--:|
@@ -232,7 +237,7 @@ it. The result is exact.
 At N = 4,096 bf16 is 3.0× and INT8 4.5× faster than FP32, more than the
 peak ratios: the FP32 kernel reads B in place and loses throughput to
 part 1's stride conflicts as N grows, while the low-precision kernels pack
-B, as they must, and stay flat. At the FP32 kernel's best size the ratios
+B, as they must, and stay flat. Best size against best size the ratios
 are 1.9× and 2.8×. INT8 reaches 64% of its peak where bf16 reaches 85%;
 this article did not isolate that gap.
 
@@ -261,7 +266,8 @@ The kernels follow the peaks. bf16 is the slowest kernel in the table
 while running at 94% of its instruction's rate. `FMLAL` beats FP32 by 22%
 at N = 1,024 with the same arithmetic rate, because it moves half the
 bytes; fp16 accumulation nearly doubles that. `SMMLA` runs at 98% of the
-INT8 peak and 5.3–5.6× the FP32 kernel at N = 1,024–2,048: an 8 × 8 C block needs only 8 registers of operands per
+`SDOT` peak (99.6% of its own) and 5.3–5.6× the FP32 kernel at
+N = 1,024–2,048: an 8 × 8 C block needs only 8 registers of operands per
 16 instructions, so the loads never limit it.
 
 ### Apple M4, SME2
@@ -318,11 +324,13 @@ format supplies only the instruction:
 | FP8 E4M3 | `mma.sync.m16n8k32.row.col.f32.e4m3.e4m3.f32`, or the block-scaled form (below) | 4 FP32 |
 
 The rest is part 4's Level 7, written with raw `mma.sync` instead of WMMA:
-a 128 × 128 block tile, 64 bytes of K per stage, 8 warps of 64 × 32,
+a 128 × 128 block tile, 64 bytes of K per stage, 8 warps of 64 × 32
+(Level 7: 32 × 64),
 `cp.async` double buffering, shared-memory rows padded by 16 bytes (an
 80-byte stride: the eight 16-byte rows an `ldmatrix` phase reads start in
 banks 0, 20, 8, 28, 16, 4, 24, 12 and never conflict). Two settings were
-chosen by measurement on all formats at N = 4,096 to 16,384:
+chosen by measurement on all formats at N = 4,096 to 16,384
+([`tuning_cp_async.csv`](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/experiments/lowp/tuning_cp_async.csv)):
 
 - **Two pipeline stages, not three or four.** Three stages need 60 KiB of
   shared memory per block, so only one block fits in an SM's 100 KiB; two
@@ -336,7 +344,8 @@ chosen by measurement on all formats at N = 4,096 to 16,384:
   from 181 to 308 TOP/s, bf16 from 97 to 110 TFLOP/s.
 
 The second kernel is [part 4's Level 8](cuda-gemm.md), `kernel_tma`, with
-the same format structs: a producer warp loads each 128 × 64-byte tile with
+the same format structs: a producer warp loads each 128- or 256-row ×
+64-byte tile with
 one TMA instruction into hardware-swizzled shared memory, and four or eight
 consumer warps of 64 × 64 run only `ldmatrix` and `mma.sync`, synchronised
 by `mbarrier`s through a 4- or 6-stage pipeline. Both operands being
@@ -395,15 +404,16 @@ The instruction exists only for the architecture-specific target
 `sm_120a` (CMake: `CMAKE_CUDA_ARCHITECTURES=120a`); a plain `sm_120` build
 cannot emit it. The kernel uses it when built for that target, and the
 FP8 GEMM goes from 214 to 291 TFLOP/s in the cp.async kernel and from 233
-to 387 in Level 8, with identical results. Without it,
-FP8 on this GPU is no faster than fp16 with fp16 accumulation, and
-accumulates far less precisely than bf16.
+to 387 in Level 8, with identical results. Without it, FP8's peak on this
+GPU is no higher than fp16 with fp16 accumulation (249), and its inputs are
+far coarser than bf16's.
 
 ### What Level 8 removes
 
 The cp.async kernel reaches 87% of the peak and 91% of cuBLAS in bf16 and
-fp16 with FP32 accumulation, but the three formats with a 497 TOP/s peak
-stop near 300, 71–74% of cuBLAS. They perform the same `mma` instructions
+fp16 with FP32 accumulation, but the three formats whose instruction is
+twice as fast (fp16 → fp16 at 249, INT8 and FP8 at 497) reach 150, 298 and
+291, 71–74% of cuBLAS. They perform the same `mma` instructions
 per byte of shared memory as the 16-bit formats (one `ldmatrix.x4`
 delivers 16 k values of fp16 or 32 of INT8, for one instruction either
 way), but those instructions finish twice as fast, so everything else in
@@ -421,9 +431,9 @@ the loop must also go twice as fast: address arithmetic, `cp.async` issue,
 | | Tensor pipe busy | 90% | 99% | 98% |
 
 All three run the same 134 million FP8 `mma` (268 million for bf16); what
-differs is everything around them. The cp.async kernel spends three
-quarters of its instructions moving data and keeps the Tensor pipe 65%
-busy. Level 8 hands the copies to the TMA engine and the address
+differs is everything around them. Three quarters of the cp.async
+kernel's instructions are outside the `mma` (copies, address arithmetic,
+`ldmatrix`, loop control), and its Tensor pipe is 65% busy. Level 8 hands the copies to the TMA engine and the address
 arithmetic to the swizzle, and the pipe is 93% busy. cuBLAS's FP8 and INT8
 kernels (`nvjet_sm120_…_256x128x128_…_tmaAB…`) use the same TMA loads with
 larger 256 × 128 × 128 tiles and fewer instructions still. At the fast
@@ -441,7 +451,8 @@ comparison isolates the kernel from the input rounding measured above
 - **FP32 accumulation:** |C − C_ref| ≤ 2 · K · u · Σₖ |A(i,k) · B(k,j)|
   with u = 2⁻²⁴, the standard bound for a sum of K terms in any order.
   Tensor Cores do not add in IEEE FP32 order, so this is checked rather
-  than assumed; the worst GPU element used 7.5 · 2⁻²⁴ · Σ|ab|, far inside
+  than assumed; the worst GPU element (printed by the test) used
+  7.5 · 2⁻²⁴ · Σ|ab|, far inside
   the bound.
 - **fp16 accumulation:** the same bound with u = 2⁻¹¹.
 - **Shapes:** partial register tiles in every dimension, K not a multiple
@@ -468,9 +479,10 @@ because all three accumulate the same `mma` instructions in the same k order.
   sets every hardware scale to 1.
 - **No FP8 on the CPUs**, and no 4-bit formats anywhere. The M4 has no FP8
   arithmetic; Zen 5 has none either.
-- **One GPU, a GeForce part.** The half-rate FP32 accumulation is a
-  property of consumer cards; data-centre GPUs run FP32 accumulation at
-  full rate, and the ratios in the GPU rows would differ there.
+- **One GPU, a GeForce part.** The half-rate FP32 accumulation (all but
+  the block-scaled FP8 instruction) is a property of consumer cards;
+  data-centre GPUs run FP32 accumulation at full rate, and the ratios in
+  the GPU rows would differ there.
 - **The M4 ran with background load** (load average 4–11). Repetitions
   agreed within 1%, but treat M4 figures as ±5%, as in parts 1–2.
 - **The Zen 5 INT8 kernel's gap** (64% of peak against bf16's 85%) was not
@@ -479,8 +491,8 @@ because all three accumulate the same `mma` instructions in the same k order.
 ## Takeaways
 
 1. **Measure the instruction, not the format.** The same bf16 inputs run
-   at 0.53× FP32 on M4 NEON and 2× on Zen 5; fp16 runs at 1× or 2×
-   depending on the accumulator. The bit count predicts the memory
+   at 0.53× FP32 on M4 NEON and 2× on Zen 5; on M4 NEON, fp16 runs at 1×
+   or 2× depending on the accumulator. The bit count predicts the memory
    traffic, not the arithmetic rate.
 2. **Narrow inputs change the packing.** Every widening instruction needs
    G consecutive k values side by side, so B must be packed with rows

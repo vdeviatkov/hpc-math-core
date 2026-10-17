@@ -2,7 +2,7 @@ label,value,group
 "M4 NEON · fp16 → fp32 (FMLAL)",1.05,m4neon
 "M4 NEON · bf16 (BFDOT, BFMMLA)",0.53,m4neon
 "M4 NEON · fp16 → fp16 (FMLA .8h)",1.99,m4neon
-"M4 NEON · int8 (SDOT, SMMLA)",3.81,m4neon
+"M4 NEON · int8 (SMMLA; SDOT 3.84×)",3.78,m4neon
 "M4 SME · fp16, bf16 (widening FMOPA)",1.00,m4sme
 "M4 SME · int8 (SMOPA)",2.00,m4sme
 "Zen 5 AVX-512 · bf16 (VDPBF16PS)",1.99,zen5

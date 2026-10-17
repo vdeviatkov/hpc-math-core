@@ -25,7 +25,8 @@ the caches and the TLB.
   cycle, but each result takes 4 cycles to feed the next: **1.96 TFLOP/s
   peak, reachable only with four independent accumulators**. There is one
   unit per CPU cluster, not per core.
-- Four steps take the kernel from **472 to 1,532 GFLOP/s** (78% of peak):
+- Three steps after a one-tile baseline take the kernel from **472 to
+  1,532 GFLOP/s** (78% of peak; best size of each kernel):
   use all four accumulator tiles (3.1×), block for the caches GotoBLAS-style
   with an 8 MiB A block resident in L2 (up to 3.4× at large N), and pack
   the B operand (up to 3.1× at power-of-two sizes).
@@ -139,8 +140,8 @@ on constant inputs, with no memory traffic
 
 This is the timeline above, measured: an FMOPA's result is ready for the
 next FMOPA on the same tile after **4 cycles**, while the unit accepts
-**one new FMOPA per cycle**: 512 FP32 flops per cycle, 1.96 TFLOP/s at this
-clock. One tile runs at a quarter of peak, two at half, four fill the
+**one new FMOPA per cycle**: measured, 1.03 cycles per FMOPA with four
+tiles, 512 FP32 flops each: 1.96 TFLOP/s. One tile runs at a quarter of peak, two at half, four fill the
 pipeline. FP64 has the same issue rate with a quarter of the work per
 instruction.
 
@@ -152,8 +153,11 @@ Running the same loop on several threads shows how the unit is shared:
 
 Two threads that land on the same cluster get no more than one: they share
 its SME unit. Spread across both performance clusters, the total
-approaches twice the single-thread figure. One thread per cluster is all
-SME can use.
+approaches twice the single-thread figure (3,912 with 6 threads, 4,007
+with 8). With 12 threads it reaches 4,203, 7% above two units' worth;
+macOS chooses the cores, and where the extra comes from (the efficiency
+cluster has an SME unit too) was not measured. Within one cluster, a
+second thread adds nothing.
 
 ## Outer products instead of dot products
 
@@ -174,8 +178,8 @@ With `a` taken from column `k` of A and `b` from row `k` of B, `K` such
 instructions produce a 16 × 16 block of `C = A·B`. Two vectors loaded yield
 256 multiply-adds, against 16 for an FMA on the same two vectors: the
 outer product reuses every element 16 times inside the instruction. That
-is why one core's SME unit does 64 times the work per instruction of its
-NEON pipes.
+is why the SME unit does 64 times the work per instruction of a NEON
+FMA.
 
 ZA holds 64 × 64 bytes: four 16 × 16 FP32 tiles, or eight 8 × 8 FP64
 tiles. The streaming mode imposes rules a kernel has to design around:
@@ -247,14 +251,17 @@ Four independent chains fill the FMOPA pipeline, and each loaded vector
 now feeds two FMOPAs instead of one, halving the bytes per flop. SME2's
 multi-vector load `svld1_x2` fetches two consecutive vectors in one
 instruction. (A four-vector `svld1_x4`, loading two k steps at once,
-measured within noise of it: the loop is limited by FMOPA issue and operand
+measured within noise of it during development, a run not archived with
+the data: the loop is limited by FMOPA issue and operand
 delivery, not by load instructions.) Code: [`gemm_sme_tiles` and its
 `macro_kernel`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/sme.hpp).
 
 For FP64 the micro-tile is 2 × 4 tiles (16 × 32 elements, all eight FP64
 tiles): eight FMOPAs per 384 bytes loaded instead of four per 256 bytes,
 2.7 flops per byte instead of 2. That layout measured 9% faster than 2 × 2
-at N = 4096 (with the earlier block sizes described in step 3).
+at N = 4096 (with the earlier block sizes described in step 3; a
+development measurement, recorded in the `sme.hpp` comments rather than in
+the experiment data).
 
 | N | 256 | 512 | 1024 | 2048 | 4000 | 4096 |
 |---|--:|--:|--:|--:|--:|--:|
@@ -324,8 +331,9 @@ This is GotoBLAS's classic arrangement, A resident and B streamed, one
 cache level further out. Classic GotoBLAS keeps the A block in L2 and
 reuses each B micro-panel from L1. Here B strips are reused from L2,
 because the SME unit is a cluster resource and its operands come from L2:
-[part 3](sme2-cache-associativity.md) shows SME loads conflicting in L2
-sets, at a capacity hundreds of times what one L1 set holds.
+the evidence in [part 3](sme2-cache-associativity.md) points to L2 set
+conflicts: the kernel collapses at about 600 rows per B strip, some 75
+times the 8 rows one L1 set holds.
 
 The packing code that writes the blocks runs on the core, and its TLBs
 cover them: a B strip (16 pages) fits the 128-entry first-level TLB, and
@@ -363,20 +371,20 @@ shows where the optimum is:
 | 1024 | 1,370 | **1,517** | 1,351 |
 | 2048 | 1,404 | 1,262 | 1,113 |
 
-Throughput rises with the A block up to 8 MiB (Mc × Kc × 4 bytes:
-1024 × 2048 or 512 × 4096) and falls once it reaches 16 MiB, the size of
-L2, and beyond. Of the two 8 MiB shapes, 1024 × 2048 wins: with
-Kc = 4096 each B strip is twice as long (512 KiB) and serves half as many
-A strips (16). FP64 elements are twice as large, so FP64 uses Mc = 512
+The best shape of each A-block size (Mc × Kc × 4 bytes) improves up to
+8 MiB and falls from 16 MiB, the size of L2. Of the three 8 MiB shapes,
+1024 × 2048 wins (1,517 GFLOP/s, against 1,451 for 512 × 4096 and 1,404
+for 2048 × 1024): with Kc = 4096 each B strip is twice as long (512 KiB)
+and serves half as many A strips (16). FP64 elements are twice as large, so FP64 uses Mc = 512
 for the same 8 MiB A block. Against the first sizing, measured old and new
 alternately, the complete kernel gains 4% at N = 2048 and 10–12% at
 N = 4000 and 4096 in FP32 and up to 7% in FP64. At N = 256, where one
-block covers the whole problem, it gains 10%; at N = 512–1024 it is
-unchanged within noise.
+block covers the whole problem, it gains 11%, at N = 512 3%, and at
+N = 1024 it is unchanged within noise.
 
 The optimum also depends on the matrix size, so for each size there is a
 best Mc, Kc and Nc, and a kernel can choose them per call from M, N and K.
-The same sweep at each N, best sizes against the fixed choice:
+The same sweep at each N, FP32, best sizes against the fixed choice:
 
 | N | Best for this N (Mc, Kc, Nc) | GFLOP/s | Fixed (1024, 2048, 4096) | Gain |
 |---|---|--:|--:|--:|
@@ -385,7 +393,7 @@ The same sweep at each N, best sizes against the fixed choice:
 | 2048 | 512, 4096, 2048 | 1,496 | 1,488 | +0.5% |
 | 4096 | 1024, 2048, 4096 | 1,517 | 1,517 | — |
 
-Below N = 4096 the winner has Mc = 512, a smaller A block than the
+Below N = 4096 the FP32 winner has Mc = 512, a smaller A block than the
 fixed choice. Tuning block sizes empirically is an established practice:
 ATLAS, for example, searches them for each machine when it is installed.
 For square matrices on this machine the per-size optimum buys at most
@@ -397,7 +405,9 @@ may have optima further from the fixed set.
 ## Step 4: packing A and B — 1,532 GFLOP/s, no cliff
 
 Both operands are copied into **strips**: narrow blocks laid out so that
-each step of the micro-kernel reads one contiguous run of memory. This
+each step of the micro-kernel reads one contiguous run of memory. A is
+packed in every kernel from step 1 on, because SME cannot load it any other
+way; what step 4 adds is packing B. This
 section summarises why each operand needs them; part 3 of this series,
 [*A power-of-two stride cuts SME2 GEMM throughput by two thirds*](sme2-cache-associativity.md),
 takes the B strips apart in detail: how their rows map to cache sets, where
@@ -429,7 +439,8 @@ ever sees packed data, and the mode switch happens once per 1024 × 2048 ×
 B's 32-element row segments are already contiguous, so the kernel can read
 B in place. But consecutive rows of a strip are then `N × 4` bytes apart:
 16 KiB at N = 4096, 8 KiB at N = 2048. At such a power-of-two stride the
-2,048 rows of a strip map to a handful of L2 cache sets and evict each
+2,048 rows of a strip appear to compete for a handful of L2 cache sets
+(part 3) and evict each
 other before the next A strip reuses them; throughput falls to a third at
 N = 4096 (489 GFLOP/s) and to under half at N = 2048 (633). Packing copies
 each strip into 2,048 contiguous 128-byte rows, which fill all sets evenly
@@ -444,15 +455,16 @@ is the blocked driver with both operands packed).
 
 ### What packing costs
 
-Timing each phase of the full multiplication at N = 4096 (median of 15):
+Timing each phase of the full multiplication at N = 4096, median of 15
+([`sme_b_layout`](https://github.com/vdeviatkov/hpc-math-core/blob/main/benchmarks/experiments/sme_b_layout.cpp), data in
+[experiments/sme-b-stride](https://github.com/vdeviatkov/hpc-math-core/tree/main/docs/experiments/sme-b-stride)):
 packing A takes 3.8 ms and packing B 4.9 ms of a 91 ms call, about 10%
 together, and the compute takes 82 ms whatever B's original stride was:
 1,670 GFLOP/s, 85% of peak. Packing B is itself slowed by the 16 KiB
 stride it reads from; with rows padded to 16,512 B it takes 2.5 ms and
 the two copies 7% of the call. At small N the copy shows: below N = 1024
 the unpacked kernels are faster (989 vs 835 GFLOP/s at N = 256), because
-the whole problem fits in L2 anyway. Packing is an investment that pays off
-once data stops fitting.
+the whole problem fits in L2 anyway.
 
 ## Engineering details that decide the result
 
@@ -460,7 +472,7 @@ once data stops fitting.
   `__arm_inout("za")` or `__arm_preserves("za")` is "private-ZA": Clang will
   not inline it into the kernel and wraps every call in a lazy save of the
   ZA state. Inside the k loop that took the kernel from about 1,290 to
-  270 GFLOP/s.
+  270 GFLOP/s (measured during development, not archived).
 - **Compile for the CPU, not the architecture.** `-march=armv9-a+sme2`
   compiles, but the resulting binary dies with `SIGILL`: Clang sizes the ZA
   save area with a non-streaming SVE instruction, which Apple's cores do not
@@ -487,7 +499,8 @@ run with `ctest`):
   zero and a relative one for larger values. Inputs are uniform in
   [−1, 1] with fixed seeds. C is filled with junk (123) before each call,
   so a kernel that accumulates into C instead of overwriting it fails.
-- **Shapes.** 32 (M, K, N) shapes, each run in FP32 and in FP64:
+- **Shapes.** 32 (M, K, N) shapes, each run in FP32 and in FP64 (KleidiAI:
+  FP32 only):
   - squares of 1–5, 7, 8, 13, 15–17, 31–33, 64, 100, 128 and 256: below,
     at and just past the vector and tile widths;
   - rectangular shapes with partial tiles in every dimension, such as
@@ -558,7 +571,8 @@ step tables above. The libraries are called through thin wrappers:
   cache blocking to the caller; called once on the whole matrix, as here,
   it leads at N ≤ 1024 and falls to 1,019 GFLOP/s at N = 4096.
 - With all cores, Accelerate roughly doubles its one-thread throughput
-  from N = 1024 up (1.9–2.0×), as two SME units predict.
+  from N = 1024 up (FP32 1.9–2.0×; FP64 1.9–2.4×, the 2.4× at N = 1024
+  where its one-thread FP64 dips to 338), as two SME units predict.
 
 ## Takeaways
 

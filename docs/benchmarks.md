@@ -2,7 +2,8 @@
 
 Measured throughput for every kernel family in this repository, on the three
 machines it has been verified on. All numbers come from
-`bench_gemm` / `bench_gemm_cuda` (Google Benchmark, console format) built in
+`bench_gemm` / `bench_gemm_cuda` and, for low precision, `bench_gemm_lowp` /
+`bench_gemm_lowp_cuda` (Google Benchmark) built in
 Release mode as described in [build.md](build.md). CPU kernels are strictly
 single-threaded unless noted (Apple AMX via Accelerate is the exception).
 
@@ -11,7 +12,8 @@ Contents
 - [Deriving GFLOP/s](#deriving-gflops)
 - [Apple M4 Max](#apple-m4-max) — scalar · NEON · SME2 · AMX · KleidiAI
 - [AMD Zen 5](#amd-zen-5--avx2--avx-512-linux--gcc) — scalar · AVX2 · AVX-512
-- [NVIDIA RTX 5080](#nvidia-rtx-5080--cuda) — CUDA Levels 0-7 · cuBLAS reference
+- [NVIDIA RTX 5080](#nvidia-rtx-5080--cuda) — CUDA Levels 0-8 · cuBLAS reference
+- [Low precision](#low-precision-bf16-fp16-int8-fp8) — bf16 · fp16 · INT8 · FP8 on all three machines
 
 Each machine section has the same shape: build metadata, GFLOP/s by kernel
 and size, speedup against the naive baseline, then key observations.
@@ -505,3 +507,55 @@ prove the remaining performance bottleneck. Deeper pipelines and split-K
 are possible experiments, not measured fixes for the remaining gap.
 
 ---
+
+## Low precision: bf16, fp16, INT8, FP8
+
+Analysis in [part 5](articles/lowp-gemm.md); raw data, machines and method
+in [experiments/lowp](experiments/lowp/README.md). Inputs are converted to
+the format before timing; every rate counts a multiply-add as 2 operations,
+INT8 included. Medians of 3.
+
+Apple M4 Max, one P-core / one SME unit, GFLOP/s or GOP/s
+(`bench_gemm_lowp`, 2026-10-16):
+
+| Kernel | Format | N=256 | N=1024 | N=2048 | N=4096 |
+|---|---|--:|--:|--:|--:|
+| `Sme` | f32 | 779 | 1,440 | 1,540 | 1,535 |
+| `SmeWidening` | fp16 | 967 | 1,689 | 1,732 | 1,756 |
+| `SmeWidening` | bf16 | 967 | 1,691 | 1,737 | 1,774 |
+| `SmeWidening` | int8 | 1,579 | 3,148 | 3,525 | 3,413 |
+| `NeonBlocked` | f32 | 96 | 94 | 90 | 74 |
+| `NeonBfmmla` | bf16 | 67 | 67 | 67 | 66 |
+| `NeonFmlal` | fp16 | 111 | 115 | 114 | 114 |
+| `NeonFp16Acc` | fp16 | 208 | 218 | 216 | 214 |
+| `NeonSmmla` | int8 | 456 | 502 | 508 | 497 |
+
+AMD Zen 5, one core, GFLOP/s or GOP/s (`bench_gemm_lowp`, pinned to core 2):
+
+| Kernel | Format | N=256 | N=1024 | N=2048 | N=4096 |
+|---|---|--:|--:|--:|--:|
+| `Avx512Blocked` | f32 | 328 | 278 | 232 | 198 |
+| `Avx512Dpbf16` | bf16 | 566 | 609 | 608 | 593 |
+| `Avx512Vnni` | int8 | 708 | 905 | 922 | 893 |
+
+RTX 5080, TFLOP/s or TOP/s, GPU time of the GEMM alone
+(`bench_gemm_lowp_cuda`, `CMAKE_CUDA_ARCHITECTURES=120a`; fp16_acc16 sums in
+fp16, FP8 uses the block-scaled instruction):
+
+| Format | Implementation | N=1024 | N=2048 | N=4096 | N=8192 | N=16384 |
+|---|---|--:|--:|--:|--:|--:|
+| bf16 | cp.async kernel | 63.2 | 79.6 | 101.2 | 108.7 | 109.1 |
+| bf16 | Level 8 | 72.6 | 87.9 | 106.9 | 117.8 | 120.5 |
+| bf16 | cuBLAS | 74.3 | 96.9 | 113.1 | 120.1 | 120.9 |
+| fp16 | cp.async kernel | 62.9 | 79.1 | 100.7 | 107.7 | 107.7 |
+| fp16 | Level 8 | 72.7 | 87.9 | 106.6 | 117.3 | 120.0 |
+| fp16 | cuBLAS | 74.1 | 96.4 | 112.6 | 118.8 | 119.2 |
+| fp16_acc16 | cp.async kernel | 90.9 | 117.7 | 142.0 | 150.3 | 152.0 |
+| fp16_acc16 | Level 8 | 123.3 | 162.0 | 182.5 | 205.8 | 209.6 |
+| fp16_acc16 | cuBLAS | 116.4 | 155.4 | 196.1 | 202.0 | 203.4 |
+| int8 | cp.async kernel | 153.5 | 230.1 | 278.1 | 298.3 | 304.4 |
+| int8 | Level 8 | 192.1 | 291.5 | 357.9 | 408.2 | 419.0 |
+| int8 | cuBLAS | 161.9 | 287.5 | 305.0 | 419.0 | 427.6 |
+| fp8_e4m3 | cp.async kernel | 150.4 | 229.8 | 271.6 | 291.4 | 298.4 |
+| fp8_e4m3 | Level 8 | 191.7 | 286.1 | 344.0 | 387.3 | 398.0 |
+| fp8_e4m3 | cuBLAS | 170.9 | 269.0 | 359.7 | 399.9 | 408.3 |
