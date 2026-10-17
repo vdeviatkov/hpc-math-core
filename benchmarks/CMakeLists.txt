@@ -30,6 +30,11 @@ if(NOT MSVC AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64|ARM64|x86_64|AMD64
     add_executable(lowp_peak experiments/lowp_peak.cpp)
     target_link_libraries(lowp_peak PRIVATE hpc_math_core)
 endif()
+# Part 3's B-stride experiment on x86 (AVX-512, Linux huge pages).
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+    add_executable(avx512_b_stride experiments/avx512_b_stride.cpp)
+    target_link_libraries(avx512_b_stride PRIVATE hpc_math_core)
+endif()
 if(CMAKE_CUDA_COMPILER)
     add_executable(cuda_peak experiments/cuda_peak.cu)
     set_target_properties(cuda_peak PROPERTIES CUDA_STANDARD 17 CUDA_STANDARD_REQUIRED ON)

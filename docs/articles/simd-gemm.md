@@ -320,10 +320,15 @@ measures it directly, on data small enough for L1:
 | B rows 4 KiB apart | 275.5 (−22%) |
 
 The full kernel drops at the same sizes, by less: −13%, 327.9 → 284.6
-FP32 from N = 512 to 1024, where B's stride is one cost among several. The cure is to copy each strip of B into a
-contiguous buffer before the micro-kernel uses it. Part 2 does exactly
-that for the SME2 kernel, and part 3 measures this kind of conflict in
-detail.
+FP32 from N = 512 to 1024, where B's stride is one cost among several.
+[Part 3](sme2-cache-associativity.md#the-same-experiment-on-amd-zen-5)
+isolates it on this core: with only the stride changed, B rows 4, 8 and
+16 KiB apart cost the kernel 14–17% against the same rows padded by one
+64-byte line. Every multiple of 4 KiB folds a strip's rows onto 12 lines
+of L1 (64 sets × 12 ways); L2 conflicts, which cost the M4's SME2 kernel
+two thirds, appear to be absorbed by Zen 5's L3. The cure is to pad B's
+rows or copy each strip of B into a contiguous buffer before the
+micro-kernel uses it, as part 2 does for the SME2 kernel.
 
 ## What does not help
 
