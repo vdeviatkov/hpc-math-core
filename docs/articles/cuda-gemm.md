@@ -368,6 +368,10 @@ so that each loaded byte feeds many operations, and a layout that keeps
 those loads out of each other's way, in cache sets ([part
 3](sme2-cache-associativity.md)) or in shared-memory banks.
 
+**Next:** [part 5](lowp-gemm.md) multiplies in bf16, fp16, INT8 and FP8,
+on this GPU and on the CPUs, and measures what each format gains in speed
+and costs in accuracy.
+
 ## Reproduce
 
 ```bash

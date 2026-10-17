@@ -16,7 +16,7 @@
  *   - A kStages-deep cp.async pipeline (16-byte chunks, no conversion).
  *     Two stages (40 KiB of shared memory) let two blocks share an SM;
  *     three or four stages (60 / 80 KiB) allow only one and measured
- *     10–15% slower on an RTX 5080 at every size and format.
+ *     8–18% slower on an RTX 5080 at every size and format.
  *   - Grouped block order (kGroupM, below), for L2 reuse.
  *   - Shared-memory rows padded by 16 bytes (80-byte stride): the eight
  *     16-byte rows one ldmatrix phase reads start in banks 0, 20, 8, 28,

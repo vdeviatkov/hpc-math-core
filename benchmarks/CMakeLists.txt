@@ -5,6 +5,10 @@ target_link_libraries(bench_gemm PRIVATE hpc_math_core benchmark::benchmark)
 add_executable(bench_gemm_cuda bench_gemm_cuda.cpp)
 target_link_libraries(bench_gemm_cuda PRIVATE hpc_math_cuda benchmark::benchmark)
 
+# What each low-precision format costs in accuracy (portable C++).
+add_executable(lowp_accuracy experiments/lowp_accuracy.cpp)
+target_link_libraries(lowp_accuracy PRIVATE hpc_math_core)
+
 # Low-precision GEMMs (bf16 / fp16 / INT8 / FP8): the CPU kernels of this
 # target with their FP32 baselines, and the CUDA ones (or the stub).
 add_executable(bench_gemm_lowp bench_gemm_lowp.cpp)

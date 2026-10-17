@@ -16,9 +16,9 @@ measured with.
 
 ## Matrix multiplication, from SIMD to Tensor Cores
 
-A four-part series: the same multiplication on CPU vector units (Apple M4
-and AMD Zen 5), on Apple's SME2 matrix unit, and on an NVIDIA GPU, each
-step measured.
+A five-part series: the same multiplication on CPU vector units (Apple M4
+and AMD Zen 5), on Apple's SME2 matrix unit, and on an NVIDIA GPU, then in
+16- and 8-bit formats on all of them, each step measured.
 
 {% assign series = site.pages | where_exp: "p", "p.series_part" | sort: "series_part" %}
 <ul class="posts">

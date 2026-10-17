@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="606" viewBox="0 0 1000 606" role="img">
+<title>Peak multiply-add rate by input format</title>
+<rect width="1000" height="606" fill="white"/>
+<g font-family="Arial, sans-serif" fill="#172635">
+<text x="500" y="34" font-size="23" text-anchor="middle">Peak multiply-add rate by input format</text>
+<text x="500" y="61" font-size="14" text-anchor="middle">Measured instruction throughput ÷ FP32 peak of the same unit (RTX 5080: FP32 FMA cores)</text>
+<path d="M 330.0 92 V 516" stroke="#dce2e8"/>
+<text x="330.0" y="536" font-size="12" text-anchor="middle">0</text>
+<path d="M 396.6666666666667 92 V 516" stroke="#dce2e8"/>
+<text x="396.6666666666667" y="536" font-size="12" text-anchor="middle">1</text>
+<path d="M 463.33333333333337 92 V 516" stroke="#dce2e8"/>
+<text x="463.33333333333337" y="536" font-size="12" text-anchor="middle">2</text>
+<path d="M 530.0 92 V 516" stroke="#dce2e8"/>
+<text x="530.0" y="536" font-size="12" text-anchor="middle">3</text>
+<path d="M 596.6666666666667 92 V 516" stroke="#dce2e8"/>
+<text x="596.6666666666667" y="536" font-size="12" text-anchor="middle">4</text>
+<path d="M 663.3333333333334 92 V 516" stroke="#dce2e8"/>
+<text x="663.3333333333334" y="536" font-size="12" text-anchor="middle">5</text>
+<path d="M 730.0 92 V 516" stroke="#dce2e8"/>
+<text x="730.0" y="536" font-size="12" text-anchor="middle">6</text>
+<path d="M 796.6666666666667 92 V 516" stroke="#dce2e8"/>
+<text x="796.6666666666667" y="536" font-size="12" text-anchor="middle">7</text>
+<path d="M 863.3333333333334 92 V 516" stroke="#dce2e8"/>
+<text x="863.3333333333334" y="536" font-size="12" text-anchor="middle">8</text>
+<path d="M 930.0 92 V 516" stroke="#dce2e8"/>
+<text x="930.0" y="536" font-size="12" text-anchor="middle">9</text>
+<text x="318" y="120" font-size="14" text-anchor="end">M4 NEON · fp16 → fp32 (FMLAL)</text>
+<rect x="330" y="106" width="70.0" height="20" fill="#8c96a3"/>
+<text x="408.0" y="121" font-size="13" text-anchor="start">1.05×</text>
+<text x="318" y="152" font-size="14" text-anchor="end">M4 NEON · bf16 (BFDOT, BFMMLA)</text>
+<rect x="330" y="138" width="35.3" height="20" fill="#8c96a3"/>
+<text x="373.3333333333333" y="153" font-size="13" text-anchor="start">0.53×</text>
+<text x="318" y="184" font-size="14" text-anchor="end">M4 NEON · fp16 → fp16 (FMLA .8h)</text>
+<rect x="330" y="170" width="132.7" height="20" fill="#8c96a3"/>
+<text x="470.6666666666667" y="185" font-size="13" text-anchor="start">1.99×</text>
+<text x="318" y="216" font-size="14" text-anchor="end">M4 NEON · int8 (SDOT, SMMLA)</text>
+<rect x="330" y="202" width="254.0" height="20" fill="#8c96a3"/>
+<text x="592.0" y="217" font-size="13" text-anchor="start">3.81×</text>
+<text x="318" y="248" font-size="14" text-anchor="end">M4 SME · fp16, bf16 (widening FMOPA)</text>
+<rect x="330" y="234" width="66.7" height="20" fill="#2f9e6e"/>
+<text x="404.6666666666667" y="249" font-size="13" text-anchor="start">1.00×</text>
+<text x="318" y="280" font-size="14" text-anchor="end">M4 SME · int8 (SMOPA)</text>
+<rect x="330" y="266" width="133.3" height="20" fill="#2f9e6e"/>
+<text x="471.33333333333337" y="281" font-size="13" text-anchor="start">2.00×</text>
+<text x="318" y="312" font-size="14" text-anchor="end">Zen 5 AVX-512 · bf16 (VDPBF16PS)</text>
+<rect x="330" y="298" width="132.7" height="20" fill="#245ea8"/>
+<text x="470.6666666666667" y="313" font-size="13" text-anchor="start">1.99×</text>
+<text x="318" y="344" font-size="14" text-anchor="end">Zen 5 AVX-512 · int8 (VPDPBUSD)</text>
+<rect x="330" y="330" width="267.3" height="20" fill="#245ea8"/>
+<text x="605.3333333333333" y="345" font-size="13" text-anchor="start">4.01×</text>
+<text x="318" y="376" font-size="14" text-anchor="end">RTX 5080 · fp16, bf16 → fp32</text>
+<rect x="330" y="362" width="138.7" height="20" fill="#be4d14"/>
+<text x="476.6666666666667" y="377" font-size="13" text-anchor="start">2.08×</text>
+<text x="318" y="408" font-size="14" text-anchor="end">RTX 5080 · fp16 → fp16</text>
+<rect x="330" y="394" width="277.3" height="20" fill="#be4d14"/>
+<text x="615.3333333333334" y="409" font-size="13" text-anchor="start">4.16×</text>
+<text x="318" y="440" font-size="14" text-anchor="end">RTX 5080 · FP8 → fp32, sm_89 form</text>
+<rect x="330" y="426" width="277.3" height="20" fill="#be4d14"/>
+<text x="615.3333333333334" y="441" font-size="13" text-anchor="start">4.16×</text>
+<text x="318" y="472" font-size="14" text-anchor="end">RTX 5080 · FP8 → fp32, block-scaled</text>
+<rect x="330" y="458" width="554.7" height="20" fill="#be4d14"/>
+<text x="892.6666666666667" y="473" font-size="13" text-anchor="start">8.32×</text>
+<text x="318" y="504" font-size="14" text-anchor="end">RTX 5080 · int8 → int32</text>
+<rect x="330" y="490" width="555.3" height="20" fill="#be4d14"/>
+<text x="893.3333333333334" y="505" font-size="13" text-anchor="start">8.33×</text>
+<path d="M 396.6666666666667 92 V 516" stroke="#7a8794" stroke-dasharray="6 5"/>
+<text x="390.6666666666667" y="86" font-size="12" text-anchor="end">FP32 = 1×</text>
+<text x="630.0" y="561" font-size="14" text-anchor="middle">× the FP32 peak</text>
+</g></svg>

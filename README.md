@@ -93,6 +93,7 @@ docs/                         Benchmark results, build guide, cache background, 
 | [Matrix multiplication on Apple M4's SME2 unit](docs/articles/sme2-gemm.md) | Article 2: the SME2 GEMM step by step, from outer products to 1.5 TFLOP/s, with the machine measured down to its TLBs |
 | [A power-of-two stride cuts SME2 GEMM throughput by two thirds on Apple M4](docs/articles/sme2-cache-associativity.md) | Article 3: L2 set conflicts at a 16 KiB row stride, located and measured, and the two fixes |
 | [Matrix multiplication on an RTX 5080](docs/articles/cuda-gemm.md) | Article 4: eight CUDA kernels from 3.7 to 100 TFLOP/s, with the GPU's peaks, occupancy and bank conflicts measured |
+| [Matrix multiplication in bf16, fp16, INT8 and FP8](docs/articles/lowp-gemm.md) | Article 5: the same GEMM in five low-precision formats on M4 NEON and SME2, Zen 5 AVX-512 and the RTX 5080: peaks per format, the kernel changes, and the accuracy cost |
 | [src/gemm/README.md](src/gemm/README.md) | Map of the kernels: files, techniques, registers and intrinsics per family. Each kernel's design is in its own header. |
 | [docs/review-20261016.md](docs/review-20261016.md) | Repository review: fixes, validation, performance evidence and limitations |
 | [docs/kernel-design.md](docs/kernel-design.md) | File-by-file design: algorithms, layouts, edges, precision, benchmark methodology and supporting files |

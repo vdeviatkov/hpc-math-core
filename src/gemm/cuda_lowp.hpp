@@ -17,8 +17,8 @@
  *
  * Both operands are K-major: A is M x K row-major and B is passed
  * transposed, Bt = N x K row-major. An mma.sync fragment of an 8-bit
- * operand holds 4 consecutive k per register, and ldmatrix can only
- * transpose 16-bit elements, so a K-major B is what lets one kernel serve
+ * operand holds 4 consecutive k per register, and ldmatrix's transpose
+ * moves 16-bit elements, so a K-major B is what lets one kernel serve
  * 8- and 16-bit formats alike. It is also the layout ("TN") cuBLASLt
  * requires for FP8.
  *

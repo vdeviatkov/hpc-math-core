@@ -91,11 +91,11 @@ def chart(path, title, panels, subtitle=None, series=None, y_max=Y_MAX, referenc
     (HERE / path).write_text("\n".join(out) + "\n")
 
 
-def bars(path, title, subtitle, rows, unit, x_max, tick, references=(), colors=None):
+def bars(path, title, subtitle, rows, unit, x_max, tick, references=(), colors=None, left=250, ratio=False):
     """Horizontal bars. rows: (label, value, group); colors: {group: color};
     references: (value, label) drawn as dashed vertical lines."""
     colors = colors or {}
-    left, right, top, row_h = 250, 930, 100, 32
+    right, top, row_h = 930, 100, 32
     height = top + row_h * len(rows) + 90
     scale = (right - left) / x_max
     out = [f'<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="{height}" '
@@ -114,7 +114,7 @@ def bars(path, title, subtitle, rows, unit, x_max, tick, references=(), colors=N
         color = colors.get(group, "#245ea8")
         out.append(text(left - 12, y + 20, label, 14, "end"))
         out.append(f'<rect x="{left}" y="{y + 6}" width="{value * scale:.1f}" height="{row_h - 12}" fill="{color}"/>')
-        out.append(text(left + value * scale + 8, y + 21, f"{value:,.1f}" if value < 100 else f"{value:,.0f}", 13, "start"))
+        out.append(text(left + value * scale + 8, y + 21, f"{value:.2f}×" if ratio else f"{value:,.1f}" if value < 100 else f"{value:,.0f}", 13, "start"))
     for value, label in references:
         x = left + value * scale
         out.append(f'<path d="M {x} {top - 8} V {bottom}" stroke="#7a8794" stroke-dasharray="6 5"/>')
@@ -168,6 +168,11 @@ def main():
          "Apple M4 Max · N = 512 · Apple Clang 17 · one thread",
          load_bars("simd-m4.csv"), "GFLOP/s", 140, 20,
          references=[(130, "NEON peak ~130")], colors=simd)
+    bars("lowp-peaks.svg", "Peak multiply-add rate by input format",
+         "Measured instruction throughput ÷ FP32 peak of the same unit (RTX 5080: FP32 FMA cores)",
+         load_bars("lowp-peaks.csv"), "× the FP32 peak", 9, 1,
+         references=[(1, "FP32 = 1×")], left=330, ratio=True,
+         colors={"m4neon": "#8c96a3", "m4sme": "#2f9e6e", "zen5": "#245ea8", "gpu": "#be4d14"})
 
 
 if __name__ == "__main__":
