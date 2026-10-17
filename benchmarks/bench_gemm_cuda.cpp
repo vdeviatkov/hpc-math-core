@@ -13,8 +13,8 @@
  * costs such as creating the cuBLAS handle are not counted.
  *
  * CudaWmma and CudaMmaLdmatrix take fp32 inputs and convert each tile to
- * fp16 inside the kernel. CudaWmmaPipelined and CudaCublasFp16 take fp16
- * inputs, converted once before timing.
+ * fp16 inside the kernel. CudaWmmaPipelined, CudaTma (Level 8) and
+ * CudaCublasFp16 take fp16 inputs, converted once before timing.
  *
  * The "precision" counter is the bits of the multiply inputs: 16 for the
  * Tensor Core kernels (fp16 in, fp32 accumulate), 32 for TF32 cuBLAS (its
@@ -55,7 +55,7 @@ const char* type_name() {
 }
 
 /// Hardware a benchmark needs beyond a CUDA device.
-enum class Needs { kDevice, kTensorCores, kAmpere };
+enum class Needs { kDevice, kTensorCores, kAmpere, kTma };
 
 /// Report SKIPPED and return true when the hardware is missing.
 bool skip(benchmark::State& state, Needs needs) {
@@ -69,6 +69,10 @@ bool skip(benchmark::State& state, Needs needs) {
     }
     if (needs == Needs::kAmpere && !cuda_has_ampere()) {
         state.SkipWithMessage("needs sm_80+");
+        return true;
+    }
+    if (needs == Needs::kTma && !cuda_has_tma()) {
+        state.SkipWithMessage("needs sm_90+ (TMA)");
         return true;
     }
     return false;
@@ -169,6 +173,11 @@ void register_all() {
     add<float, true>("CudaWmmaPipelined", [](void* a, void* b, float* c, int n) {
         gemm_cuda_wmma_pipelined_device(a, b, c, n, n, n); },
         Needs::kTensorCores, 16, kSizesF32);
+    // Level 8 reads B as N x K; the inputs are random, so the same buffer
+    // serves as either layout.
+    add<float, true>("CudaTma", [](void* a, void* b, float* c, int n) {
+        gemm_cuda_tma_device(a, b, c, n, n, n); },
+        Needs::kTma, 16, kSizesF32);
 
     HPC_ADD_FMA("CudaCublas",     gemm_cuda_cublas_device);
     add<float>("CudaCublasTf32", [](void* a, void* b, float* c, int n) {

@@ -98,6 +98,13 @@ const std::vector<Case<float>> kF32 = {
      square({64, 128, 256}) + kEdges},
     {"WmmaPipelined", gemm_cuda_wmma_pipelined, Needs::kTensorCores, true,
      square({128, 256, 512, 192}) + Shape{384, 160, 256}},
+    // Level 8 pads to tiles itself (B is transposed on the way), so it takes
+    // every shape; without TMA it runs Level 7. K = 544 is 17 k-tiles, at least
+    // twice around the 4- or 6-stage ring; 2688 x 1024 is 84 blocks of
+    // 128 x 256, Level 8's wide tile on an 84-SM GPU.
+    {"Tma", gemm_cuda_tma, Needs::kTensorCores, true,
+     square({128, 256, 512, 192, 100}) + Shape{384, 160, 256} + Shape{256, 544, 128} +
+         Shape{2688, 96, 1024} + kEdges},
     {"Cublas", gemm_cuda_cublas<float>, Needs::kDevice, false, square({64, 256, 512})},
     {"CublasTf32", gemm_cuda_cublas_tf32, Needs::kAmpere, true, square({64, 256, 512})},
     {"CublasFp16", gemm_cuda_cublas_fp16, Needs::kTensorCores, true, square({64, 256, 512})},

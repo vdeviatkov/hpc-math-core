@@ -10,6 +10,7 @@ NVIDIA GeForce RTX 5080 (sm_120, 84 SMs), driver 615.71.09, VBIOS
 | [`peak.csv`](peak.csv) | [`cuda_peak`](../../../benchmarks/experiments/cuda_peak.cu) | FP32 / FP64 FMA, FP16 Tensor Core (`mma.sync.m16n8k16`, fp32 accumulate) and DRAM copy rates |
 | [`clocks.csv`](clocks.csv) | `cuda_peak hold <test> 8` + `nvidia-smi` | SM and memory clock, power and temperature under each load |
 | [`bench_gemm_cuda.txt`](bench_gemm_cuda.txt) | [`bench_gemm_cuda`](../../../benchmarks/bench_gemm_cuda.cpp) | every level and cuBLAS, GPU time of the GEMM alone, N = 256 … 16384 |
+| [`bench_gemm_cuda_level8.txt`](bench_gemm_cuda_level8.txt) | same, 2026-10-16, build `CMAKE_CUDA_ARCHITECTURES=120a` | Level 8 (`CudaTma`) with Level 7, cuBLAS SGEMM and cuBLAS FP16 rerun in the same session (median of 3; Level 7 and cuBLAS within 0.5% of the first run) |
 | [`profile.csv`](profile.csv) | Nsight Compute 2026 (`ncu`) | per-level counters at N = 4096, f32 |
 
 ## Peaks
@@ -70,6 +71,13 @@ Summary at N = 4096 (full data in `profile.csv`):
 | 5 WMMA | 9.55 | 40 | 97.5% | 3.2% | 11.9% | 87.5% | 1,261 |
 | 6 mma.sync | 7.99 | 40 | 97.3% | 0.9% | 14.2% | 80.0% | 1,263 |
 | 7 pipelined | 1.41 | 118 | 32.2% | 3.2% | 85.8% | 1.1% | 116 |
+| 8 TMA, warp-specialised | 1.28 | 186 | 10.3% | 0.7% | 92.7% | 0.02% | 143 |
+
+Level 8 at N = 4096 runs its 128 × 128 tile (4 consumer warps + 1
+producer, 99,424 bytes of dynamic shared memory); at N = 8192 it runs the
+128 × 256 tile, with the Tensor pipe 99.1% busy. Its warp instruction count
+at N = 4096 is 75.6 M against Level 7's 221.7 M, for the same 33.6 M
+`mma`.
 
 The minimum DRAM traffic at N = 4096 is 201 MB in fp32 (A and B read, C
 written) and 134 MB with fp16 inputs.

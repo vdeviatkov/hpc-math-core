@@ -1,0 +1,13 @@
+implementation,format,kernel,registers_per_thread,warp_instructions,tensor_instructions,tensor_pipe_active_pct,gpu_time_ns,dram_bytes
+Mma,bf16,"void <unnamed>::kernel_lowp<<unnamed>::Bf16, float>",120,1099202560,268435456,89.82,10072864,1474899968
+Mma,fp16_acc16,"void <unnamed>::kernel_lowp<<unnamed>::Fp16Acc16, __half>",72,956661760,268435456,65.97,7181216,1385581056
+Mma,int8,"void <unnamed>::kernel_lowp<<unnamed>::Int8, int>",120,545587200,134217728,65.05,3644384,852733440
+Mma,fp8_e4m3,"void <unnamed>::kernel_lowp<<unnamed>::Fp8, float>",120,545554432,134217728,64.99,3717408,852626176
+Tma,bf16,"void <unnamed>::kernel_tma<<unnamed>::Bf16, float, 256>",168,655537779,268435456,99.05,9233120,1823808256
+Tma,fp16_acc16,"void <unnamed>::kernel_tma<<unnamed>::Fp16Acc16, __half, 256>",122,536019540,268435456,97.15,5014720,1569537024
+Tma,int8,"void <unnamed>::kernel_tma<<unnamed>::Int8, int, 256>",168,315520141,134217728,93.78,2569184,851993088
+Tma,fp8_e4m3,"void <unnamed>::kernel_tma<<unnamed>::Fp8, float, 256>",168,319051794,134217728,93.38,2667680,853565184
+Cublas,bf16,void Kernel2<cutlass_80_tensorop_s16816gemm_bf16_64x256_32x4_tn_align8>,230,600064000,268435456,98.48,9059648,2626336768
+Cublas,fp16_acc16,void Kernel2<cutlass_80_tensorop_h16816gemm_128x128_64x3_tn_align8>,166,525189120,268435456,95.50,5077152,1337572352
+Cublas,int8,nvjet_sm120_bii_mma_256x128x128_2_64x64x128_tmaAB_alignCD4_bz_TNNN,255,232259156,134217728,95.50,2505856,1115160320
+Cublas,fp8_e4m3,nvjet_sm120_qqsss_mma_256x128x128_2_64x64x128_tmaAB_alignCD4_bz_TNNN,255,232441272,134217728,95.35,2596032,1091857664

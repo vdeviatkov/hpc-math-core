@@ -411,7 +411,8 @@ float (f32)
 | `CudaVectorized` | 793 | 15,970 | 26,854 | **27,536** | 27,403 |
 | `CudaWmma` | 1,542 | 10,740 | 14,627 | 14,147 | 14,572 |
 | `CudaMmaLdmatrix` | 1,739 | 15,018 | 16,956 | 17,174 | 16,983 |
-| `CudaWmmaPipelined` | 2,865 | 58,935 | 96,688 | **100,727** | 99,790 |
+| `CudaWmmaPipelined` | 2,865 | 58,935 | 96,688 | 100,727 | 99,790 |
+| `CudaTma` ⁸ | 3,008 | 72,602 | 106,551 | **117,342** | **119,937** |
 | `CudaCublas` (ref) | 3,599 | 26,498 | 37,906 | 38,860 | 38,962 |
 | `CudaCublasTf32` (ref) | 4,399 | 41,574 | 52,864 | 59,174 | 60,858 |
 | `CudaCublasFp16` (ref) | 6,117 | 74,165 | 112,981 | 119,088 | 119,985 |
@@ -427,6 +428,10 @@ double (f64)
 | `CudaVectorized` | 45 | 723 | 885 | 940 |
 | `CudaCublas` (ref) | 601 | 649 | 848 | 848 |
 
+- ⁸ Level 8, measured in a later session (2026-10-16, build
+  `CMAKE_CUDA_ARCHITECTURES=120a`) in which `CudaWmmaPipelined` and
+  `CudaCublasFp16` reproduced within 0.5%:
+  [`bench_gemm_cuda_level8.txt`](experiments/cuda-machine/bench_gemm_cuda_level8.txt).
 - f64: every kernel, cuBLAS included, converges on 0.85–0.96 TFLOP/s. That
   is the FP64 rate of consumer Blackwell, a small fraction of its FP32 rate,
   so the f64 ladder shows the FP64 units, not the kernels.
@@ -436,7 +441,7 @@ double (f64)
 
 ### Level by level, f32, N=4096
 
-Levels 0–4 run on the FMA cores, 5–7 on the Tensor Cores.
+Levels 0–4 run on the FMA cores, 5–8 on the Tensor Cores.
 
 | Level | Kernel | GFLOP/s | ×Naive | Note |
 |---|---|--:|--:|---|
@@ -448,6 +453,7 @@ Levels 0–4 run on the FMA cores, 5–7 on the Tensor Cores.
 | 5 | `CudaWmma` | 14,627 | 4.0× | Tensor Cores, but below Levels 2–4: 64×64 tiles, one fragment per warp and a single buffer leave too little work per synchronisation. |
 | 6 | `CudaMmaLdmatrix` | 16,956 | 4.6× | 16% above Level 5 with the same tile sizes and single buffering: dropping to PTX alone does not remove the bottleneck. |
 | 7 | `CudaWmmaPipelined` | 96,688 | 26.3× | 128×128 tiles, 8 fragments per warp, `cp.async` double buffering: 6.6× Level 5. |
+| 8 | `CudaTma` | 106,551 | 29.0× | TMA copies into swizzled shared memory, a producer warp and `mbarrier` pipeline, 64×64 warp tiles: a third of Level 7's instructions; 99–100% of cuBLAS FP16 from N=8192. |
 
 ### Against cuBLAS
 
@@ -458,14 +464,15 @@ TFLOP/s, ascending:
 | `gemm_cuda_vectorized` | FP32 on the FMA cores, hand-written | 26.9 | 27.5 | 27.4 |
 | `cublasSgemm` | FP32 on the FMA cores | 37.9 | 38.9 | 39.0 |
 | `cublasGemmEx` TF32 | TF32 Tensor Cores, 10-bit mantissa | 52.9 | 59.2 | 60.9 |
-| **`gemm_cuda_wmma_pipelined`** | **FP16 Tensor Cores, hand-written** | **96.7** | **100.7** | **99.8** |
+| `gemm_cuda_wmma_pipelined` | FP16 Tensor Cores, hand-written | 96.7 | 100.7 | 99.8 |
+| **`gemm_cuda_tma`** | **FP16 Tensor Cores, hand-written (Level 8)** | **106.6** | **117.3** | **119.9** |
 | `cublasGemmEx` FP16 | FP16 Tensor Cores, fp32 accumulate | 113.0 | 119.1 | **120.0** |
 
 - 100+ TFLOP/s on this GPU needs dense FP16 Tensor Cores: plain FP32, the
   ceiling for every non-Tensor-Core kernel, tops out at ~39 TFLOP/s, and
   TF32 at ~61.
-- The hand-written kernels reach 71% of cuBLAS on the FMA cores and 83% on
-  the Tensor Cores (N=16384).
+- The hand-written kernels reach 71% of cuBLAS on the FMA cores and, with
+  Level 8, 100% on the Tensor Cores (N=16384; Level 7: 83%).
 
 ### Level 7: shared-memory bank conflicts
 

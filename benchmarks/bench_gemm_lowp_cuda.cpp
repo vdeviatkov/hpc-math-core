@@ -5,7 +5,8 @@
  *
  *   ./build/benchmarks/bench_gemm_lowp_cuda --benchmark_filter=<regex>
  *
- * <Mma|Cublas>/<format>/N=<N> on square matrices. As in bench_gemm_cuda,
+ * <Mma|Tma|Cublas>/<format>/N=<N> on square matrices: the cp.async kernel,
+ * Level 8 (TMA) and cuBLAS. As in bench_gemm_cuda,
  * the inputs are generated in the format, copied to the GPU before timing,
  * and each iteration is one device-entry-point call timed with CUDA events
  * (GPU time, reported as manual time). B is stored transposed (N x K), the
@@ -131,12 +132,17 @@ std::vector<unsigned char> random_bytes(CudaLowp f, std::size_t n, unsigned seed
     return out;
 }
 
-void add(const char* format_name, CudaLowp f, bool cublas) {
+void add(const char* format_name, CudaLowp f, CudaLowpImpl impl) {
     for (const std::size_t n : {1024, 2048, 4096, 8192, 16384}) {
-        const std::string name = std::string(cublas ? "Cublas/" : "Mma/") + format_name + "/N=" + std::to_string(n);
+        const char* prefix = impl == CudaLowpImpl::mma ? "Mma/" : impl == CudaLowpImpl::tma ? "Tma/" : "Cublas/";
+        const std::string name = std::string(prefix) + format_name + "/N=" + std::to_string(n);
         benchmark::RegisterBenchmark(name, [=](benchmark::State& state) {
             if (cuda_device_count() == 0 || !cuda_lowp_supported(f)) {
                 state.SkipWithMessage("needs a CUDA device with this format (sm_80+, FP8 sm_89+)");
+                return;
+            }
+            if (impl == CudaLowpImpl::tma && !cuda_has_tma()) {
+                state.SkipWithMessage("Level 8 needs sm_90+ (TMA)");
                 return;
             }
             const auto a = random_bytes(f, n, 1), bt = random_bytes(f, n, 2);
@@ -146,16 +152,19 @@ void add(const char* format_name, CudaLowp f, bool cublas) {
             gemm_cuda_memcpy_h2d(Bt.get(), bt.data(), bt.size());
             const int N = static_cast<int>(n);
             auto call   = [&] {
-                if (cublas)
-                    gemm_cuda_cublas_lowp_device(f, A.get(), Bt.get(), C.get(), N, N, N);
-                else
-                    gemm_cuda_lowp_device(f, A.get(), Bt.get(), C.get(), N, N, N);
+                switch (impl) {
+                    case CudaLowpImpl::mma: gemm_cuda_lowp_device(f, A.get(), Bt.get(), C.get(), N, N, N); break;
+                    case CudaLowpImpl::tma: gemm_cuda_lowp_tma_device(f, A.get(), Bt.get(), C.get(), N, N, N); break;
+                    case CudaLowpImpl::cublas:
+                        gemm_cuda_cublas_lowp_device(f, A.get(), Bt.get(), C.get(), N, N, N);
+                        break;
+                }
             };
             gemm_cuda_time_ms(call);  // warm-up: handle creation, heuristics, smem attribute
             for (auto _ : state)
                 state.SetIterationTime(gemm_cuda_time_ms(call) / 1e3);
             state.counters["err"] = sampled_error(f, a, bt, C.get(), n);
-            if (f == CudaLowp::fp8_e4m3 && !cublas)
+            if (f == CudaLowp::fp8_e4m3 && impl != CudaLowpImpl::cublas)
                 state.SetLabel(cuda_lowp_fp8_block_scaled() ? "block-scaled mma (sm_120a)" : "sm_89 mma");
             state.counters["GFLOP/s"] = benchmark::Counter(2.0 * double(n) * double(n) * double(n),
                                                            benchmark::Counter::kIsIterationInvariantRate,
@@ -167,12 +176,12 @@ void add(const char* format_name, CudaLowp f, bool cublas) {
 }
 
 void register_all() {
-    for (const bool cublas : {false, true}) {
-        add("bf16", CudaLowp::bf16, cublas);
-        add("fp16", CudaLowp::fp16, cublas);
-        add("fp16_acc16", CudaLowp::fp16_acc16, cublas);
-        add("int8", CudaLowp::int8, cublas);
-        add("fp8_e4m3", CudaLowp::fp8_e4m3, cublas);
+    for (const CudaLowpImpl impl : {CudaLowpImpl::mma, CudaLowpImpl::tma, CudaLowpImpl::cublas}) {
+        add("bf16", CudaLowp::bf16, impl);
+        add("fp16", CudaLowp::fp16, impl);
+        add("fp16_acc16", CudaLowp::fp16_acc16, impl);
+        add("int8", CudaLowp::int8, impl);
+        add("fp8_e4m3", CudaLowp::fp8_e4m3, impl);
     }
 }
 

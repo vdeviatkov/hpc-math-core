@@ -1,23 +1,23 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="510" viewBox="0 0 1000 510" role="img">
-<title>Eight CUDA GEMM levels on an RTX 5080</title>
-<rect width="1000" height="510" fill="white"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="542" viewBox="0 0 1000 542" role="img">
+<title>Nine CUDA GEMM levels on an RTX 5080</title>
+<rect width="1000" height="542" fill="white"/>
 <g font-family="Arial, sans-serif" fill="#172635">
-<text x="500" y="34" font-size="23" text-anchor="middle">Eight CUDA GEMM levels on an RTX 5080</text>
-<text x="500" y="61" font-size="14" text-anchor="middle">N = 4096 · GPU time of the GEMM alone · levels 5–7 and cuBLAS FP16 multiply in fp16</text>
-<path d="M 250.0 92 V 420" stroke="#dce2e8"/>
-<text x="250.0" y="440" font-size="12" text-anchor="middle">0</text>
-<path d="M 354.61538461538464 92 V 420" stroke="#dce2e8"/>
-<text x="354.61538461538464" y="440" font-size="12" text-anchor="middle">20</text>
-<path d="M 459.2307692307692 92 V 420" stroke="#dce2e8"/>
-<text x="459.2307692307692" y="440" font-size="12" text-anchor="middle">40</text>
-<path d="M 563.8461538461538 92 V 420" stroke="#dce2e8"/>
-<text x="563.8461538461538" y="440" font-size="12" text-anchor="middle">60</text>
-<path d="M 668.4615384615385 92 V 420" stroke="#dce2e8"/>
-<text x="668.4615384615385" y="440" font-size="12" text-anchor="middle">80</text>
-<path d="M 773.0769230769231 92 V 420" stroke="#dce2e8"/>
-<text x="773.0769230769231" y="440" font-size="12" text-anchor="middle">100</text>
-<path d="M 877.6923076923077 92 V 420" stroke="#dce2e8"/>
-<text x="877.6923076923077" y="440" font-size="12" text-anchor="middle">120</text>
+<text x="500" y="34" font-size="23" text-anchor="middle">Nine CUDA GEMM levels on an RTX 5080</text>
+<text x="500" y="61" font-size="14" text-anchor="middle">N = 4096 · GPU time of the GEMM alone · levels 5–8 and cuBLAS FP16 multiply in fp16</text>
+<path d="M 250.0 92 V 452" stroke="#dce2e8"/>
+<text x="250.0" y="472" font-size="12" text-anchor="middle">0</text>
+<path d="M 354.61538461538464 92 V 452" stroke="#dce2e8"/>
+<text x="354.61538461538464" y="472" font-size="12" text-anchor="middle">20</text>
+<path d="M 459.2307692307692 92 V 452" stroke="#dce2e8"/>
+<text x="459.2307692307692" y="472" font-size="12" text-anchor="middle">40</text>
+<path d="M 563.8461538461538 92 V 452" stroke="#dce2e8"/>
+<text x="563.8461538461538" y="472" font-size="12" text-anchor="middle">60</text>
+<path d="M 668.4615384615385 92 V 452" stroke="#dce2e8"/>
+<text x="668.4615384615385" y="472" font-size="12" text-anchor="middle">80</text>
+<path d="M 773.0769230769231 92 V 452" stroke="#dce2e8"/>
+<text x="773.0769230769231" y="472" font-size="12" text-anchor="middle">100</text>
+<path d="M 877.6923076923077 92 V 452" stroke="#dce2e8"/>
+<text x="877.6923076923077" y="472" font-size="12" text-anchor="middle">120</text>
 <text x="238" y="120" font-size="14" text-anchor="end">0  naive</text>
 <rect x="250" y="106" width="19.2" height="20" fill="#245ea8"/>
 <text x="277.2492307692308" y="121" font-size="13" text-anchor="start">3.7</text>
@@ -42,15 +42,18 @@
 <text x="238" y="344" font-size="14" text-anchor="end">7  pipelined WMMA</text>
 <rect x="250" y="330" width="505.8" height="20" fill="#be4d14"/>
 <text x="763.7630769230769" y="345" font-size="13" text-anchor="start">96.7</text>
-<text x="238" y="376" font-size="14" text-anchor="end">cuBLAS SGEMM</text>
-<rect x="250" y="362" width="198.3" height="20" fill="#8c96a3"/>
-<text x="456.29846153846154" y="377" font-size="13" text-anchor="start">37.9</text>
-<text x="238" y="408" font-size="14" text-anchor="end">cuBLAS FP16</text>
-<rect x="250" y="394" width="591.0" height="20" fill="#8c96a3"/>
-<text x="848.9723076923077" y="409" font-size="13" text-anchor="start">113</text>
-<path d="M 562.2769230769231 92 V 420" stroke="#7a8794" stroke-dasharray="6 5"/>
+<text x="238" y="376" font-size="14" text-anchor="end">8  TMA + warp-specialised</text>
+<rect x="250" y="362" width="557.3" height="20" fill="#be4d14"/>
+<text x="815.3384615384615" y="377" font-size="13" text-anchor="start">107</text>
+<text x="238" y="408" font-size="14" text-anchor="end">cuBLAS SGEMM</text>
+<rect x="250" y="394" width="198.3" height="20" fill="#8c96a3"/>
+<text x="456.29846153846154" y="409" font-size="13" text-anchor="start">37.9</text>
+<text x="238" y="440" font-size="14" text-anchor="end">cuBLAS FP16</text>
+<rect x="250" y="426" width="591.0" height="20" fill="#8c96a3"/>
+<text x="848.9723076923077" y="441" font-size="13" text-anchor="start">113</text>
+<path d="M 562.2769230769231 92 V 452" stroke="#7a8794" stroke-dasharray="6 5"/>
 <text x="556.2769230769231" y="86" font-size="12" text-anchor="end">FP32 peak 59.7</text>
-<path d="M 900.7076923076924 92 V 420" stroke="#7a8794" stroke-dasharray="6 5"/>
+<path d="M 900.7076923076924 92 V 452" stroke="#7a8794" stroke-dasharray="6 5"/>
 <text x="894.7076923076924" y="86" font-size="12" text-anchor="end">Tensor Core peak 124.4</text>
-<text x="590.0" y="465" font-size="14" text-anchor="middle">TFLOP/s</text>
+<text x="590.0" y="497" font-size="14" text-anchor="middle">TFLOP/s</text>
 </g></svg>

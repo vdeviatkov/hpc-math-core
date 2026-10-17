@@ -868,6 +868,7 @@ static int device_capability() noexcept {
 
 bool cuda_has_tensor_cores() noexcept { return device_capability() >= 70; }
 bool cuda_has_ampere() noexcept { return device_capability() >= 80; }
+bool cuda_has_tma() noexcept { return device_capability() >= 90; }
 
 
 // ============================================================================

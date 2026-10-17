@@ -22,12 +22,12 @@ Best kernel per family, single-threaded unless noted. Full output, speedup table
 | Apple AMX via Accelerate (`gemm_amx`) ¹ | Apple M4 Max | 3.3 TFLOP/s | 860 GFLOP/s |
 | Accelerate / KleidiAI, 1 core (reference) | Apple M4 Max | 1.72 / 1.66 TFLOP/s | 456 GFLOP/s / — |
 | CUDA, FMA (`gemm_cuda_vectorized`) ² | NVIDIA RTX 5080 | 27.5 TFLOP/s | 0.94 TFLOP/s |
-| CUDA, Tensor Cores (`gemm_cuda_wmma_pipelined`) ² ³ | NVIDIA RTX 5080 | **101 TFLOP/s** | — |
+| CUDA, Tensor Cores (`gemm_cuda_tma`, Level 8) ² ³ | NVIDIA RTX 5080 | **120 TFLOP/s** | — |
 | cuBLAS SGEMM / dense-FP16 reference ² | NVIDIA RTX 5080 | 39 / 120 TFLOP/s | 0.85 TFLOP/s |
 
 ¹ Vendor BLAS, may use multiple cores — not a single-core comparison.
 ² GPU time of the GEMM alone, data already on the GPU (as the CPU rows measure the multiplication alone); best over N ≤ 16384.
-³ fp16 inputs, fp32 accumulate; 83 % of cuBLAS FP16 on the same GPU.
+³ fp16 inputs, fp32 accumulate; 100 % of cuBLAS FP16 on the same GPU at N = 16384 (Level 7, `gemm_cuda_wmma_pipelined`: 101 TFLOP/s, 83 %).
 
 ---
 
@@ -41,7 +41,8 @@ Each family steps through the same techniques, one kernel per step.
 | SIMD: AVX2, AVX-512, NEON, SVE | `gemm_<isa>_naive` → `_reordered` → `_blocked` | the same three steps with intrinsics, plus a register-tiled micro-kernel; SVE is vector-length agnostic with predicated tails |
 | Software prefetch | `gemm_<isa>_blocked_prefetch` | `__builtin_prefetch` for A, B and C, distance swept over {2, 4, 8, 16} |
 | ARM SME2 | `gemm_sme_1tile` → `gemm_sme_tiles` → `gemm_sme_blocked` → `gemm_sme` | `FMOPA` outer products into one ZA tile → all ZA tiles → GotoBLAS cache blocking → packed B |
-| CUDA | `gemm_cuda_*`, Levels 0–7 | shared-memory tiling → register tiling → `cp.async` double buffering → 128-bit loads + swizzle → Tensor Cores via WMMA → raw `ldmatrix`/`mma.sync` → pipelined WMMA with 128×128 tiles |
+| CUDA | `gemm_cuda_*`, Levels 0–8 | shared-memory tiling → register tiling → `cp.async` double buffering → 128-bit loads + swizzle → Tensor Cores via WMMA → raw `ldmatrix`/`mma.sync` → pipelined WMMA with 128×128 tiles → TMA + warp-specialised `mma.sync` |
+| CUDA, low precision | `gemm_cuda_{bf16,fp16,fp16_acc16,i8,fp8}` | one `mma.sync` kernel template for five formats, as a cp.async kernel and as Level 8 |
 | References | `gemm_amx` (Accelerate), `gemm_kleidiai`, `gemm_cuda_cublas*` | vendor libraries the hand-written kernels are measured against |
 
 A family is compiled only where its ISA exists; elsewhere its kernels are
@@ -92,7 +93,7 @@ docs/                         Benchmark results, build guide, cache background, 
 | [Matrix multiplication with SIMD on Apple M4 and AMD Zen 5](docs/articles/simd-gemm.md) | Article 1: loop order, cache blocking and SIMD register tiles, with FMA latency and throughput measured on both CPUs |
 | [Matrix multiplication on Apple M4's SME2 unit](docs/articles/sme2-gemm.md) | Article 2: the SME2 GEMM step by step, from outer products to 1.5 TFLOP/s, with the machine measured down to its TLBs |
 | [A power-of-two stride cuts SME2 GEMM throughput by two thirds on Apple M4](docs/articles/sme2-cache-associativity.md) | Article 3: L2 set conflicts at a 16 KiB row stride, located and measured, and the two fixes |
-| [Matrix multiplication on an RTX 5080](docs/articles/cuda-gemm.md) | Article 4: eight CUDA kernels from 3.7 to 100 TFLOP/s, with the GPU's peaks, occupancy and bank conflicts measured |
+| [Matrix multiplication on an RTX 5080](docs/articles/cuda-gemm.md) | Article 4: nine CUDA kernels from 3.7 to 120 TFLOP/s, with the GPU's peaks, occupancy and bank conflicts measured |
 | [Matrix multiplication in bf16, fp16, INT8 and FP8](docs/articles/lowp-gemm.md) | Article 5: the same GEMM in five low-precision formats on M4 NEON and SME2, Zen 5 AVX-512 and the RTX 5080: peaks per format, the kernel changes, and the accuracy cost |
 | [src/gemm/README.md](src/gemm/README.md) | Map of the kernels: files, techniques, registers and intrinsics per family. Each kernel's design is in its own header. |
 | [docs/review-20261016.md](docs/review-20261016.md) | Repository review: fixes, validation, performance evidence and limitations |

@@ -389,8 +389,9 @@ if(CMAKE_CUDA_COMPILER)
     add_library(hpc_math_cuda STATIC src/cuda/gemm_kernels.cu src/cuda/gemm_lowp.cu)
     set_target_properties(hpc_math_cuda PROPERTIES CUDA_STANDARD 17 CUDA_STANDARD_REQUIRED ON)
     # cuBLAS backs the reference entry points (gemm_cuda_cublas*); cuBLASLt
-    # the FP8 one (gemm_cuda_cublas_lowp_device).
-    target_link_libraries(hpc_math_cuda PUBLIC hpc_math_core CUDA::cudart CUDA::cublas CUDA::cublasLt)
+    # the FP8 one (gemm_cuda_cublas_lowp_device); the driver API encodes
+    # Level 8's TMA tensor maps (cuTensorMapEncodeTiled).
+    target_link_libraries(hpc_math_cuda PUBLIC hpc_math_core CUDA::cudart CUDA::cublas CUDA::cublasLt CUDA::cuda_driver)
 else()
     message(STATUS "No CUDA compiler found — building the CPU-only CUDA stub")
     add_library(hpc_math_cuda STATIC src/cuda/gemm_kernels_stub.cpp src/cuda/gemm_lowp_stub.cpp)

@@ -6,6 +6,7 @@
  * still links. No format is supported and every kernel throws; the tests and
  * benchmarks check cuda_device_count() / cuda_lowp_supported() and skip.
  */
+#include "gemm/cuda.hpp"
 #include "gemm/cuda_lowp.hpp"
 
 #include <stdexcept>
@@ -24,14 +25,17 @@ int cuda_lowp_k_multiple(CudaLowp format) noexcept {
 bool cuda_lowp_fp8_block_scaled() { return false; }
 
 void gemm_cuda_lowp_device(CudaLowp, const void*, const void*, void*, int, int, int) { no_cuda(); }
+void gemm_cuda_lowp_tma_device(CudaLowp, const void*, const void*, void*, int, int, int) { no_cuda(); }
 void gemm_cuda_cublas_lowp_device(CudaLowp, const void*, const void*, void*, int, int, int) { no_cuda(); }
+void gemm_cuda_tma(const Matrix<float>&, const Matrix<float>&, Matrix<float>&) { no_cuda(); }
+void gemm_cuda_tma_device(const void*, const void*, float*, int, int, int) { no_cuda(); }
 
-void gemm_cuda_bf16(const Matrix<bf16>&, const Matrix<bf16>&, Matrix<float>&, bool) { no_cuda(); }
-void gemm_cuda_fp16(const Matrix<fp16>&, const Matrix<fp16>&, Matrix<float>&, bool) { no_cuda(); }
-void gemm_cuda_fp16_acc16(const Matrix<fp16>&, const Matrix<fp16>&, Matrix<float>&, bool) { no_cuda(); }
-void gemm_cuda_i8(const Matrix<std::int8_t>&, const Matrix<std::int8_t>&, Matrix<std::int32_t>&, bool) {
+void gemm_cuda_bf16(const Matrix<bf16>&, const Matrix<bf16>&, Matrix<float>&, CudaLowpImpl) { no_cuda(); }
+void gemm_cuda_fp16(const Matrix<fp16>&, const Matrix<fp16>&, Matrix<float>&, CudaLowpImpl) { no_cuda(); }
+void gemm_cuda_fp16_acc16(const Matrix<fp16>&, const Matrix<fp16>&, Matrix<float>&, CudaLowpImpl) { no_cuda(); }
+void gemm_cuda_i8(const Matrix<std::int8_t>&, const Matrix<std::int8_t>&, Matrix<std::int32_t>&, CudaLowpImpl) {
     no_cuda();
 }
-void gemm_cuda_fp8(const Matrix<fp8_e4m3>&, const Matrix<fp8_e4m3>&, Matrix<float>&, bool) { no_cuda(); }
+void gemm_cuda_fp8(const Matrix<fp8_e4m3>&, const Matrix<fp8_e4m3>&, Matrix<float>&, CudaLowpImpl) { no_cuda(); }
 
 }  // namespace hpc::gemm

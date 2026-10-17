@@ -1,11 +1,11 @@
 ---
-title: "Matrix Multiplication on an RTX 5080: Eight CUDA Kernels from 3.7 to 100 TFLOP/s"
-description: "Eight CUDA GEMM kernels on an RTX 5080, each one technique apart: shared-memory tiling, register tiling, cp.async, vector loads, WMMA, mma.sync and a pipelined Tensor Core kernel at 83% of cuBLAS. Peaks, occupancy and bank conflicts measured with Nsight Compute."
+title: "Matrix Multiplication on an RTX 5080: Nine CUDA Kernels from 3.7 to 120 TFLOP/s"
+description: "Nine CUDA GEMM kernels on an RTX 5080, each one technique apart: shared-memory tiling, register tiling, cp.async, vector loads, WMMA, mma.sync, a pipelined Tensor Core kernel, and a TMA-fed, warp-specialised kernel that matches cuBLAS. Peaks, occupancy and bank conflicts measured with Nsight Compute."
 date: 2026-10-15
 series_part: 4
 permalink: /articles/cuda-gemm.html
 ---
-# Matrix multiplication on an RTX 5080: eight CUDA kernels from 3.7 to 100 TFLOP/s
+# Matrix multiplication on an RTX 5080: nine CUDA kernels from 3.7 to 120 TFLOP/s
 
 *NVIDIA GeForce RTX 5080 (Blackwell, sm_120), CUDA 13.2. Every number was
 measured on that GPU; the code is in
@@ -17,7 +17,7 @@ unit.*
 The CPU articles in this series end with one core doing about 1.5 TFLOP/s
 on a matrix unit. A consumer GPU has 84 streaming multiprocessors, each
 with 128 FP32 lanes and four Tensor Cores. This article builds a single-
-precision matrix multiplication for it in eight steps, measures each with
+precision matrix multiplication for it in nine steps, measures each with
 GPU timers and hardware counters, and explains every gain and every
 regression.
 
@@ -36,6 +36,11 @@ regression.
   pipelined kernel with 128 × 128 tiles and padded shared memory reaches
   **100.7 TFLOP/s**: 81% of the measured Tensor Core peak and 83–85% of
   cuBLAS FP16, with the Tensor pipe 86% busy.
+- The last 15% is data movement, not arithmetic. Level 8 loads tiles with
+  the TMA copy engine into hardware-swizzled shared memory and dedicates
+  one warp to loading: **117–120 TFLOP/s at N ≥ 8192, 99–100% of cuBLAS
+  FP16** and 96% of the measured peak, executing a third of Level 7's
+  instructions.
 
 ## The machine, measured
 
@@ -262,10 +267,67 @@ Today's profile of the kernel: Tensor pipe busy 86%, 1% bank conflicts,
 DRAM traffic 116 MB for the whole multiplication (each matrix crosses DRAM
 about once), and occupancy 32%, limited by 118 registers per thread. It
 reaches **100.7 TFLOP/s at N = 8192: 81% of the measured Tensor Core peak
-and 85% of cuBLAS FP16** at the same size (83% at N = 16384). Closing the
-rest of the gap is beyond this article; the usual next steps are a deeper
-pipeline (three or four stages instead of two) and split-K for shapes with
-a large K.
+and 85% of cuBLAS FP16** at the same size (83% at N = 16384).
+
+### Level 8: TMA and warp specialisation — 117 TFLOP/s
+
+Code: [`kernel_tma`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/cuda/gemm_lowp.cu), shared with the
+low-precision formats of [part 5](lowp-gemm.md).
+
+Level 7's Tensor pipe is 86% busy, but its warps execute 222 million
+instructions at N = 4096 for 34 million `mma`: every thread computes
+addresses and issues one `cp.async` per 16 bytes, and every fragment load
+goes through the padded-row arithmetic. Hopper and Blackwell GPUs (sm_90
+and later) can take that work off the warps:
+
+1. **TMA, the Tensor Memory Accelerator.** A copy engine that walks a
+   tensor described once on the host (`cuTensorMapEncodeTiled`). One
+   instruction, issued by one thread, copies a whole 128 × 32-element tile
+   from global to shared memory.
+2. **Hardware swizzle instead of padding.** TMA can store each 64-byte row
+   with its four 16-byte chunks permuted: chunk c of row r lands at
+   position c XOR (r/2 mod 4). The eight rows an `ldmatrix` reads then fall
+   in eight different groups of banks, with no padding bytes. In the
+   kernel the XOR term is a constant per lane.
+3. **Warp specialisation.** One producer warp only issues TMA copies; four
+   or eight consumer warps only run `ldmatrix` and `mma.sync`. They
+   synchronise through two `mbarrier`s per pipeline stage: "full" completes
+   when TMA has delivered the stage's bytes, "empty" when every consumer
+   warp has read it. There is no `__syncthreads()` in the main loop.
+4. **64 × 64 warp tiles and a deep pipeline.** Each consumer warp issues
+   32 `mma.sync` per 8 `ldmatrix.x4` (Level 7: 16 per 6 fragment loads of
+   the same size). Four
+   to six stages fill 96 KiB of shared memory, so one block runs per SM and
+   occupancy is 10%: latency is hidden by stages in flight, not by other
+   warps.
+5. **Tile shape by wave.** With one block per SM, the grid runs in waves of
+   84 blocks. A 128 × 256 tile with eight consumer warps is about 5%
+   faster per block than 128 × 128 with four, but at N = 4096 its 512
+   blocks make 6.1 waves, the seventh almost empty; 1,024 smaller blocks
+   fill 12.2 waves better. The host picks the tile whose waves are fuller:
+   128 × 128 at N = 1024 and 4096, 128 × 256 at 2048 and from 8192 up.
+
+TMA tiles and non-transposing `ldmatrix` read rows that are contiguous
+along k, so Level 8 takes B transposed (N × K, the "TN" layout); the
+conversion to fp16 that Level 7 already needs before timing also
+transposes B. The layout does not favour it: cuBLAS FP16 runs at 118.8
+TFLOP/s on TN inputs and 118.9 on the untransposed ones at N = 8192.
+
+| N = 4096, Nsight Compute | Level 7 | Level 8 |
+|---|--:|--:|
+| Time, ms | 1.41 | **1.28** |
+| Warp instructions executed | 222 M | **76 M** |
+| Tensor pipe busy | 86% | **93%** |
+| Shared-load bank conflicts, share of wavefronts | 1.1% | **0.02%** |
+| Occupancy (warps active) | 32% | 10% |
+| Registers per thread | 118 | 186 |
+
+At N = 8192 (the 128 × 256 tile) the Tensor pipe is 99% busy. Level 8
+reaches **117.3 TFLOP/s at N = 8192 and 119.9 at N = 16384: 99% and 100%
+of cuBLAS FP16** measured in the same session (118.9 and 119.7), and 96%
+of the measured Tensor Core peak. cuBLAS keeps a lead at N = 2048–4096
+(94% at N = 4096), the sizes where the last wave of blocks is the least
+full.
 
 ## The ladder, measured
 
@@ -285,11 +347,13 @@ The cuBLAS rows call `gemm_cuda_cublas*` in
 | 4 | + 128-bit loads | 16.0 | 26.9 | **27.5** | 33% | 128 | FMA 54% | 40% |
 | 5 | WMMA (fp16) | 10.7 | 14.6 | 14.1 | 98% | 40 | Tensor 12% | 88% |
 | 6 | `mma.sync` (fp16) | 15.0 | 17.0 | 17.2 | 97% | 40 | Tensor 14% | 80% |
-| 7 | pipelined WMMA (fp16) | 58.9 | 96.7 | **100.7** | 32% | 118 | Tensor 86% | 1% |
+| 7 | pipelined WMMA (fp16) | 58.9 | 96.7 | 100.7 | 32% | 118 | Tensor 86% | 1% |
+| 8 | TMA + warp specialisation (fp16) | 72.6 | 106.6 | **117.3** | 10% | 186 | Tensor 93% | 0.02% |
 
 The counters (N = 4096) make one point clearly: occupancy does not decide
 speed. Levels 5 and 6 keep 97–98% of warp slots busy and run at 14–17
-TFLOP/s; Level 7 keeps 32% busy and runs at 97. What decides speed is how
+TFLOP/s; Level 7 keeps 32% busy and runs at 97, Level 8 keeps 10% busy
+and runs at 107. What decides speed is how
 many useful operations each byte loaded from shared memory feeds, and
 whether those loads conflict.
 
@@ -300,8 +364,13 @@ Against the vendor library:
 | Level 4, FMA cores | 26.9 | 27.5 | 27.4 |
 | cuBLAS SGEMM, FMA cores | 37.9 | 38.9 | 39.0 |
 | cuBLAS TF32, Tensor Cores | 52.9 | 59.2 | 60.9 |
-| **Level 7, FP16 Tensor Cores** | **96.7** | **100.7** | **99.8** |
+| Level 7, FP16 Tensor Cores | 96.7 | 100.7 | 99.8 |
+| **Level 8, FP16 Tensor Cores** | **106.6** | **117.3** | **119.9** |
 | cuBLAS FP16, Tensor Cores | 113.0 | 119.1 | 120.0 |
+
+(Level 8 was measured in a later session, in which Level 7 and cuBLAS FP16
+reproduced within 0.5%; the file is
+[`bench_gemm_cuda_level8.txt`](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/experiments/cuda-machine/bench_gemm_cuda_level8.txt).)
 
 ### Small matrices and FP64
 
@@ -325,7 +394,9 @@ runs several square sizes between 17 and 512, and every kernel with bounds
 checks also runs shapes with partial tiles in every dimension
 (17 × 33 × 65, 129 × 37 × 131, and 132 × 68 × 260, which is a multiple of
 the vector width but not of any tile). The fallbacks of Levels 4 and 7
-have shapes of their own.
+have shapes of their own; Level 8 runs, besides those, K = 544 (17 k-tiles,
+at least twice around its stage ring) and 2688 × 96 × 1024 (84 blocks: the
+128 × 256 tile).
 
 ## Limitations
 
@@ -355,13 +426,17 @@ have shapes of their own.
 4. **Tensor Cores need the same discipline.** Dropped into a structure
    built for FMAs, they ran slower than the FMAs; restructured around them,
    they ran 3.7× faster than the best FMA kernel.
+5. **At the top, the cost is in moving data, not in the math.** Level 8
+   does the same `mma` as Level 7; it reaches cuBLAS by letting a copy
+   engine move the tiles and a dedicated warp schedule them, so the
+   warps that compute do nothing else.
 
 ## The series
 
 The same multiplication, four times: one CPU core with vector FMAs reaches
 333 GFLOP/s ([part 1](simd-gemm.md)), Apple's SME2 matrix unit 1.5 TFLOP/s
 ([part 2](sme2-gemm.md)), and this GPU 27.5 TFLOP/s on its FMA cores and
-100 on its Tensor Cores. Every one of those kernels is built the same way:
+120 on its Tensor Cores. Every one of those kernels is built the same way:
 a block of C held in registers or accumulator tiles, enough independent
 accumulators to cover the latency of the multiply-add unit, operands staged
 so that each loaded byte feeds many operations, and a layout that keeps

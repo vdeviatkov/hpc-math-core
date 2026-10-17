@@ -22,6 +22,13 @@
  * 8- and 16-bit formats alike. It is also the layout ("TN") cuBLASLt
  * requires for FP8.
  *
+ * Two kernels implement it. gemm_cuda_lowp_device is the cp.async kernel
+ * (Level 7's structure: 8 warps, 2-stage pipeline, padded shared memory).
+ * gemm_cuda_lowp_tma_device is Level 8 (sm_90+): TMA copies into swizzled
+ * shared memory, an mbarrier pipeline (4 or 6 stages), a dedicated
+ * producer warp and 64 x 64 warp tiles in 128 x 256 or 128 x 128 blocks,
+ * whichever fills the GPU's waves better. Both take the same buffers and give the same results.
+ *
  * The *_device entry points take device buffers and only launch (they are
  * what the benchmarks time). M and N must be multiples of 128 and K of
  * cuda_lowp_k_multiple(format) (32 for 16-bit inputs, 64 for 8-bit). The
@@ -44,6 +51,13 @@ namespace hpc::gemm {
 
 enum class CudaLowp { bf16, fp16, fp16_acc16, int8, fp8_e4m3 };
 
+/// Which implementation a Matrix wrapper runs.
+enum class CudaLowpImpl {
+    mma,     ///< cp.async kernel, gemm_cuda_lowp_device
+    tma,     ///< Level 8, gemm_cuda_lowp_tma_device (sm_90+)
+    cublas,  ///< vendor reference, gemm_cuda_cublas_lowp_device
+};
+
 /// True if the selected device runs the format's mma.sync (sm_80+, FP8 sm_89+).
 bool cuda_lowp_supported(CudaLowp format) noexcept;
 /// K must be a multiple of this on the device entry points.
@@ -57,19 +71,23 @@ bool cuda_lowp_fp8_block_scaled();
 // header is also compiled against the CPU-only stub.
 void gemm_cuda_lowp_device(CudaLowp format, const void* dA, const void* dBt, void* dC,
                            int M, int K, int N);
+/// Level 8. M and N must be multiples of 128, K as above; sm_90+.
+void gemm_cuda_lowp_tma_device(CudaLowp format, const void* dA, const void* dBt, void* dC,
+                               int M, int K, int N);
 void gemm_cuda_cublas_lowp_device(CudaLowp format, const void* dA, const void* dBt, void* dC,
                                   int M, int K, int N);
 
 // Matrix wrappers: any shape, B as an ordinary K x N matrix. fp16_acc16
-// results are widened to float on the host. `cublas` selects the vendor
-// reference instead of the hand-written kernel.
-void gemm_cuda_bf16(const Matrix<bf16>& A, const Matrix<bf16>& B, Matrix<float>& C, bool cublas = false);
-void gemm_cuda_fp16(const Matrix<fp16>& A, const Matrix<fp16>& B, Matrix<float>& C, bool cublas = false);
+// results are widened to float on the host.
+void gemm_cuda_bf16(const Matrix<bf16>& A, const Matrix<bf16>& B, Matrix<float>& C,
+                    CudaLowpImpl impl = CudaLowpImpl::mma);
+void gemm_cuda_fp16(const Matrix<fp16>& A, const Matrix<fp16>& B, Matrix<float>& C,
+                    CudaLowpImpl impl = CudaLowpImpl::mma);
 void gemm_cuda_fp16_acc16(const Matrix<fp16>& A, const Matrix<fp16>& B, Matrix<float>& C,
-                          bool cublas = false);
+                          CudaLowpImpl impl = CudaLowpImpl::mma);
 void gemm_cuda_i8(const Matrix<std::int8_t>& A, const Matrix<std::int8_t>& B, Matrix<std::int32_t>& C,
-                  bool cublas = false);
+                  CudaLowpImpl impl = CudaLowpImpl::mma);
 void gemm_cuda_fp8(const Matrix<fp8_e4m3>& A, const Matrix<fp8_e4m3>& B, Matrix<float>& C,
-                   bool cublas = false);
+                   CudaLowpImpl impl = CudaLowpImpl::mma);
 
 }  // namespace hpc::gemm

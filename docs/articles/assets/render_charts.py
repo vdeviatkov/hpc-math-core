@@ -154,8 +154,8 @@ def main():
                   "gemm_sme_blocked": ("#2f9e6e", "+ cache blocking"),
                   "gemm_sme": ("#be4d14", "+ packed B")},
           y_max=2000, reference=(1963, "FMOPA peak, 1,963"))
-    bars("cuda-ladder.svg", "Eight CUDA GEMM levels on an RTX 5080",
-         "N = 4096 · GPU time of the GEMM alone · levels 5–7 and cuBLAS FP16 multiply in fp16",
+    bars("cuda-ladder.svg", "Nine CUDA GEMM levels on an RTX 5080",
+         "N = 4096 · GPU time of the GEMM alone · levels 5–8 and cuBLAS FP16 multiply in fp16",
          load_bars("cuda-ladder.csv"), "TFLOP/s", 130, 20,
          references=[(59.7, "FP32 peak 59.7"), (124.4, "Tensor Core peak 124.4")],
          colors={"fma": "#245ea8", "tensor": "#be4d14", "ref": "#8c96a3"})

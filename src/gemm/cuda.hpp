@@ -15,8 +15,12 @@
  *   6  gemm_cuda_mma_ldmatrix    Level 5 through raw ldmatrix + mma.sync PTX
  *   7  gemm_cuda_wmma_pipelined  wmma:: with 128x128 tiles, 8 fragments per warp,
  *                                cp.async double buffering
+ *   8  gemm_cuda_tma             raw mma.sync fed by TMA into swizzled shared
+ *                                memory, 4-6-stage mbarrier pipeline, producer warp,
+ *                                128x256 tiles (128x128 for small grids)
+ *                                (src/cuda/gemm_lowp.cu, shared with cuda_lowp.hpp)
  *
- * Levels 5-7 are float-only: fp32 in and out, fp16 multiply, fp32
+ * Levels 5-8 are float-only: fp32 in and out, fp16 multiply, fp32
  * accumulate (input rounding at roughly the 1e-3 scale; output relative
  * error is not bounded near cancellation, and fp16 has a smaller range). A level whose requirement is not met
  * runs a level below it instead:
@@ -25,6 +29,7 @@
  *   Level 5  needs sm_70+                                  else Level 3
  *   Level 6  needs sm_80+                                  else Level 5
  *   Level 7  needs sm_70+, M and N multiples of 128, K of 32 else Level 5
+ *   Level 8  needs sm_90+ (TMA)                             else Level 7
  *
  * gemm_cuda_cublas (SGEMM/DGEMM), gemm_cuda_cublas_tf32 and
  * gemm_cuda_cublas_fp16 are not part of the ladder: they are the vendor
@@ -53,6 +58,8 @@ int cuda_device_count() noexcept;
 bool cuda_has_tensor_cores() noexcept;
 /// True if the selected device is sm_80+ (cp.async, mma.sync m16n8k16, TF32).
 bool cuda_has_ampere() noexcept;
+/// True if the selected device is sm_90+ (TMA, mbarrier transactions): Level 8.
+bool cuda_has_tma() noexcept;
 
 // Levels 0-7 (see the file comment).
 template <typename T>
@@ -68,6 +75,7 @@ void gemm_cuda_vectorized(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C);
 void gemm_cuda_wmma(const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C);
 void gemm_cuda_mma_ldmatrix(const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C);
 void gemm_cuda_wmma_pipelined(const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C);
+void gemm_cuda_tma(const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C);
 
 // cuBLAS reference. _tf32 and _fp16 run on Tensor Cores via cublasGemmEx;
 // _fp16 converts the inputs to fp16 first. cuBLAS wrappers use one
@@ -110,6 +118,10 @@ void gemm_cuda_wmma_device(const float* dA, const float* dB, float* dC, int M, i
 void gemm_cuda_mma_ldmatrix_device(const float* dA, const float* dB, float* dC, int M, int K, int N);
 void gemm_cuda_wmma_pipelined_device(const void* dA16, const void* dB16, float* dC,
                                      int M, int K, int N);
+// Level 8 takes fp16 A (M x K) and fp16 B transposed (N x K, "TN"): the
+// layout its TMA copies and non-transposing ldmatrix read. No fallback: M
+// and N multiples of 128, K of 32, sm_90+.
+void gemm_cuda_tma_device(const void* dA16, const void* dBt16, float* dC, int M, int K, int N);
 template <typename T>
 void gemm_cuda_cublas_device(const T* dA, const T* dB, T* dC, int M, int K, int N);
 void gemm_cuda_cublas_tf32_device(const float* dA, const float* dB, float* dC,

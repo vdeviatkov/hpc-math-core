@@ -22,11 +22,11 @@ Cache background: [docs/cache-behavior.md](../../docs/cache-behavior.md).
 | [`sme.hpp`](sme.hpp) | `gemm_sme_1tile`, `gemm_sme_tiles`, `gemm_sme_blocked`, `gemm_sme` | SME2, `HPC_ENABLE_SME=ON` |
 | [`amx.hpp`](amx.hpp) | `gemm_amx` (Accelerate BLAS, Apple's route to its AMX unit) | Apple, `HPC_ENABLE_AMX` (default on) |
 | [`kleidiai.hpp`](kleidiai.hpp) | `gemm_kleidiai` (Arm's SME2 micro-kernel, f32 only) | SME2, `HPC_ENABLE_KLEIDIAI` |
-| [`cuda.hpp`](cuda.hpp) | `gemm_cuda_*`, Levels 0–7, and the cuBLAS reference; kernels in [`src/cuda/gemm_kernels.cu`](../cuda/gemm_kernels.cu) | CUDA toolkit found (else a stub that reports no device) |
+| [`cuda.hpp`](cuda.hpp) | `gemm_cuda_*`, Levels 0–8, and the cuBLAS reference; kernels in [`src/cuda/gemm_kernels.cu`](../cuda/gemm_kernels.cu) (Level 8: [`src/cuda/gemm_lowp.cu`](../cuda/gemm_lowp.cu)) | CUDA toolkit found (else a stub that reports no device) |
 | [`avx512_lowp.hpp`](avx512_lowp.hpp) | `gemm_avx512_bf16` (`VDPBF16PS`), `gemm_avx512_i8` (`VPDPBUSD`) | `__AVX512BF16__` + `__AVX512VNNI__` |
 | [`neon_lowp.hpp`](neon_lowp.hpp) | `gemm_neon_bf16` (`BFMMLA`), `gemm_neon_i8` (`SMMLA`), `gemm_neon_f16` (`FMLAL`), `gemm_neon_f16_acc` (`FMLA .8h`) | NEON with BF16, I8MM, FP16, FHM |
 | [`sme_lowp.hpp`](sme_lowp.hpp) | `gemm_sme_widening<fp16 \| bf16 \| int8_t>` (widening `FMOPA` / `SMOPA`) | SME2, `HPC_ENABLE_SME=ON` |
-| [`cuda_lowp.hpp`](cuda_lowp.hpp) | `gemm_cuda_lowp_device`, `gemm_cuda_{bf16,fp16,fp16_acc16,i8,fp8}`, cuBLAS / cuBLASLt reference; kernel in [`src/cuda/gemm_lowp.cu`](../cuda/gemm_lowp.cu) | CUDA, sm_80+ (FP8: sm_89+; full-rate FP8 with `CMAKE_CUDA_ARCHITECTURES=120a`) |
+| [`cuda_lowp.hpp`](cuda_lowp.hpp) | `gemm_cuda_lowp_device` (cp.async), `gemm_cuda_lowp_tma_device` (Level 8), `gemm_cuda_{bf16,fp16,fp16_acc16,i8,fp8}`, cuBLAS / cuBLASLt reference; kernels in [`src/cuda/gemm_lowp.cu`](../cuda/gemm_lowp.cu) | CUDA, sm_80+ (FP8: sm_89+; full-rate FP8 with `CMAKE_CUDA_ARCHITECTURES=120a`) |
 | [`lowp_reference.hpp`](lowp_reference.hpp) | `gemm_lowp_reference`, the low-precision tests' reference (double / int64 sums) | always |
 
 Where an ISA is absent, its kernels are declared `= delete`, so calling one is
@@ -48,6 +48,7 @@ of level 2, and an added technique need not improve every shape.
 | Outer products into a 2-D accumulator | One SME `FMOPA` adds an SVL×SVL outer product into ZA instead of one vector FMA. | `sme.hpp` |
 | Packing (GotoBLAS) | Copies blocks of A and B into contiguous strips in the order the micro-kernel reads them. | `sme.hpp` |
 | GPU shared-memory and register tiling, double buffering, Tensor Cores | The GPU counterparts, one per CUDA level. | `cuda.hpp`, `gemm_kernels.cu` |
+| TMA, swizzled shared memory, warp specialisation | Level 8: a producer warp issues one TMA copy per tile into hardware-swizzled shared memory; consumer warps only run `ldmatrix` + `mma.sync`, synchronised by mbarriers. | `gemm_lowp.cu`, `kernel_tma` |
 | k-group packing for widening instructions | bf16 / fp16 / INT8 instructions add a dot product of G = 2 or 4 consecutive k into each 32-bit lane, so B is packed with G rows interleaved and K padded to a multiple of G. | `*_lowp.hpp` |
 
 ## Families
@@ -62,7 +63,7 @@ of level 2, and an added technique need not improve every shape.
 | SME2 | ZA: 4 f32 / 8 f64 tiles of SVL×SVL; all used; at M4's 512-bit SVL, 32×32 f32 / 16×32 f64 C block | `svmopa_za32/za64_m`, `svld1_x2`, `svld1/st1_hor_za32/64` |
 | Accelerate | opaque | `cblas_sgemm`, `cblas_dgemm` |
 | KleidiAI | 2VL×2VL (all four f32 ZA tiles) | `kai_run_matmul_clamp_f32_f32p2vlx1_f32p2vlx1biasf32_sme2_mopa` |
-| CUDA | 1 output per thread (Level 0) → 8×8 per thread (Level 2) → 8 WMMA fragments per warp (Level 7) | `__shared__`, `cp.async`, `wmma::mma_sync`, `ldmatrix` + `mma.sync` PTX |
+| CUDA | 1 output per thread (Level 0) → 8×8 per thread (Level 2) → 8 WMMA fragments per warp (Level 7) → 64×64 per warp, 32 `mma.sync` per k-step (Level 8) | `__shared__`, `cp.async`, `wmma::mma_sync`, `ldmatrix` + `mma.sync` PTX, `cp.async.bulk.tensor` + `mbarrier` (Level 8) |
 
 ## Precision
 

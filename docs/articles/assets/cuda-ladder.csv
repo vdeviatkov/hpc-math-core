@@ -7,5 +7,6 @@ label,value,group
 "5  WMMA",14.63,tensor
 "6  mma.sync",16.96,tensor
 "7  pipelined WMMA",96.69,tensor
+"8  TMA + warp-specialised",106.55,tensor
 "cuBLAS SGEMM",37.91,ref
 "cuBLAS FP16",112.98,ref

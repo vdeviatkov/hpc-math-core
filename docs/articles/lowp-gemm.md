@@ -37,12 +37,13 @@ measures what each format costs in accuracy.
 - **FP8 on the RTX 5080 has two instructions.** The portable one runs at
   249 TFLOP/s with FP32 accumulation; the block-scaled "MX" one at 497. Only
   the second, which needs an `sm_120a` build, lets FP8 beat fp16. cuBLAS
-  uses it; switching the hand-written kernel to it took FP8 from 214 to
-  291 TFLOP/s.
+  uses it; switching the hand-written kernels to it took FP8 from 214 to
+  291 TFLOP/s (cp.async kernel) and from 233 to 387 (part 4's Level 8).
 - **The kernels:** INT8 reaches 3,525 GOP/s on one M4 SME2 unit and 922
   on one Zen 5 core, 2.3× and 4.0× their FP32 kernels at N = 2,048, and
-  305 TOP/s on the RTX 5080 (71% of cuBLAS). A single CUDA kernel serves all five formats;
-  only the `mma.sync` instruction and the element width change.
+  419 TOP/s on the RTX 5080 (98% of cuBLAS). Each CUDA kernel serves all
+  five formats; only the `mma.sync` instruction and the element width
+  change. Part 4's Level 8 reaches 97–102% of cuBLAS in every format.
 
 ## The formats
 
@@ -168,10 +169,12 @@ compare directly:
 | | `m16n8k32` | int8 → int32 | | 497 TOP/s | 8.3 |
 
 (Latency is per instruction with one accumulator; on SME2, with one ZA
-tile. The M4's clock is measured as in part 1, 4.47 GHz in this session.
-The FP32 `FMOPA` peak, 2,018 GFLOP/s here, was 1,963 in part 2: the SME
-unit's rate moves by a few percent between sessions, so every ratio here
-compares rows from the same run.)
+tile. The FP32 rows differ from earlier parts by a few percent because the
+clocks differ between sessions: the M4 P-core ran at 4.47 GHz here and at
+3.96–4.13 GHz in part 1 (NEON: 135 against ~130 GFLOP/s), and the FP32
+`FMOPA` peak is 2,018 GFLOP/s here, 1,963 in part 2. Zen 5's 358 against
+part 1's 362 is run-to-run variation at the same clock (5.70–5.71 GHz).
+Every ratio in this table compares rows from the same run.)
 
 Three findings in this table decide everything below.
 
@@ -290,7 +293,7 @@ arithmetic and keeps the same efficiency: 2.3× the FP32 kernel at N = 2,048.
 
 ## The GPU kernel
 
-Code: [`kernel_lowp` and its five `mma` formats](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/cuda/gemm_lowp.cu),
+Code: [`kernel_lowp`, `kernel_tma` and the five `mma` formats](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/cuda/gemm_lowp.cu),
 API in [`cuda_lowp.hpp`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/cuda_lowp.hpp).
 
 On the GPU the k grouping is inside the instruction: an `mma.sync` fragment
@@ -332,6 +335,14 @@ chosen by measurement on all formats at N = 4,096 to 16,384:
   The faster the format, the more this matters: at N = 16,384 INT8 goes
   from 181 to 308 TOP/s, bf16 from 97 to 110 TFLOP/s.
 
+The second kernel is [part 4's Level 8](cuda-gemm.md), `kernel_tma`, with
+the same format structs: a producer warp loads each 128 × 64-byte tile with
+one TMA instruction into hardware-swizzled shared memory, and four or eight
+consumer warps of 64 × 64 run only `ldmatrix` and `mma.sync`, synchronised
+by `mbarrier`s through a 4- or 6-stage pipeline. Both operands being
+K-major is what lets TMA serve every format: a tile is always 64 bytes of
+k per row, whatever the element width.
+
 ### Results
 
 GPU-event time of the GEMM alone, as in part 4, inputs already in the
@@ -339,20 +350,22 @@ format on the GPU
 ([`bench_gemm_lowp_cuda`](https://github.com/vdeviatkov/hpc-math-core/blob/main/benchmarks/bench_gemm_lowp_cuda.cpp));
 cuBLAS through `cublasGemmEx`, and `cublasLtMatmul` for FP8. Medians of 3:
 
-| TFLOP/s or TOP/s, N = 8,192 | This kernel | cuBLAS | Kernel ÷ cuBLAS | Kernel, % of peak |
-|---|--:|--:|--:|--:|
-| bf16 → FP32 | 108.9 | 119.8 | 91% | 88% |
-| fp16 → FP32 | 107.9 | 118.6 | 91% | 87% |
-| fp16 → fp16 | 150.5 | 201.9 | 75% | 61% |
-| INT8 → INT32 | 298.9 | 419.1 | 71% | 60% |
-| FP8 → FP32, block-scaled `mma` (`sm_120a` build) | 290.8 | 400.0 | 73% | 59% |
-| FP8 → FP32, sm_89 `mma` (plain `sm_120` build) | 213.7 | | | 86% |
+| TFLOP/s or TOP/s, N = 8,192 | cp.async kernel | Level 8 (TMA) | cuBLAS | Level 8 ÷ cuBLAS | Level 8, % of peak |
+|---|--:|--:|--:|--:|--:|
+| bf16 → FP32 | 108.7 | **117.8** | 120.1 | 98% | 95% |
+| fp16 → FP32 | 107.7 | **117.3** | 118.8 | 99% | 94% |
+| fp16 → fp16 | 150.3 | **205.8** | 202.0 | 102% | 83% |
+| INT8 → INT32 | 298.3 | **408.2** | 419.0 | 97% | 82% |
+| FP8 → FP32, block-scaled `mma` (`sm_120a` build) | 291.4 | **387.3** | 399.9 | 97% | 78% |
+| FP8 → FP32, sm_89 `mma` (plain `sm_120` build) | 213.6 | **232.8** | | | 94% |
 
 For reference, part 4's FP32 results on the same GPU: 38.9 TFLOP/s for
 cuBLAS SGEMM on the FMA cores, 59.2 for cuBLAS TF32 on the Tensor Cores.
-INT8 and FP8 run about 7× faster than TF32 in cuBLAS and 5× in the
-hand-written kernel. At N = 16,384 every figure is within 3% of
-N = 8,192.
+INT8 and FP8 run about 7× faster than TF32, in cuBLAS and in Level 8
+alike. At N = 16,384 every figure is within 3% of N = 8,192; there Level 8
+reaches 120.5 (bf16), 209.6 (fp16 → fp16), 419.0 (INT8) and 398.0 (FP8),
+97–103% of cuBLAS. At small sizes Level 8 is ahead in the 8-bit formats:
+at N = 1,024, 192 TOP/s against cuBLAS's 162 (INT8) and 171 (FP8).
 
 ### FP8: the instruction that runs at full rate
 
@@ -381,26 +394,40 @@ asm volatile("mma.sync.aligned.m16n8k32.row.col.kind::mxf8f6f4.block_scale.scale
 The instruction exists only for the architecture-specific target
 `sm_120a` (CMake: `CMAKE_CUDA_ARCHITECTURES=120a`); a plain `sm_120` build
 cannot emit it. The kernel uses it when built for that target, and the
-FP8 GEMM goes from 214 to 291 TFLOP/s, with identical results. Without it,
+FP8 GEMM goes from 214 to 291 TFLOP/s in the cp.async kernel and from 233
+to 387 in Level 8, with identical results. Without it,
 FP8 on this GPU is no faster than fp16 with fp16 accumulation, and
 accumulates far less precisely than bf16.
 
-### Why the fast formats stop at 60%
+### What Level 8 removes
 
-bf16 and fp16 with FP32 accumulation reach 87–88% of their peak and 91% of
-cuBLAS. The three formats with a 497 TOP/s peak stop near 300, 71–75% of
-cuBLAS. They perform the same `mma` instructions per byte of shared memory
-as the 16-bit formats (one `ldmatrix.x4` delivers 16 k values of fp16 or
-32 of INT8, for one instruction either way), but those instructions finish
-twice as fast, so everything else in the loop must also go twice as fast:
-`ldmatrix` issue, address arithmetic, `cp.async` issue. At N = 4,096,
-Nsight Compute counts the same 16.8 million FP8 `mma` instructions in this
-kernel and in cuBLAS's, but 69.3 million warp instructions in total here
-against 37.1 million in cuBLAS. The cuBLAS kernel's name,
-`nvjet_sm120_qqsss_mma_128x128x64_…_tmaAB…`, says it loads A and B with the
-Tensor Memory Accelerator, a copy engine that moves whole tiles from one
-instruction instead of one `cp.async` per thread per 16 bytes. Closing the
-remaining gap means removing issue overhead, not adding arithmetic.
+The cp.async kernel reaches 87% of the peak and 91% of cuBLAS in bf16 and
+fp16 with FP32 accumulation, but the three formats with a 497 TOP/s peak
+stop near 300, 71–74% of cuBLAS. They perform the same `mma` instructions
+per byte of shared memory as the 16-bit formats (one `ldmatrix.x4`
+delivers 16 k values of fp16 or 32 of INT8, for one instruction either
+way), but those instructions finish twice as fast, so everything else in
+the loop must also go twice as fast: address arithmetic, `cp.async` issue,
+`ldmatrix` issue. Nsight Compute at N = 8,192
+([`ncu_lowp_N8192.csv`](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/experiments/lowp/ncu_lowp_N8192.csv)):
+
+| N = 8,192 | | cp.async kernel | Level 8 | cuBLAS |
+|---|---|--:|--:|--:|
+| FP8 | warp instructions | 546 M | 319 M | 232 M |
+| | of which `mma` | 134 M | 134 M | 134 M |
+| | Tensor pipe busy | 65% | 93% | 95% |
+| | time, ms | 3.72 | 2.67 | 2.60 |
+| bf16 | warp instructions | 1,099 M | 656 M | 600 M |
+| | Tensor pipe busy | 90% | 99% | 98% |
+
+All three run the same 134 million FP8 `mma` (268 million for bf16); what
+differs is everything around them. The cp.async kernel spends three
+quarters of its instructions moving data and keeps the Tensor pipe 65%
+busy. Level 8 hands the copies to the TMA engine and the address
+arithmetic to the swizzle, and the pipe is 93% busy. cuBLAS's FP8 and INT8
+kernels (`nvjet_sm120_…_256x128x128_…_tmaAB…`) use the same TMA loads with
+larger 256 × 128 × 128 tiles and fewer instructions still. At the fast
+formats the work that limits a kernel is not the multiplication.
 
 ## Correctness
 
@@ -426,10 +453,10 @@ comparison isolates the kernel from the input rounding measured above
   bit pattern; rounding is to nearest, ties to even, as in hardware.
 
 The CPU tests pass on both machines (SME2 and NEON on the M4, AVX-512 on
-Zen 5); the CUDA tests pass for the kernel and cuBLAS in both builds. The
-GPU benchmark also checks 256 sampled elements at the benchmarked size: the
-kernel and cuBLAS agree on the maximum error for every format and size,
-because both accumulate the same `mma` instructions in the same k order.
+Zen 5); the CUDA tests pass for both kernels and cuBLAS in both builds. The
+GPU benchmark also checks 256 sampled elements at the benchmarked size: both
+kernels and cuBLAS agree on the maximum error for every format and size,
+because all three accumulate the same `mma` instructions in the same k order.
 
 ## Limitations
 
@@ -464,10 +491,11 @@ because both accumulate the same `mma` instructions in the same k order.
 4. **Halving bytes helps even at equal peak.** On M4 SME2, fp16 and bf16
    kernels run 12–17% faster than FP32 on an equally fast instruction,
    because loads and packing shrink.
-5. **The faster the arithmetic, the more the rest costs.** The GPU kernel
-   reaches 91% of cuBLAS where the instruction is slow and 71–75% where it
-   is fast: issue overhead and L2 traffic that were hidden behind the math
-   are not any more.
+5. **The faster the arithmetic, the more the rest costs.** The cp.async
+   kernel reaches 91% of cuBLAS where the instruction is slow and 71–74%
+   where it is fast: issue overhead hidden behind the math is not any
+   more. Level 8 moves tiles with TMA and leaves the compute warps nothing
+   but `mma`: 97–102% of cuBLAS for every format.
 
 ## The series
 

@@ -23,6 +23,7 @@ namespace {
 int cuda_device_count() noexcept { return 0; }
 bool cuda_has_tensor_cores() noexcept { return false; }
 bool cuda_has_ampere() noexcept { return false; }
+bool cuda_has_tma() noexcept { return false; }
 
 template <typename T>
 void gemm_cuda_naive(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) { unavailable(); }
