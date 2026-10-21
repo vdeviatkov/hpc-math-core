@@ -45,147 +45,6 @@
 namespace hpc::gemm {
 
 // ============================================================================
-// NEON tile / unroll constants
-// ============================================================================
-
-inline constexpr std::size_t kNeonTileM = 64;   // outer i-tile
-inline constexpr std::size_t kNeonTileK = 256;  // outer k-tile
-inline constexpr std::size_t kNeonTileN = 256;  // outer j-tile
-
-// f32 micro-kernel: 4 rows × 4 Q-vectors per row = 4×16 j-elements
-inline constexpr std::size_t kNeonF32RegRows = 4;
-inline constexpr std::size_t kNeonF32RegCols = 4;  // 4 Q-vectors → 16 f32
-
-// f64 micro-kernel: 8 rows × 2 Q-vectors per row = 8×4 j-elements
-inline constexpr std::size_t kNeonF64RegRows = 8;
-inline constexpr std::size_t kNeonF64RegCols = 2;  // 2 Q-vectors → 4 f64
-
-// ============================================================================
-// NEON micro-kernels (used only by gemm_neon_blocked)
-// ============================================================================
-
-#if HPC_HAS_NEON
-
-/**
- * @brief NEON f32 micro-kernel: C[i..i+3][j..j+15] += A[i..i+3][k_blk..k_end) × B[..][j..)
- *
- * The source broadcasts each A(i+r, k) with vdupq_n_f32 and uses plain
- * vfmaq_f32. Clang folds most of those broadcasts into the by-element form
- * of FMLA (fmla v.4s, v.4s, v.s[lane], what vfmaq_laneq_f32 spells
- * explicitly): at -O3 -mcpu=apple-m4, 12 of the 16 FMAs per k step are
- * by-element, with no separate dup instruction.
- *
- * @param a      Pointer to A(i, k_blk) — row-stride lda
- * @param b      Pointer to B(k_blk, j) — row-stride ldb
- * @param c0..c3 Pointers to C(i+0..3, j)
- */
-inline void neon_micro_f32_4x16(const float* __restrict__ a, const float* __restrict__ b,
-                                float* __restrict__ c0, float* __restrict__ c1,
-                                float* __restrict__ c2, float* __restrict__ c3, std::size_t lda,
-                                std::size_t ldb, std::size_t k_len) noexcept {
-    // Load 4×16 C tile: 16 Q-register accumulators (4 rows × 4 Q-vectors).
-    float32x4_t c00 = vld1q_f32(c0), c01 = vld1q_f32(c0 + 4);
-    float32x4_t c02 = vld1q_f32(c0 + 8), c03 = vld1q_f32(c0 + 12);
-    float32x4_t c10 = vld1q_f32(c1), c11 = vld1q_f32(c1 + 4);
-    float32x4_t c12 = vld1q_f32(c1 + 8), c13 = vld1q_f32(c1 + 12);
-    float32x4_t c20 = vld1q_f32(c2), c21 = vld1q_f32(c2 + 4);
-    float32x4_t c22 = vld1q_f32(c2 + 8), c23 = vld1q_f32(c2 + 12);
-    float32x4_t c30 = vld1q_f32(c3), c31 = vld1q_f32(c3 + 4);
-    float32x4_t c32 = vld1q_f32(c3 + 8), c33 = vld1q_f32(c3 + 12);
-
-    for (std::size_t k = 0; k < k_len; ++k) {
-        // Load 4 consecutive B elements per vector × 4 vectors = 16 f32.
-        const float32x4_t b0 = vld1q_f32(b + k * ldb);
-        const float32x4_t b1 = vld1q_f32(b + k * ldb + 4);
-        const float32x4_t b2 = vld1q_f32(b + k * ldb + 8);
-        const float32x4_t b3 = vld1q_f32(b + k * ldb + 12);
-
-        // Broadcast A(i+r, k) for the 4 rows (see the note above on how the
-        // compiler folds these into by-element FMAs).
-        const float32x4_t a0 = vdupq_n_f32(a[0 * lda + k]);
-        const float32x4_t a1 = vdupq_n_f32(a[1 * lda + k]);
-        const float32x4_t a2 = vdupq_n_f32(a[2 * lda + k]);
-        const float32x4_t a3 = vdupq_n_f32(a[3 * lda + k]);
-
-        // 16 FMA instructions (4 rows × 4 B-vectors).
-        c00 = vfmaq_f32(c00, a0, b0);
-        c01 = vfmaq_f32(c01, a0, b1);
-        c02 = vfmaq_f32(c02, a0, b2);
-        c03 = vfmaq_f32(c03, a0, b3);
-        c10 = vfmaq_f32(c10, a1, b0);
-        c11 = vfmaq_f32(c11, a1, b1);
-        c12 = vfmaq_f32(c12, a1, b2);
-        c13 = vfmaq_f32(c13, a1, b3);
-        c20 = vfmaq_f32(c20, a2, b0);
-        c21 = vfmaq_f32(c21, a2, b1);
-        c22 = vfmaq_f32(c22, a2, b2);
-        c23 = vfmaq_f32(c23, a2, b3);
-        c30 = vfmaq_f32(c30, a3, b0);
-        c31 = vfmaq_f32(c31, a3, b1);
-        c32 = vfmaq_f32(c32, a3, b2);
-        c33 = vfmaq_f32(c33, a3, b3);
-    }
-
-    // Store 4×16 C tile.
-    vst1q_f32(c0, c00);
-    vst1q_f32(c0 + 4, c01);
-    vst1q_f32(c0 + 8, c02);
-    vst1q_f32(c0 + 12, c03);
-    vst1q_f32(c1, c10);
-    vst1q_f32(c1 + 4, c11);
-    vst1q_f32(c1 + 8, c12);
-    vst1q_f32(c1 + 12, c13);
-    vst1q_f32(c2, c20);
-    vst1q_f32(c2 + 4, c21);
-    vst1q_f32(c2 + 8, c22);
-    vst1q_f32(c2 + 12, c23);
-    vst1q_f32(c3, c30);
-    vst1q_f32(c3 + 4, c31);
-    vst1q_f32(c3 + 8, c32);
-    vst1q_f32(c3 + 12, c33);
-}
-
-/**
- * @brief NEON f64 micro-kernel: C[i..i+7][j..j+3] += A[i..i+7][k_blk..k_end) × B[..][j..)
- *
- * Register tile: 8 rows × 2 Q-vectors = 8×4 f64, 16 accumulators. The P-core
- * issues up to 4 FMAs per cycle with a ~3-cycle latency, so it takes 12–16
- * independent accumulators to keep the pipes busy (fma_peak). The previous
- * 4×4 tile had 8 and ran at half the rate of this one on L1-resident data
- * (simd_microkernel, docs/experiments/cpu-simd).
- *
- * @param c  Pointer to C(i, j) — row-stride ldc
- */
-inline void neon_micro_f64_8x4(const double* __restrict__ a, const double* __restrict__ b,
-                               double* __restrict__ c, std::size_t lda, std::size_t ldb,
-                               std::size_t ldc, std::size_t k_len) noexcept {
-    constexpr int R = 8;
-    float64x2_t acc[R][2];
-#pragma GCC unroll 8
-    for (int r = 0; r < R; ++r) {
-        acc[r][0] = vld1q_f64(c + r * ldc);
-        acc[r][1] = vld1q_f64(c + r * ldc + 2);
-    }
-    for (std::size_t k = 0; k < k_len; ++k) {
-        const float64x2_t b0 = vld1q_f64(b + k * ldb);
-        const float64x2_t b1 = vld1q_f64(b + k * ldb + 2);
-#pragma GCC unroll 8
-        for (int r = 0; r < R; ++r) {
-            const float64x2_t ar = vdupq_n_f64(a[r * lda + k]);
-            acc[r][0]            = vfmaq_f64(acc[r][0], ar, b0);
-            acc[r][1]            = vfmaq_f64(acc[r][1], ar, b1);
-        }
-    }
-#pragma GCC unroll 8
-    for (int r = 0; r < R; ++r) {
-        vst1q_f64(c + r * ldc, acc[r][0]);
-        vst1q_f64(c + r * ldc + 2, acc[r][1]);
-    }
-}
-
-#endif  // HPC_HAS_NEON
-
-// ============================================================================
 // Kernel 1: gemm_neon_naive  —  i → j → k,  NEON on the k-loop
 // ============================================================================
 
@@ -337,6 +196,106 @@ void gemm_neon_reordered(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
 #endif  // HPC_HAS_NEON
 
 // ============================================================================
+// For Kernel 3: tile sizes (also used by gemm_neon_blocked_prefetch)
+// ============================================================================
+
+inline constexpr std::size_t kNeonTileM = 64;   // outer i-tile
+inline constexpr std::size_t kNeonTileK = 256;  // outer k-tile
+inline constexpr std::size_t kNeonTileN = 256;  // outer j-tile
+
+// f32 micro-kernel: 4 rows × 4 Q-vectors per row = 4×16 j-elements
+inline constexpr std::size_t kNeonF32RegRows = 4;
+inline constexpr std::size_t kNeonF32RegCols = 4;  // 4 Q-vectors → 16 f32
+
+// f64 micro-kernel: 8 rows × 2 Q-vectors per row = 8×4 j-elements
+inline constexpr std::size_t kNeonF64RegRows = 8;
+inline constexpr std::size_t kNeonF64RegCols = 2;  // 2 Q-vectors → 4 f64
+
+// ============================================================================
+// For Kernel 3: the register-tile micro-kernel
+// ============================================================================
+
+#if HPC_HAS_NEON
+
+/// Q-register (128-bit) operations per element type, for neon_micro.
+template <typename T> struct Q;
+template <> struct Q<float> {
+    using V = float32x4_t;
+    static V load(const float* p) { return vld1q_f32(p); }
+    static void store(float* p, V v) { vst1q_f32(p, v); }
+    static V splat(float x) { return vdupq_n_f32(x); }
+    static V fma(V acc, V x, V y) { return vfmaq_f32(acc, x, y); }
+};
+template <> struct Q<double> {
+    using V = float64x2_t;
+    static V load(const double* p) { return vld1q_f64(p); }
+    static void store(double* p, V v) { vst1q_f64(p, v); }
+    static V splat(double x) { return vdupq_n_f64(x); }
+    static V fma(V acc, V x, V y) { return vfmaq_f64(acc, x, y); }
+};
+
+/**
+ * @brief NEON micro-kernel: C[0..R)[0..V·W) += A[0..R)[0..k_len) × B[0..k_len)[0..V·W)
+ *
+ * W = 4 f32 / 2 f64 per Q register; R rows × V Q-vectors of C stay in
+ * R·V accumulators for the whole k loop. Per k step: V loads of B row k,
+ * R broadcasts of A(i+r, k), R·V FMAs. The library uses two shapes, both
+ * with 16 accumulators:
+ *
+ *   f32  R = 4, V = 4   a 4 × 16 tile
+ *   f64  R = 8, V = 2   an 8 × 4 tile
+ *
+ * The P-core issues up to 4 FMAs per cycle with a ~3.3-cycle latency, so
+ * it takes 12–16 independent accumulators to keep the pipes busy
+ * (fma_peak). The f64 kernel had a 4 × 4 tile with 8 accumulators before,
+ * and ran at half this one's rate on L1-resident data (simd_microkernel,
+ * docs/experiments/cpu-simd).
+ *
+ * The source broadcasts each A(i+r, k) with vdup and uses plain vfmaq;
+ * Clang 17 (-O3 -mcpu=apple-m4) turns each broadcast into one ld1r
+ * (load and replicate), so a k step of the f32 kernel is 2 ldp of B,
+ * 4 ld1r of A and 16 fmla.
+ *
+ * @param a  Pointer to A(i, k_blk) — row-stride lda
+ * @param b  Pointer to B(k_blk, j) — row-stride ldb
+ * @param c  Pointer to C(i, j)     — row-stride ldc
+ */
+template <typename T, std::size_t R, std::size_t V>
+inline void neon_micro(const T* __restrict__ a, const T* __restrict__ b, T* __restrict__ c,
+                       std::size_t lda, std::size_t ldb, std::size_t ldc, std::size_t k_len) noexcept {
+    using N                 = Q<T>;
+    using Vec               = typename N::V;
+    constexpr std::size_t W = 16 / sizeof(T);
+
+    Vec acc[R][V];
+#pragma GCC unroll 8
+    for (std::size_t r = 0; r < R; ++r)
+#pragma GCC unroll 4
+        for (std::size_t v = 0; v < V; ++v)
+            acc[r][v] = N::load(c + r * ldc + v * W);
+    for (std::size_t k = 0; k < k_len; ++k) {
+        Vec bv[V];
+#pragma GCC unroll 4
+        for (std::size_t v = 0; v < V; ++v)
+            bv[v] = N::load(b + k * ldb + v * W);
+#pragma GCC unroll 8
+        for (std::size_t r = 0; r < R; ++r) {
+            const Vec ar = N::splat(a[r * lda + k]);
+#pragma GCC unroll 4
+            for (std::size_t v = 0; v < V; ++v)
+                acc[r][v] = N::fma(acc[r][v], ar, bv[v]);
+        }
+    }
+#pragma GCC unroll 8
+    for (std::size_t r = 0; r < R; ++r)
+#pragma GCC unroll 4
+        for (std::size_t v = 0; v < V; ++v)
+            N::store(c + r * ldc + v * W, acc[r][v]);
+}
+
+#endif  // HPC_HAS_NEON
+
+// ============================================================================
 // Kernel 3: gemm_neon_blocked  —  tiled i → k → j,  NEON register tile
 // ============================================================================
 
@@ -390,22 +349,9 @@ void gemm_neon_blocked(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
                     const T* b_ptr = B.data() + k_blk * ldb + j_blk;
 
                     std::size_t j = j_blk;
-                    for (; j + kJStep <= j_end; j += kJStep) {
-                        T* c0 = C.data() + i * ldc + j;
-                        if constexpr (sizeof(T) == 4) {
-                            neon_micro_f32_4x16(reinterpret_cast<const float*>(a_ptr),
-                                                reinterpret_cast<const float*>(b_ptr + (j - j_blk)),
-                                                reinterpret_cast<float*>(c0),
-                                                reinterpret_cast<float*>(c0 + ldc),
-                                                reinterpret_cast<float*>(c0 + 2 * ldc),
-                                                reinterpret_cast<float*>(c0 + 3 * ldc), lda, ldb,
-                                                k_len);
-                        } else {
-                            neon_micro_f64_8x4(reinterpret_cast<const double*>(a_ptr),
-                                               reinterpret_cast<const double*>(b_ptr + (j - j_blk)),
-                                               reinterpret_cast<double*>(c0), lda, ldb, ldc, k_len);
-                        }
-                    }
+                    for (; j + kJStep <= j_end; j += kJStep)
+                        neon_micro<T, kRegRows, kRegCols>(a_ptr, b_ptr + (j - j_blk), C.data() + i * ldc + j,
+                                                          lda, ldb, ldc, k_len);
                     // Scalar j-tail
                     for (; j < j_end; ++j)
                         for (std::size_t ii = i; ii < i + kRegRows; ++ii) {

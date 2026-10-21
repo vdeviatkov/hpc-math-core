@@ -46,99 +46,6 @@
 namespace hpc::gemm {
 
 // ============================================================================
-// AVX-512 tile / unroll constants
-// ============================================================================
-
-inline constexpr std::size_t kAvx512TileM = 64;   // outer i-tile (same as AVX2)
-inline constexpr std::size_t kAvx512TileK = 256;  // outer k-tile (same as AVX2)
-inline constexpr std::size_t kAvx512TileN = 512;  // outer j-tile — wider: 512 f32 = 2 KB/row
-
-// Micro-kernel unroll: 8 C rows × 2 ZMM vectors per row = 16 accumulators.
-// f32: 2 × 16 = 32 j-elements per call  (vs 16 in AVX2)
-// f64: 2 ×  8 = 16 j-elements per call  (vs  8 in AVX2)
-inline constexpr std::size_t kAvx512F32RegRows = 8;
-inline constexpr std::size_t kAvx512F32RegCols = 2;  // 2 ZMM → 32 f32
-inline constexpr std::size_t kAvx512F64RegRows = 8;
-inline constexpr std::size_t kAvx512F64RegCols = 2;  // 2 ZMM → 16 f64
-
-// ============================================================================
-// AVX-512 micro-kernels
-// ============================================================================
-
-#if HPC_HAS_AVX512
-
-/**
- * @brief AVX-512 micro-kernel: C[0..8)[0..2W) += A[0..8)[0..k_len) × B[0..k_len)[0..2W)
- *
- * W = 16 f32 / 8 f64 per ZMM. Per k step: 2 ZMM loads of B row k, 8
- * broadcasts of A(i+r, k), 16 FMAs into 16 accumulators (8 rows × 2 ZMM);
- * 16 + 2 + 1 of the 32 ZMM registers.
- *
- * Why 8 rows, not 4. Zen 5 retires 2 FMAs per cycle with a 4-cycle latency,
- * so 8 independent accumulators are the bare minimum and 12 are needed for
- * the full rate (fma_peak). With 4 rows × 2 ZMM, GCC 13 also folds the B
- * loads into the FMAs as memory operands (vfmadd231ps (mem), …), re-loading
- * B for every FMA: 12 loads per k step for 8 FMAs, so the kernel ran into
- * the load ports at 60% of peak. With 8 rows it loads B once per k step and
- * every FMA is register-only: 97% of peak on L1-resident data
- * (simd_microkernel, docs/experiments/cpu-simd).
- *
- * @param a      Pointer to A(i, k_blk) — row-stride lda
- * @param b      Pointer to B(k_blk, j) — row-stride ldb
- * @param c      Pointer to C(i, j)     — row-stride ldc
- */
-/// ZMM operations per element type, for avx512_micro_8x2.
-template <typename T> struct Zmm;
-template <> struct Zmm<float> {
-    using V = __m512;
-    static V load(const float* p) { return _mm512_loadu_ps(p); }
-    static void store(float* p, V v) { _mm512_storeu_ps(p, v); }
-    static V splat(float x) { return _mm512_set1_ps(x); }
-    static V fma(V x, V y, V acc) { return _mm512_fmadd_ps(x, y, acc); }
-};
-template <> struct Zmm<double> {
-    using V = __m512d;
-    static V load(const double* p) { return _mm512_loadu_pd(p); }
-    static void store(double* p, V v) { _mm512_storeu_pd(p, v); }
-    static V splat(double x) { return _mm512_set1_pd(x); }
-    static V fma(V x, V y, V acc) { return _mm512_fmadd_pd(x, y, acc); }
-};
-
-template <typename T>
-inline void avx512_micro_8x2(const T* __restrict__ a, const T* __restrict__ b, T* __restrict__ c,
-                             std::size_t lda, std::size_t ldb, std::size_t ldc,
-                             std::size_t k_len) noexcept {
-    using Z                 = Zmm<T>;
-    using V                 = typename Z::V;
-    constexpr std::size_t W = 64 / sizeof(T);
-    constexpr int R         = 8;
-
-    V acc[R][2];
-#pragma GCC unroll 8
-    for (int r = 0; r < R; ++r) {
-        acc[r][0] = Z::load(c + r * ldc);
-        acc[r][1] = Z::load(c + r * ldc + W);
-    }
-    for (std::size_t k = 0; k < k_len; ++k) {
-        const V b0 = Z::load(b + k * ldb);
-        const V b1 = Z::load(b + k * ldb + W);
-#pragma GCC unroll 8
-        for (int r = 0; r < R; ++r) {
-            const V ar = Z::splat(a[r * lda + k]);
-            acc[r][0]  = Z::fma(ar, b0, acc[r][0]);
-            acc[r][1]  = Z::fma(ar, b1, acc[r][1]);
-        }
-    }
-#pragma GCC unroll 8
-    for (int r = 0; r < R; ++r) {
-        Z::store(c + r * ldc, acc[r][0]);
-        Z::store(c + r * ldc + W, acc[r][1]);
-    }
-}
-
-#endif  // HPC_HAS_AVX512
-
-// ============================================================================
 // Kernel 1: gemm_avx512_naive  —  i → j → k,  512-bit SIMD on the k-loop
 // ============================================================================
 
@@ -292,6 +199,99 @@ void gemm_avx512_reordered(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C)
         }
     }
 }
+#endif  // HPC_HAS_AVX512
+
+// ============================================================================
+// For Kernel 3: tile sizes (also used by gemm_avx512_blocked_prefetch)
+// ============================================================================
+
+inline constexpr std::size_t kAvx512TileM = 64;   // outer i-tile (same as AVX2)
+inline constexpr std::size_t kAvx512TileK = 256;  // outer k-tile (same as AVX2)
+inline constexpr std::size_t kAvx512TileN = 512;  // outer j-tile — wider: 512 f32 = 2 KB/row
+
+// Micro-kernel unroll: 8 C rows × 2 ZMM vectors per row = 16 accumulators.
+// f32: 2 × 16 = 32 j-elements per call  (vs 16 in AVX2)
+// f64: 2 ×  8 = 16 j-elements per call  (vs  8 in AVX2)
+inline constexpr std::size_t kAvx512F32RegRows = 8;
+inline constexpr std::size_t kAvx512F32RegCols = 2;  // 2 ZMM → 32 f32
+inline constexpr std::size_t kAvx512F64RegRows = 8;
+inline constexpr std::size_t kAvx512F64RegCols = 2;  // 2 ZMM → 16 f64
+
+// ============================================================================
+// For Kernel 3: the register-tile micro-kernel
+// ============================================================================
+
+#if HPC_HAS_AVX512
+
+/**
+ * @brief AVX-512 micro-kernel: C[0..8)[0..2W) += A[0..8)[0..k_len) × B[0..k_len)[0..2W)
+ *
+ * W = 16 f32 / 8 f64 per ZMM. Per k step: 2 ZMM loads of B row k, 8
+ * broadcasts of A(i+r, k), 16 FMAs into 16 accumulators (8 rows × 2 ZMM);
+ * 16 + 2 + 1 of the 32 ZMM registers.
+ *
+ * Why 8 rows, not 4. Zen 5 retires 2 FMAs per cycle with a 4-cycle latency,
+ * so 8 independent accumulators are the bare minimum and 12 are needed for
+ * the full rate (fma_peak). With 4 rows × 2 ZMM, GCC 13 also folds the B
+ * loads into the FMAs as memory operands (vfmadd231ps (mem), …), re-loading
+ * B for every FMA: 12 loads per k step for 8 FMAs, so the kernel ran into
+ * the load ports at 60% of peak. With 8 rows it loads B once per k step and
+ * every FMA is register-only: 97% of peak on L1-resident data
+ * (simd_microkernel, docs/experiments/cpu-simd).
+ *
+ * @param a      Pointer to A(i, k_blk) — row-stride lda
+ * @param b      Pointer to B(k_blk, j) — row-stride ldb
+ * @param c      Pointer to C(i, j)     — row-stride ldc
+ */
+/// ZMM operations per element type, for avx512_micro_8x2.
+template <typename T> struct Zmm;
+template <> struct Zmm<float> {
+    using V = __m512;
+    static V load(const float* p) { return _mm512_loadu_ps(p); }
+    static void store(float* p, V v) { _mm512_storeu_ps(p, v); }
+    static V splat(float x) { return _mm512_set1_ps(x); }
+    static V fma(V x, V y, V acc) { return _mm512_fmadd_ps(x, y, acc); }
+};
+template <> struct Zmm<double> {
+    using V = __m512d;
+    static V load(const double* p) { return _mm512_loadu_pd(p); }
+    static void store(double* p, V v) { _mm512_storeu_pd(p, v); }
+    static V splat(double x) { return _mm512_set1_pd(x); }
+    static V fma(V x, V y, V acc) { return _mm512_fmadd_pd(x, y, acc); }
+};
+
+template <typename T>
+inline void avx512_micro_8x2(const T* __restrict__ a, const T* __restrict__ b, T* __restrict__ c,
+                             std::size_t lda, std::size_t ldb, std::size_t ldc,
+                             std::size_t k_len) noexcept {
+    using Z                 = Zmm<T>;
+    using V                 = typename Z::V;
+    constexpr std::size_t W = 64 / sizeof(T);
+    constexpr int R         = 8;
+
+    V acc[R][2];
+#pragma GCC unroll 8
+    for (int r = 0; r < R; ++r) {
+        acc[r][0] = Z::load(c + r * ldc);
+        acc[r][1] = Z::load(c + r * ldc + W);
+    }
+    for (std::size_t k = 0; k < k_len; ++k) {
+        const V b0 = Z::load(b + k * ldb);
+        const V b1 = Z::load(b + k * ldb + W);
+#pragma GCC unroll 8
+        for (int r = 0; r < R; ++r) {
+            const V ar = Z::splat(a[r * lda + k]);
+            acc[r][0]  = Z::fma(ar, b0, acc[r][0]);
+            acc[r][1]  = Z::fma(ar, b1, acc[r][1]);
+        }
+    }
+#pragma GCC unroll 8
+    for (int r = 0; r < R; ++r) {
+        Z::store(c + r * ldc, acc[r][0]);
+        Z::store(c + r * ldc + W, acc[r][1]);
+    }
+}
+
 #endif  // HPC_HAS_AVX512
 
 // ============================================================================

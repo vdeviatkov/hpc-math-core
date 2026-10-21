@@ -45,144 +45,6 @@
 namespace hpc::gemm {
 
 // ============================================================================
-// SVE tile constants
-// ============================================================================
-// The j-step is svcntw()/svcntd() × kSveRegCols, read at runtime; only the
-// outer blocking tile sizes are compile-time constants.
-
-inline constexpr std::size_t kSveTileM = 64;   // outer i-tile (rows of A / C)
-inline constexpr std::size_t kSveTileK = 256;  // outer k-tile (contraction width)
-inline constexpr std::size_t kSveTileN = 512;  // outer j-tile (cols of B / C)
-
-// Number of C rows accumulated simultaneously in the blocked micro-kernel.
-// 4 rows × 2 vectors; at 256-bit VL that is 4 × 16 f32 (256 B), the same
-// tile as AVX2 blocked.
-inline constexpr std::size_t kSveRegRows = 4;
-// Number of SVE vectors per C row in the micro-kernel.
-// 2 vectors × VL elements = 2*svcntw() f32 or 2*svcntd() f64 per row.
-inline constexpr std::size_t kSveRegCols = 2;
-
-// ============================================================================
-// SVE micro-kernels (used only by gemm_sve_blocked)
-// ============================================================================
-
-#if HPC_HAS_SVE
-
-/**
- * @brief SVE f32 micro-kernel: C[i..i+3][j..j+2*VL) += A[i..i+3][k_blk..k_end) × B[..][j..)
- *
- * Register tile: 4 rows × 2 SVE vectors = 4 × (2 * svcntw()) f32.
- *
- * 128-bit SVE: 4 × 8 f32 (128 B); 256-bit: 4 × 16 (256 B); 512-bit: 4 × 32 (512 B).
- *
- * pg0/pg1 are all-true except in the j-tail, where they come from
- * svwhilelt_b32. svmla_f32_x leaves inactive lanes undefined; that is safe
- * because the final stores use the same predicates, so those lanes are
- * never written to C.
- *
- * @param a      A(i, k_blk) — row stride lda
- * @param b      B(k_blk, j), with the second vector at b + svcntw()
- * @param c0..c3 C(i+0..3, j)
- * @param pg0/1  Predicates for the two B/C vector blocks (all-true or tail)
- */
-inline void sve_micro_f32_4x2v(const float* __restrict__ a, const float* __restrict__ b,
-                               float* __restrict__ c0, float* __restrict__ c1,
-                               float* __restrict__ c2, float* __restrict__ c3, std::size_t lda,
-                               std::size_t ldb, std::size_t k_len, svbool_t pg0,
-                               svbool_t pg1) noexcept {
-    const std::uint64_t vl = svptest_any(svptrue_b32(), pg1) ? svcntw() : 0;
-    // Reuse the first address for an inactive second vector: even masked
-    // loads/stores must not form a pointer beyond the allocation.
-
-    // Load 4×2 SVE-vector C tile.
-    svfloat32_t c00 = svld1_f32(pg0, c0), c01 = svld1_f32(pg1, c0 + vl);
-    svfloat32_t c10 = svld1_f32(pg0, c1), c11 = svld1_f32(pg1, c1 + vl);
-    svfloat32_t c20 = svld1_f32(pg0, c2), c21 = svld1_f32(pg1, c2 + vl);
-    svfloat32_t c30 = svld1_f32(pg0, c3), c31 = svld1_f32(pg1, c3 + vl);
-
-    for (std::size_t k = 0; k < k_len; ++k) {
-        // Load 2 SVE vectors of B row k.
-        const svfloat32_t b0 = svld1_f32(pg0, b + k * ldb);
-        const svfloat32_t b1 = svld1_f32(pg1, b + k * ldb + vl);
-
-        // Broadcast A(i+r, k) to all lanes — single scalar → full vector.
-        const svfloat32_t a0 = svdup_n_f32(a[0 * lda + k]);
-        const svfloat32_t a1 = svdup_n_f32(a[1 * lda + k]);
-        const svfloat32_t a2 = svdup_n_f32(a[2 * lda + k]);
-        const svfloat32_t a3 = svdup_n_f32(a[3 * lda + k]);
-
-        // 8 predicated FMA instructions.
-        c00 = svmla_f32_x(pg0, c00, a0, b0);
-        c01 = svmla_f32_x(pg1, c01, a0, b1);
-        c10 = svmla_f32_x(pg0, c10, a1, b0);
-        c11 = svmla_f32_x(pg1, c11, a1, b1);
-        c20 = svmla_f32_x(pg0, c20, a2, b0);
-        c21 = svmla_f32_x(pg1, c21, a2, b1);
-        c30 = svmla_f32_x(pg0, c30, a3, b0);
-        c31 = svmla_f32_x(pg1, c31, a3, b1);
-    }
-
-    // Store 4×2 SVE-vector C tile back.
-    svst1_f32(pg0, c0, c00);
-    svst1_f32(pg1, c0 + vl, c01);
-    svst1_f32(pg0, c1, c10);
-    svst1_f32(pg1, c1 + vl, c11);
-    svst1_f32(pg0, c2, c20);
-    svst1_f32(pg1, c2 + vl, c21);
-    svst1_f32(pg0, c3, c30);
-    svst1_f32(pg1, c3 + vl, c31);
-}
-
-/**
- * @brief SVE f64 micro-kernel: C[i..i+3][j..j+2*VL) += A[i..i+3][k_blk..k_end) × B[..][j..)
- *
- * Register tile: 4 rows × 2 SVE vectors = 4 × (2 * svcntd()) f64.
- * Same structure as f32 but using f64 intrinsics and svcntd() for VL.
- */
-inline void sve_micro_f64_4x2v(const double* __restrict__ a, const double* __restrict__ b,
-                               double* __restrict__ c0, double* __restrict__ c1,
-                               double* __restrict__ c2, double* __restrict__ c3, std::size_t lda,
-                               std::size_t ldb, std::size_t k_len, svbool_t pg0,
-                               svbool_t pg1) noexcept {
-    const std::uint64_t vl = svptest_any(svptrue_b64(), pg1) ? svcntd() : 0;
-
-    svfloat64_t c00 = svld1_f64(pg0, c0), c01 = svld1_f64(pg1, c0 + vl);
-    svfloat64_t c10 = svld1_f64(pg0, c1), c11 = svld1_f64(pg1, c1 + vl);
-    svfloat64_t c20 = svld1_f64(pg0, c2), c21 = svld1_f64(pg1, c2 + vl);
-    svfloat64_t c30 = svld1_f64(pg0, c3), c31 = svld1_f64(pg1, c3 + vl);
-
-    for (std::size_t k = 0; k < k_len; ++k) {
-        const svfloat64_t b0 = svld1_f64(pg0, b + k * ldb);
-        const svfloat64_t b1 = svld1_f64(pg1, b + k * ldb + vl);
-
-        const svfloat64_t a0 = svdup_n_f64(a[0 * lda + k]);
-        const svfloat64_t a1 = svdup_n_f64(a[1 * lda + k]);
-        const svfloat64_t a2 = svdup_n_f64(a[2 * lda + k]);
-        const svfloat64_t a3 = svdup_n_f64(a[3 * lda + k]);
-
-        c00 = svmla_f64_x(pg0, c00, a0, b0);
-        c01 = svmla_f64_x(pg1, c01, a0, b1);
-        c10 = svmla_f64_x(pg0, c10, a1, b0);
-        c11 = svmla_f64_x(pg1, c11, a1, b1);
-        c20 = svmla_f64_x(pg0, c20, a2, b0);
-        c21 = svmla_f64_x(pg1, c21, a2, b1);
-        c30 = svmla_f64_x(pg0, c30, a3, b0);
-        c31 = svmla_f64_x(pg1, c31, a3, b1);
-    }
-
-    svst1_f64(pg0, c0, c00);
-    svst1_f64(pg1, c0 + vl, c01);
-    svst1_f64(pg0, c1, c10);
-    svst1_f64(pg1, c1 + vl, c11);
-    svst1_f64(pg0, c2, c20);
-    svst1_f64(pg1, c2 + vl, c21);
-    svst1_f64(pg0, c3, c30);
-    svst1_f64(pg1, c3 + vl, c31);
-}
-
-#endif  // HPC_HAS_SVE
-
-// ============================================================================
 // Kernel 1: gemm_sve_naive  —  i → j → k,  SVE on the k-loop
 // ============================================================================
 
@@ -337,6 +199,144 @@ void gemm_sve_reordered(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
         }
     }
 }
+#endif  // HPC_HAS_SVE
+
+// ============================================================================
+// For Kernel 3: tile sizes (also used by gemm_sve_blocked_prefetch)
+// ============================================================================
+// The j-step is svcntw()/svcntd() × kSveRegCols, read at runtime; only the
+// outer blocking tile sizes are compile-time constants.
+
+inline constexpr std::size_t kSveTileM = 64;   // outer i-tile (rows of A / C)
+inline constexpr std::size_t kSveTileK = 256;  // outer k-tile (contraction width)
+inline constexpr std::size_t kSveTileN = 512;  // outer j-tile (cols of B / C)
+
+// Number of C rows accumulated simultaneously in the blocked micro-kernel.
+// 4 rows × 2 vectors; at 256-bit VL that is 4 × 16 f32 (256 B), the same
+// tile as AVX2 blocked.
+inline constexpr std::size_t kSveRegRows = 4;
+// Number of SVE vectors per C row in the micro-kernel.
+// 2 vectors × VL elements = 2*svcntw() f32 or 2*svcntd() f64 per row.
+inline constexpr std::size_t kSveRegCols = 2;
+
+// ============================================================================
+// For Kernel 3: the register-tile micro-kernels
+// ============================================================================
+
+#if HPC_HAS_SVE
+
+/**
+ * @brief SVE f32 micro-kernel: C[i..i+3][j..j+2*VL) += A[i..i+3][k_blk..k_end) × B[..][j..)
+ *
+ * Register tile: 4 rows × 2 SVE vectors = 4 × (2 * svcntw()) f32.
+ *
+ * 128-bit SVE: 4 × 8 f32 (128 B); 256-bit: 4 × 16 (256 B); 512-bit: 4 × 32 (512 B).
+ *
+ * pg0/pg1 are all-true except in the j-tail, where they come from
+ * svwhilelt_b32. svmla_f32_x leaves inactive lanes undefined; that is safe
+ * because the final stores use the same predicates, so those lanes are
+ * never written to C.
+ *
+ * @param a      A(i, k_blk) — row stride lda
+ * @param b      B(k_blk, j), with the second vector at b + svcntw()
+ * @param c0..c3 C(i+0..3, j)
+ * @param pg0/1  Predicates for the two B/C vector blocks (all-true or tail)
+ */
+inline void sve_micro_f32_4x2v(const float* __restrict__ a, const float* __restrict__ b,
+                               float* __restrict__ c0, float* __restrict__ c1,
+                               float* __restrict__ c2, float* __restrict__ c3, std::size_t lda,
+                               std::size_t ldb, std::size_t k_len, svbool_t pg0,
+                               svbool_t pg1) noexcept {
+    const std::uint64_t vl = svptest_any(svptrue_b32(), pg1) ? svcntw() : 0;
+    // Reuse the first address for an inactive second vector: even masked
+    // loads/stores must not form a pointer beyond the allocation.
+
+    // Load 4×2 SVE-vector C tile.
+    svfloat32_t c00 = svld1_f32(pg0, c0), c01 = svld1_f32(pg1, c0 + vl);
+    svfloat32_t c10 = svld1_f32(pg0, c1), c11 = svld1_f32(pg1, c1 + vl);
+    svfloat32_t c20 = svld1_f32(pg0, c2), c21 = svld1_f32(pg1, c2 + vl);
+    svfloat32_t c30 = svld1_f32(pg0, c3), c31 = svld1_f32(pg1, c3 + vl);
+
+    for (std::size_t k = 0; k < k_len; ++k) {
+        // Load 2 SVE vectors of B row k.
+        const svfloat32_t b0 = svld1_f32(pg0, b + k * ldb);
+        const svfloat32_t b1 = svld1_f32(pg1, b + k * ldb + vl);
+
+        // Broadcast A(i+r, k) to all lanes — single scalar → full vector.
+        const svfloat32_t a0 = svdup_n_f32(a[0 * lda + k]);
+        const svfloat32_t a1 = svdup_n_f32(a[1 * lda + k]);
+        const svfloat32_t a2 = svdup_n_f32(a[2 * lda + k]);
+        const svfloat32_t a3 = svdup_n_f32(a[3 * lda + k]);
+
+        // 8 predicated FMA instructions.
+        c00 = svmla_f32_x(pg0, c00, a0, b0);
+        c01 = svmla_f32_x(pg1, c01, a0, b1);
+        c10 = svmla_f32_x(pg0, c10, a1, b0);
+        c11 = svmla_f32_x(pg1, c11, a1, b1);
+        c20 = svmla_f32_x(pg0, c20, a2, b0);
+        c21 = svmla_f32_x(pg1, c21, a2, b1);
+        c30 = svmla_f32_x(pg0, c30, a3, b0);
+        c31 = svmla_f32_x(pg1, c31, a3, b1);
+    }
+
+    // Store 4×2 SVE-vector C tile back.
+    svst1_f32(pg0, c0, c00);
+    svst1_f32(pg1, c0 + vl, c01);
+    svst1_f32(pg0, c1, c10);
+    svst1_f32(pg1, c1 + vl, c11);
+    svst1_f32(pg0, c2, c20);
+    svst1_f32(pg1, c2 + vl, c21);
+    svst1_f32(pg0, c3, c30);
+    svst1_f32(pg1, c3 + vl, c31);
+}
+
+/**
+ * @brief SVE f64 micro-kernel: C[i..i+3][j..j+2*VL) += A[i..i+3][k_blk..k_end) × B[..][j..)
+ *
+ * Register tile: 4 rows × 2 SVE vectors = 4 × (2 * svcntd()) f64.
+ * Same structure as f32 but using f64 intrinsics and svcntd() for VL.
+ */
+inline void sve_micro_f64_4x2v(const double* __restrict__ a, const double* __restrict__ b,
+                               double* __restrict__ c0, double* __restrict__ c1,
+                               double* __restrict__ c2, double* __restrict__ c3, std::size_t lda,
+                               std::size_t ldb, std::size_t k_len, svbool_t pg0,
+                               svbool_t pg1) noexcept {
+    const std::uint64_t vl = svptest_any(svptrue_b64(), pg1) ? svcntd() : 0;
+
+    svfloat64_t c00 = svld1_f64(pg0, c0), c01 = svld1_f64(pg1, c0 + vl);
+    svfloat64_t c10 = svld1_f64(pg0, c1), c11 = svld1_f64(pg1, c1 + vl);
+    svfloat64_t c20 = svld1_f64(pg0, c2), c21 = svld1_f64(pg1, c2 + vl);
+    svfloat64_t c30 = svld1_f64(pg0, c3), c31 = svld1_f64(pg1, c3 + vl);
+
+    for (std::size_t k = 0; k < k_len; ++k) {
+        const svfloat64_t b0 = svld1_f64(pg0, b + k * ldb);
+        const svfloat64_t b1 = svld1_f64(pg1, b + k * ldb + vl);
+
+        const svfloat64_t a0 = svdup_n_f64(a[0 * lda + k]);
+        const svfloat64_t a1 = svdup_n_f64(a[1 * lda + k]);
+        const svfloat64_t a2 = svdup_n_f64(a[2 * lda + k]);
+        const svfloat64_t a3 = svdup_n_f64(a[3 * lda + k]);
+
+        c00 = svmla_f64_x(pg0, c00, a0, b0);
+        c01 = svmla_f64_x(pg1, c01, a0, b1);
+        c10 = svmla_f64_x(pg0, c10, a1, b0);
+        c11 = svmla_f64_x(pg1, c11, a1, b1);
+        c20 = svmla_f64_x(pg0, c20, a2, b0);
+        c21 = svmla_f64_x(pg1, c21, a2, b1);
+        c30 = svmla_f64_x(pg0, c30, a3, b0);
+        c31 = svmla_f64_x(pg1, c31, a3, b1);
+    }
+
+    svst1_f64(pg0, c0, c00);
+    svst1_f64(pg1, c0 + vl, c01);
+    svst1_f64(pg0, c1, c10);
+    svst1_f64(pg1, c1 + vl, c11);
+    svst1_f64(pg0, c2, c20);
+    svst1_f64(pg1, c2 + vl, c21);
+    svst1_f64(pg0, c3, c30);
+    svst1_f64(pg1, c3 + vl, c31);
+}
+
 #endif  // HPC_HAS_SVE
 
 // ============================================================================

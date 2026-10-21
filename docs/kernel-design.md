@@ -105,8 +105,10 @@ where needed, because the Matrix base alignment does not align every row.
 256-bit vectors contain 8 floats or 4 doubles. The blocked kernel uses
 64x256x256 outer M/K/N tiles and a 4-row by 2-vector register tile: 4x16
 float or 4x8 double. Eight accumulators, two B vectors and up to four A
-broadcasts fit the 16 YMM registers. Explicit micro-kernels expose this
-register budget clearly. Scalar j tails accumulate dot products for the
+broadcasts fit the 16 YMM registers. One micro-kernel template,
+`avx2_micro_4x2<T>`, serves both types through a small `Ymm<T>` traits
+struct; its fixed-count loops are fully unrolled, so the accumulator array
+lives in registers. Scalar j tails accumulate dot products for the
 remaining columns; scalar i tails use i-k-j. The prefetch family reuses
 these micro-kernels. AVX2 alone is insufficient: the code emits FMA too.
 
@@ -116,8 +118,8 @@ these micro-kernels. AVX2 alone is insufficient: the code emits FMA too.
 micro-kernel holds eight rows by two vectors, or 8x32 float / 8x16 double,
 in 16 of 32 ZMM registers. The larger tile supplies more independent FMA
 chains and encourages GCC to load B once instead of folding a repeated
-memory operand into every FMA. One templated micro-kernel handles both
-types with `if constexpr`; scalar row/column tails preserve arbitrary shapes.
+memory operand into every FMA. One micro-kernel template,
+`avx512_micro_8x2<T>`, handles both types through a `Zmm<T>` traits struct; scalar row/column tails preserve arbitrary shapes.
 The register shape is supported by the recorded Zen 5 experiment, not a
 universal optimum for all AVX-512 CPUs or compiler versions.
 
@@ -127,8 +129,9 @@ AArch64 NEON provides 32 128-bit registers, containing 4 floats or 2 doubles.
 Outer tiles are 64x256x256. Float uses a 4x16 tile (4x4 vectors); double
 uses 8x4 (8x2 vectors), both with 16 accumulator chains. The double tile's
 extra rows hide FMA latency better than the former 4-row tile on M4.
-Broadcasts may become by-element FMLA instructions; that is a compiler
-choice, not an intrinsic guarantee. Scalar tails handle incomplete tiles.
+One template, `neon_micro<T, R, V>` with a `Q<T>` traits struct, gives
+both shapes. Clang 17 emits each A broadcast as one `ld1r` (load and
+replicate); that is a compiler choice, not an intrinsic guarantee. Scalar tails handle incomplete tiles.
 AArch64 is required because these kernels include double-precision FMA.
 
 ### `src/gemm/sve.hpp`

@@ -166,24 +166,9 @@ void gemm_avx2_blocked_prefetch(const Matrix<T>& A, const Matrix<T>& B, Matrix<T
                     const T* a_ptr = A.data() + i * lda + k_blk;
                     const T* b_ptr = B.data() + k_blk * ldb + j_blk;
                     std::size_t j = j_blk;
-                    for (; j + kJStep <= j_end; j += kJStep) {
-                        T* c0 = C.data() + (i + 0) * ldc + j;
-                        T* c1 = C.data() + (i + 1) * ldc + j;
-                        T* c2 = C.data() + (i + 2) * ldc + j;
-                        T* c3 = C.data() + (i + 3) * ldc + j;
-                        if constexpr (sizeof(T) == 4)
-                            avx2_micro_f32_4x16(reinterpret_cast<const float*>(a_ptr),
-                                reinterpret_cast<const float*>(b_ptr + (j - j_blk)),
-                                reinterpret_cast<float*>(c0), reinterpret_cast<float*>(c1),
-                                reinterpret_cast<float*>(c2), reinterpret_cast<float*>(c3),
-                                lda, ldb, k_len);
-                        else
-                            avx2_micro_f64_4x8(reinterpret_cast<const double*>(a_ptr),
-                                reinterpret_cast<const double*>(b_ptr + (j - j_blk)),
-                                reinterpret_cast<double*>(c0), reinterpret_cast<double*>(c1),
-                                reinterpret_cast<double*>(c2), reinterpret_cast<double*>(c3),
-                                lda, ldb, k_len);
-                    }
+                    for (; j + kJStep <= j_end; j += kJStep)
+                        avx2_micro_4x2(a_ptr, b_ptr + (j - j_blk), C.data() + i * ldc + j, lda, ldb,
+                                       ldc, k_len);
                     for (; j < j_end; ++j)
                         for (std::size_t ii = i; ii < i + kRegRows; ++ii) {
                             T acc{};
@@ -305,19 +290,9 @@ void gemm_neon_blocked_prefetch(const Matrix<T>& A, const Matrix<T>& B, Matrix<T
                     const T* a_ptr = A.data() + i * lda + k_blk;
                     const T* b_ptr = B.data() + k_blk * ldb + j_blk;
                     std::size_t j = j_blk;
-                    for (; j + kJStep <= j_end; j += kJStep) {
-                        T* c0 = C.data() + i * ldc + j;
-                        if constexpr (sizeof(T) == 4)
-                            neon_micro_f32_4x16(reinterpret_cast<const float*>(a_ptr),
-                                reinterpret_cast<const float*>(b_ptr + (j - j_blk)),
-                                reinterpret_cast<float*>(c0), reinterpret_cast<float*>(c0 + ldc),
-                                reinterpret_cast<float*>(c0 + 2 * ldc),
-                                reinterpret_cast<float*>(c0 + 3 * ldc), lda, ldb, k_len);
-                        else
-                            neon_micro_f64_8x4(reinterpret_cast<const double*>(a_ptr),
-                                reinterpret_cast<const double*>(b_ptr + (j - j_blk)),
-                                reinterpret_cast<double*>(c0), lda, ldb, ldc, k_len);
-                    }
+                    for (; j + kJStep <= j_end; j += kJStep)
+                        neon_micro<T, kRegRows, kRegCols>(a_ptr, b_ptr + (j - j_blk), C.data() + i * ldc + j,
+                                                          lda, ldb, ldc, k_len);
                     for (; j < j_end; ++j)
                         for (std::size_t ii = i; ii < i + kRegRows; ++ii) {
                             T acc{};

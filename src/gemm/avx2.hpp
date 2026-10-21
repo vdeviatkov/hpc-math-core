@@ -36,105 +36,6 @@
 namespace hpc::gemm {
 
 // ============================================================================
-// Shared micro-kernel constants (used by gemm_avx2_blocked)
-// ============================================================================
-
-inline constexpr std::size_t kAvx2TileM = 64;   // outer i-tile
-inline constexpr std::size_t kAvx2TileK = 256;  // outer k-tile
-inline constexpr std::size_t kAvx2TileN = 256;  // outer j-tile
-
-inline constexpr std::size_t kF32RegRows = 4;   // C rows held in registers (f32 micro-kernel)
-inline constexpr std::size_t kF32RegCols = 2;   // YMM vectors per C row   (2×8  = 16 j-elems)
-inline constexpr std::size_t kF64RegRows = 4;   // C rows held in registers (f64 micro-kernel)
-inline constexpr std::size_t kF64RegCols = 2;   // YMM vectors per C row   (2×4  =  8 j-elems)
-
-// ============================================================================
-// Shared AVX2 micro-kernels (used only by gemm_avx2_blocked)
-// ============================================================================
-
-#if HPC_HAS_AVX2
-
-/// f32 register-tiled micro-kernel: C[i..i+3][j..j+15] += A[i..i+3][k..k+k_len) × B[k..][j..)
-inline void avx2_micro_f32_4x16(const float* __restrict__ a,  // A(i, k_blk) — stride lda
-                                const float* __restrict__ b,  // B(k_blk, j) — stride ldb
-                                float* __restrict__ c0,       // C(i,   j)
-                                float* __restrict__ c1,       // C(i+1, j)
-                                float* __restrict__ c2,       // C(i+2, j)
-                                float* __restrict__ c3,       // C(i+3, j)
-                                std::size_t lda, std::size_t ldb, std::size_t k_len) noexcept {
-    // Load the 4×16 C tile into 8 YMM accumulators.
-    __m256 c00 = _mm256_loadu_ps(c0), c01 = _mm256_loadu_ps(c0 + 8);
-    __m256 c10 = _mm256_loadu_ps(c1), c11 = _mm256_loadu_ps(c1 + 8);
-    __m256 c20 = _mm256_loadu_ps(c2), c21 = _mm256_loadu_ps(c2 + 8);
-    __m256 c30 = _mm256_loadu_ps(c3), c31 = _mm256_loadu_ps(c3 + 8);
-
-    for (std::size_t k = 0; k < k_len; ++k) {
-        const __m256 b0 = _mm256_loadu_ps(b + k * ldb);
-        const __m256 b1 = _mm256_loadu_ps(b + k * ldb + 8);
-        const __m256 a0 = _mm256_broadcast_ss(a + 0 * lda + k);
-        const __m256 a1 = _mm256_broadcast_ss(a + 1 * lda + k);
-        const __m256 a2 = _mm256_broadcast_ss(a + 2 * lda + k);
-        const __m256 a3 = _mm256_broadcast_ss(a + 3 * lda + k);
-        c00             = _mm256_fmadd_ps(a0, b0, c00);
-        c01             = _mm256_fmadd_ps(a0, b1, c01);
-        c10             = _mm256_fmadd_ps(a1, b0, c10);
-        c11             = _mm256_fmadd_ps(a1, b1, c11);
-        c20             = _mm256_fmadd_ps(a2, b0, c20);
-        c21             = _mm256_fmadd_ps(a2, b1, c21);
-        c30             = _mm256_fmadd_ps(a3, b0, c30);
-        c31             = _mm256_fmadd_ps(a3, b1, c31);
-    }
-
-    _mm256_storeu_ps(c0, c00);
-    _mm256_storeu_ps(c0 + 8, c01);
-    _mm256_storeu_ps(c1, c10);
-    _mm256_storeu_ps(c1 + 8, c11);
-    _mm256_storeu_ps(c2, c20);
-    _mm256_storeu_ps(c2 + 8, c21);
-    _mm256_storeu_ps(c3, c30);
-    _mm256_storeu_ps(c3 + 8, c31);
-}
-
-/// f64 register-tiled micro-kernel: C[i..i+3][j..j+7] += A[i..i+3][k..k+k_len) × B[k..][j..)
-inline void avx2_micro_f64_4x8(const double* __restrict__ a, const double* __restrict__ b,
-                               double* __restrict__ c0, double* __restrict__ c1,
-                               double* __restrict__ c2, double* __restrict__ c3, std::size_t lda,
-                               std::size_t ldb, std::size_t k_len) noexcept {
-    __m256d c00 = _mm256_loadu_pd(c0), c01 = _mm256_loadu_pd(c0 + 4);
-    __m256d c10 = _mm256_loadu_pd(c1), c11 = _mm256_loadu_pd(c1 + 4);
-    __m256d c20 = _mm256_loadu_pd(c2), c21 = _mm256_loadu_pd(c2 + 4);
-    __m256d c30 = _mm256_loadu_pd(c3), c31 = _mm256_loadu_pd(c3 + 4);
-
-    for (std::size_t k = 0; k < k_len; ++k) {
-        const __m256d b0 = _mm256_loadu_pd(b + k * ldb);
-        const __m256d b1 = _mm256_loadu_pd(b + k * ldb + 4);
-        const __m256d a0 = _mm256_broadcast_sd(a + 0 * lda + k);
-        const __m256d a1 = _mm256_broadcast_sd(a + 1 * lda + k);
-        const __m256d a2 = _mm256_broadcast_sd(a + 2 * lda + k);
-        const __m256d a3 = _mm256_broadcast_sd(a + 3 * lda + k);
-        c00              = _mm256_fmadd_pd(a0, b0, c00);
-        c01              = _mm256_fmadd_pd(a0, b1, c01);
-        c10              = _mm256_fmadd_pd(a1, b0, c10);
-        c11              = _mm256_fmadd_pd(a1, b1, c11);
-        c20              = _mm256_fmadd_pd(a2, b0, c20);
-        c21              = _mm256_fmadd_pd(a2, b1, c21);
-        c30              = _mm256_fmadd_pd(a3, b0, c30);
-        c31              = _mm256_fmadd_pd(a3, b1, c31);
-    }
-
-    _mm256_storeu_pd(c0, c00);
-    _mm256_storeu_pd(c0 + 4, c01);
-    _mm256_storeu_pd(c1, c10);
-    _mm256_storeu_pd(c1 + 4, c11);
-    _mm256_storeu_pd(c2, c20);
-    _mm256_storeu_pd(c2 + 4, c21);
-    _mm256_storeu_pd(c3, c30);
-    _mm256_storeu_pd(c3 + 4, c31);
-}
-
-#endif  // HPC_HAS_AVX2
-
-// ============================================================================
 // Kernel 1: gemm_avx2_naive  —  i → j → k,  SIMD on the k-loop
 // ============================================================================
 
@@ -297,6 +198,88 @@ void gemm_avx2_reordered(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
 #endif  // HPC_HAS_AVX2
 
 // ============================================================================
+// For Kernel 3: tile sizes (also used by gemm_avx2_blocked_prefetch)
+// ============================================================================
+
+inline constexpr std::size_t kAvx2TileM = 64;   // outer i-tile
+inline constexpr std::size_t kAvx2TileK = 256;  // outer k-tile
+inline constexpr std::size_t kAvx2TileN = 256;  // outer j-tile
+
+inline constexpr std::size_t kF32RegRows = 4;   // C rows held in registers (f32 micro-kernel)
+inline constexpr std::size_t kF32RegCols = 2;   // YMM vectors per C row   (2×8  = 16 j-elems)
+inline constexpr std::size_t kF64RegRows = 4;   // C rows held in registers (f64 micro-kernel)
+inline constexpr std::size_t kF64RegCols = 2;   // YMM vectors per C row   (2×4  =  8 j-elems)
+
+// ============================================================================
+// For Kernel 3: the register-tile micro-kernel
+// ============================================================================
+
+#if HPC_HAS_AVX2
+
+/// YMM operations per element type, for avx2_micro_4x2.
+template <typename T> struct Ymm;
+template <> struct Ymm<float> {
+    using V = __m256;
+    static V load(const float* p) { return _mm256_loadu_ps(p); }
+    static void store(float* p, V v) { _mm256_storeu_ps(p, v); }
+    static V broadcast(const float* p) { return _mm256_broadcast_ss(p); }
+    static V fma(V x, V y, V acc) { return _mm256_fmadd_ps(x, y, acc); }
+};
+template <> struct Ymm<double> {
+    using V = __m256d;
+    static V load(const double* p) { return _mm256_loadu_pd(p); }
+    static void store(double* p, V v) { _mm256_storeu_pd(p, v); }
+    static V broadcast(const double* p) { return _mm256_broadcast_sd(p); }
+    static V fma(V x, V y, V acc) { return _mm256_fmadd_pd(x, y, acc); }
+};
+
+/**
+ * @brief AVX2 micro-kernel: C[0..4)[0..2W) += A[0..4)[0..k_len) × B[0..k_len)[0..2W)
+ *
+ * W = 8 f32 / 4 f64 per YMM: a 4 × 16 f32 or 4 × 8 f64 tile of C in 8
+ * accumulators. Per k step: 2 YMM loads of B row k, 4 broadcasts of
+ * A(i+r, k), 8 FMAs. The fixed-count loops are fully unrolled, so the
+ * accumulators stay in registers (8 + 2 + 4 of the 16 YMM registers).
+ *
+ * @param a  Pointer to A(i, k_blk) — row-stride lda
+ * @param b  Pointer to B(k_blk, j) — row-stride ldb
+ * @param c  Pointer to C(i, j)     — row-stride ldc
+ */
+template <typename T>
+inline void avx2_micro_4x2(const T* __restrict__ a, const T* __restrict__ b, T* __restrict__ c,
+                           std::size_t lda, std::size_t ldb, std::size_t ldc,
+                           std::size_t k_len) noexcept {
+    using Y                 = Ymm<T>;
+    using V                 = typename Y::V;
+    constexpr std::size_t W = 32 / sizeof(T);
+    constexpr int R         = 4;
+
+    V acc[R][2];
+#pragma GCC unroll 4
+    for (int r = 0; r < R; ++r) {
+        acc[r][0] = Y::load(c + r * ldc);
+        acc[r][1] = Y::load(c + r * ldc + W);
+    }
+    for (std::size_t k = 0; k < k_len; ++k) {
+        const V b0 = Y::load(b + k * ldb);
+        const V b1 = Y::load(b + k * ldb + W);
+#pragma GCC unroll 4
+        for (int r = 0; r < R; ++r) {
+            const V ar = Y::broadcast(a + r * lda + k);
+            acc[r][0]  = Y::fma(ar, b0, acc[r][0]);
+            acc[r][1]  = Y::fma(ar, b1, acc[r][1]);
+        }
+    }
+#pragma GCC unroll 4
+    for (int r = 0; r < R; ++r) {
+        Y::store(c + r * ldc, acc[r][0]);
+        Y::store(c + r * ldc + W, acc[r][1]);
+    }
+}
+
+#endif  // HPC_HAS_AVX2
+
+// ============================================================================
 // Kernel 3: gemm_avx2_blocked  —  tiled i → k → j,  register-tiled micro-kernel
 // ============================================================================
 
@@ -354,27 +337,9 @@ void gemm_avx2_blocked(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
                     const T* b_ptr = B.data() + k_blk * ldb + j_blk;
 
                     std::size_t j = j_blk;
-                    for (; j + kJStep <= j_end; j += kJStep) {
-                        T* c0 = C.data() + (i + 0) * ldc + j;
-                        T* c1 = C.data() + (i + 1) * ldc + j;
-                        T* c2 = C.data() + (i + 2) * ldc + j;
-                        T* c3 = C.data() + (i + 3) * ldc + j;
-                        if constexpr (sizeof(T) == 4) {
-                            avx2_micro_f32_4x16(reinterpret_cast<const float*>(a_ptr),
-                                                reinterpret_cast<const float*>(b_ptr + (j - j_blk)),
-                                                reinterpret_cast<float*>(c0),
-                                                reinterpret_cast<float*>(c1),
-                                                reinterpret_cast<float*>(c2),
-                                                reinterpret_cast<float*>(c3), lda, ldb, k_len);
-                        } else {
-                            avx2_micro_f64_4x8(reinterpret_cast<const double*>(a_ptr),
-                                               reinterpret_cast<const double*>(b_ptr + (j - j_blk)),
-                                               reinterpret_cast<double*>(c0),
-                                               reinterpret_cast<double*>(c1),
-                                               reinterpret_cast<double*>(c2),
-                                               reinterpret_cast<double*>(c3), lda, ldb, k_len);
-                        }
-                    }
+                    for (; j + kJStep <= j_end; j += kJStep)
+                        avx2_micro_4x2(a_ptr, b_ptr + (j - j_blk), C.data() + i * ldc + j, lda, ldb,
+                                       ldc, k_len);
                     // Scalar j-tail
                     for (; j < j_end; ++j)
                         for (std::size_t ii = i; ii < i + kRegRows; ++ii) {

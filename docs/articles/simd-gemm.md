@@ -200,10 +200,11 @@ for (k = 0; k < kc; ++k) {
 ```
 
 Code: the micro-kernels
-[`neon_micro_f32_4x16`, `neon_micro_f64_8x4`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/neon.hpp),
-[`avx2_micro_f32_4x16`, `avx2_micro_f64_4x8`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/avx2.hpp) and
-[`avx512_micro_8x2`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/avx512.hpp), each called by the
-`gemm_<isa>_blocked` driver in the same file.
+[`neon_micro<T, rows, vectors>`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/neon.hpp),
+[`avx2_micro_4x2<T>`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/avx2.hpp) and
+[`avx512_micro_8x2<T>`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/avx512.hpp), each one
+template for FP32 and FP64 written like the loop above, and each called by
+the `gemm_<isa>_blocked` driver in the same file.
 
 Per k step: 2 vector loads and 8 broadcasts for 16 FMAs, against a load,
 a store and a load per FMA in step 2. C is loaded once before the loop and
