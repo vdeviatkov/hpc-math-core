@@ -16,16 +16,16 @@ Best kernel per family, single-threaded unless noted. Full output, speedup table
 |---|---|---|---|
 | Scalar, cache-blocked (`gemm_blocked`) | Apple M4 Max | 83 GFLOP/s | 26 GFLOP/s |
 | ARM NEON (`gemm_neon_blocked`) | Apple M4 Max | 95 GFLOP/s | 40 GFLOP/s |
-| AVX2 (`gemm_avx2_blocked`) | AMD Zen 5, GCC | 152 GFLOP/s | 75 GFLOP/s |
+| AVX2 (`gemm_avx2_blocked`) | AMD Zen 5, GCC | 151 GFLOP/s | 75 GFLOP/s |
 | AVX-512 (`gemm_avx512_blocked`) | AMD Zen 5, GCC | **333 GFLOP/s** | **162 GFLOP/s** |
 | ARM SME2 (`gemm_sme`) | Apple M4 Max | **1.53 TFLOP/s** | **436 GFLOP/s** |
-| Apple AMX via Accelerate (`gemm_amx`) ¹ | Apple M4 Max | 3.3 TFLOP/s | 860 GFLOP/s |
+| Apple AMX via Accelerate (`gemm_amx`) ¹ | Apple M4 Max | 3.18 TFLOP/s | 804 GFLOP/s |
 | Accelerate / KleidiAI, 1 core (reference) | Apple M4 Max | 1.72 / 1.66 TFLOP/s | 456 GFLOP/s / — |
 | CUDA, FMA (`gemm_cuda_vectorized`) ² | NVIDIA RTX 5080 | 27.5 TFLOP/s | 0.94 TFLOP/s |
 | CUDA, Tensor Cores (`gemm_cuda_tma`, Level 8) ² ³ | NVIDIA RTX 5080 | **120 TFLOP/s** | — |
 | cuBLAS SGEMM / dense-FP16 reference ² | NVIDIA RTX 5080 | 39 / 120 TFLOP/s | 0.85 TFLOP/s |
 
-¹ Vendor BLAS, may use multiple cores — not a single-core comparison.
+¹ Vendor BLAS with its default threading (all cores) — not a single-core comparison.
 ² GPU time of the GEMM alone, data already on the GPU (as the CPU rows measure the multiplication alone); best over N ≤ 16384.
 ³ fp16 inputs, fp32 accumulate; 100 % of cuBLAS FP16 on the same GPU at N = 16384 (Level 7, `gemm_cuda_wmma_pipelined`: 101 TFLOP/s, 83 %).
 
@@ -66,7 +66,7 @@ Detailed reasoning, contracts and tradeoffs for each source file:
 
 ## Quick start
 
-Requires CMake ≥ 3.25 and a C++20 compiler (GCC 12, Clang 16, Apple Clang 15 or MSVC 19.35+). CUDA 11.8+ is optional; without it the CUDA tests and benchmarks build against a stub and skip.
+Requires CMake ≥ 3.25 and a C++20 compiler (GCC 12, Clang 16, Apple Clang 15 or MSVC 19.35+). CUDA 12.0+ is optional (Level 8 uses the CUDA 12 tensor-map API); without it the CUDA tests and benchmarks build against a stub and skip. Measured with GCC 13.3, Apple Clang 17, CUDA 13.2 and CMake 3.28 / 4.1.
 
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release   # -O3 -march=native -ffast-math; CUDA detected automatically

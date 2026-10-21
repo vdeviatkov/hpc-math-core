@@ -23,7 +23,7 @@ Contents
 |---|---|---|
 | CMake | 3.25 | |
 | C++ compiler | GCC 12 / Clang 16 / Apple Clang 15 / MSVC 19.35+ | C++20 required |
-| CUDA toolkit | 11.8+ (optional) | GPU kernels only; CPU-only build works without it |
+| CUDA toolkit | 12.0+ (optional) | GPU kernels only; CPU-only build works without it. Level 8 needs CUDA 12's tensor-map API (`cuTensorMapEncodeTiled`); tested with 13.2 |
 
 ---
 
