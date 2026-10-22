@@ -8,36 +8,54 @@ Starting from readable scalar code, each step adds one layer of hardware exploit
 
 ---
 
+## Articles
+
+A five-part series built on this code; every number in it comes from the kernels and experiments here. Read on the [web](https://vdeviatkov.github.io/hpc-math-core/) or as Markdown.
+
+| Part | Article | Hardware | Key result |
+|--:|---|---|---|
+| 1 | [Matrix multiplication with SIMD on Apple M4 and AMD Zen 5](https://vdeviatkov.github.io/hpc-math-core/articles/simd-gemm.html) ([md](docs/articles/simd-gemm.md)) | M4 P-core (NEON), Zen 5 core (AVX2, AVX-512) | The textbook loop at 0.4 GFLOP/s to 328 GFLOP/s FP32 on one Zen 5 core, 91% of peak: loop order, cache blocks and register tiles, each chosen by measurement, and a compiler trap that held AVX-512 at 60% |
+| 2 | [Matrix multiplication on Apple M4's SME2 unit](https://vdeviatkov.github.io/hpc-math-core/articles/sme2-gemm.html) ([md](docs/articles/sme2-gemm.md)) | M4 SME2 matrix unit | Outer products, all four accumulator tiles, blocking and packing: 472 → 1,532 GFLOP/s on one unit (78% of peak), 85–94% of Apple's Accelerate |
+| 3 | [A power-of-two stride cuts SME2 GEMM throughput by two thirds on Apple M4](https://vdeviatkov.github.io/hpc-math-core/articles/sme2-cache-associativity.html) ([md](docs/articles/sme2-cache-associativity.md)) | M4 SME2, Zen 5 | B rows 16 KiB apart cost the M4 kernel two thirds of its speed through L2 set conflicts; padding or packing B fixes it. On Zen 5 the same effect costs 13–17% |
+| 4 | [Matrix multiplication on an RTX 5080](https://vdeviatkov.github.io/hpc-math-core/articles/cuda-gemm.html) ([md](docs/articles/cuda-gemm.md)) | RTX 5080 (FMA cores, Tensor Cores) | Nine CUDA kernels, one technique apart, from 3.7 to 120 TFLOP/s; the last, fed by TMA with warp specialisation, matches cuBLAS |
+| 5 | [Matrix multiplication in bf16, fp16, INT8 and FP8](https://vdeviatkov.github.io/hpc-math-core/articles/lowp-gemm.html) ([md](docs/articles/lowp-gemm.md)) | M4 NEON and SME2, Zen 5 AVX-512, RTX 5080 | The speed-up is a property of the instruction, not of the bit count: from 0.53× FP32 (bf16 on M4 NEON) to 8.3× (INT8 and FP8 on the RTX 5080), with the accuracy each format costs |
+
+---
+
 ## Headline results
 
-Best kernel per family, single-threaded unless noted. Full output, speedup tables and analysis in [docs/benchmarks.md](docs/benchmarks.md).
+Best kernel per family, single-threaded unless noted. The percentage after each result is its **efficiency**: measured throughput ÷ the compute peak in the last column, i.e. how much of the hardware's arithmetic the kernel actually uses (100% would mean every FMA unit busy every cycle). Full output, speedup tables and analysis in [docs/benchmarks.md](docs/benchmarks.md).
 
-| Family | Hardware | f32 peak | f64 peak |
-|---|---|---|---|
-| Scalar, cache-blocked (`gemm_blocked`) | Apple M4 Max | 83 GFLOP/s | 26 GFLOP/s |
-| ARM NEON (`gemm_neon_blocked`) ⁴ | Apple M4 Max | 124 GFLOP/s | 62 GFLOP/s |
-| AVX2 (`gemm_avx2_blocked`) ⁴ | AMD Zen 5, GCC | 172 GFLOP/s | 84 GFLOP/s |
-| AVX-512 (`gemm_avx512_blocked`) ⁴ | AMD Zen 5, GCC | **331 GFLOP/s** | **162 GFLOP/s** |
-| ARM SME2 (`gemm_sme`) | Apple M4 Max | **1.53 TFLOP/s** | **436 GFLOP/s** |
-| Apple AMX via Accelerate (`gemm_amx`) ¹ | Apple M4 Max | 3.18 TFLOP/s | 804 GFLOP/s |
-| Accelerate / KleidiAI, 1 core (reference) | Apple M4 Max | 1.72 / 1.66 TFLOP/s | 456 GFLOP/s / — |
-| CUDA, FMA (`gemm_cuda_vectorized`) ² | NVIDIA RTX 5080 | 27.5 TFLOP/s | 0.94 TFLOP/s |
-| CUDA, Tensor Cores (`gemm_cuda_tma`, Level 8) ² ³ | NVIDIA RTX 5080 | **120 TFLOP/s** | — |
-| cuBLAS SGEMM / dense-FP16 reference ² | NVIDIA RTX 5080 | 39 / 120 TFLOP/s | 0.85 TFLOP/s |
+| Family | Hardware | f32 (% of peak) | f64 (% of peak) | Compute peak, f32 / f64 ⁵ |
+|---|---|---|---|---|
+| Scalar, cache-blocked (`gemm_blocked`) | Apple M4 Max | 83 GFLOP/s (64%) | 26 GFLOP/s (40%) | ~130 / ~65 GFLOP/s: 4 FMA pipes × 128-bit, ~4.05 GHz |
+| ARM NEON (`gemm_neon_blocked`) ⁴ | Apple M4 Max | 124 GFLOP/s (86%) | 62 GFLOP/s (87%) | 144 / 72 GFLOP/s: 4 FMA pipes × 128-bit, 4.49 GHz |
+| AVX2 (`gemm_avx2_blocked`) ⁴ | AMD Zen 5, GCC | 172 GFLOP/s (94%) | 84 GFLOP/s (92%) | 183 / 91 GFLOP/s: 2 FMA pipes × 256-bit, 5.71 GHz |
+| AVX-512 (`gemm_avx512_blocked`) ⁴ | AMD Zen 5, GCC | **331 GFLOP/s** (91%) | **162 GFLOP/s** (89%) | 365 / 183 GFLOP/s: 2 FMA pipes × 512-bit, 5.71 GHz |
+| ARM SME2 (`gemm_sme`) | Apple M4 Max | **1.53 TFLOP/s** (78%) | **436 GFLOP/s** (87%) | 1.96 / 0.50 TFLOP/s: one SME unit, 1 `FMOPA` per cycle ⁶ |
+| Apple AMX via Accelerate (`gemm_amx`) ¹ | Apple M4 Max | 3.18 TFLOP/s (81%) | 804 GFLOP/s (80%) | 3.93 / 1.00 TFLOP/s: two SME units ⁶ |
+| Accelerate / KleidiAI, 1 core (reference) | Apple M4 Max | 1.72 / 1.66 TFLOP/s (88% / 85%) | 456 GFLOP/s / — (91%) | 1.96 / 0.50 TFLOP/s: one SME unit ⁶ |
+| CUDA, FMA (`gemm_cuda_vectorized`) ² | NVIDIA RTX 5080 | 27.5 TFLOP/s (45%) | 0.94 TFLOP/s (97%) | 60.9 / 0.97 TFLOP/s: 84 SMs × 128 FP32 / 2 FP64 lanes, 2.83–2.90 GHz |
+| CUDA, Tensor Cores (`gemm_cuda_tma`, Level 8) ² ³ | NVIDIA RTX 5080 | **120 TFLOP/s** (96%) | — | 124.7 TFLOP/s fp16 → fp32: 84 SMs × 512 flops per cycle, 2.90 GHz |
+| cuBLAS SGEMM / dense-FP16 reference ² | NVIDIA RTX 5080 | 39 / 120 TFLOP/s (64% / 96%) | 0.85 TFLOP/s (88%) | as the two rows above |
 
 ¹ Vendor BLAS with its default threading (all cores) — not a single-core comparison.
 ² GPU time of the GEMM alone, data already on the GPU (as the CPU rows measure the multiplication alone); best over N ≤ 16384.
 ³ fp16 inputs, fp32 accumulate; 100 % of cuBLAS FP16 on the same GPU at N = 16384 (Level 7, `gemm_cuda_wmma_pipelined`: 101 TFLOP/s, 83 %).
 ⁴ Best over every register-tile shape and cache block measured ([docs/kernels](docs/kernels/README.md)). The defaults reach 124 / 62 (NEON 6×4), 172 / 83 (AVX2 6×2) and 328 / 162 (AVX-512 8×3); the AVX-512 f32 best is the 14×2 tile at N = 256, the AVX2 f64 best the 6×2 tile with the earlier 64-row block. At N = 4096 the defaults run at 102 / 51, 106 / 54 and 295 / 145.
+⁵ Vector units × lanes × 2 flops per FMA × the clock measured during that row's runs (the M4 P-core clock moves with background load: 3.96–4.13 GHz for the scalar row, 4.49 GHz for NEON; the GPU's with power). For the Tensor Cores, 512 flops per SM per cycle is the rate the `mma.sync` microbenchmark implies. The microbenchmarks reach 98–100% of these figures ([cpu-simd](docs/experiments/cpu-simd/README.md), [CUDA](docs/articles/cuda-gemm.md)).
+⁶ Apple publishes no figures for its matrix unit. These are measured: `FMOPA` issues once per cycle with four accumulator tiles, 512 FP32 or 128 FP64 flops each ([part 2](docs/articles/sme2-gemm.md)); `gemm_amx` runs on both P-clusters' units.
 
 Low precision, best size, GOP/s counting a multiply-add as 2 ([article 5](docs/articles/lowp-gemm.md)):
 
-| Kernel | Hardware | bf16 → fp32 | INT8 → INT32 |
+| Kernel | Hardware | bf16 → fp32, measured / peak | INT8 → INT32, measured / peak |
 |---|---|--:|--:|
-| `gemm_avx512_bf16` / `gemm_avx512_i8` | AMD Zen 5, 1 core | 609 | 922 |
-| `gemm_neon_bf16` / `gemm_neon_i8` | Apple M4 Max, 1 P-core | 67 | 508 |
-| `gemm_sme_widening` | Apple M4 Max, 1 SME unit | 1,774 | 3,525 |
-| `gemm_cuda_lowp_tma_device` (Level 8) | NVIDIA RTX 5080 | 120,500 | 419,000 |
+| `gemm_avx512_bf16` / `gemm_avx512_i8` | AMD Zen 5, 1 core | 609 / 713 (85%) | 922 / 1,435 (64%) |
+| `gemm_neon_bf16` / `gemm_neon_i8` | Apple M4 Max, 1 P-core | 66 / 71 (93%) | 503 / 511 (98%) |
+| `gemm_sme_widening` | Apple M4 Max, 1 SME unit | 1,774 / 2,018 (88%) | 3,525 / 4,029 (87%) |
+| `gemm_cuda_lowp_tma_device` (Level 8) | NVIDIA RTX 5080 | 120,500 / 124,000 (97%) | 419,000 / 497,000 (84%) |
+
+The percentage is again measured ÷ peak. Peaks are the instructions' measured throughput (`VDPBF16PS` / `VPDPBUSD`, `BFMMLA` / `SMMLA`, widening `FMOPA` / `SMOPA`, `mma.sync`), from part 5's [peak table](docs/articles/lowp-gemm.md).
 
 ---
 
@@ -110,11 +128,6 @@ docs/                         Benchmark results, build guide, kernel design guid
 
 | Document | Contents |
 |---|---|
-| [Matrix multiplication with SIMD on Apple M4 and AMD Zen 5](docs/articles/simd-gemm.md) | Article 1: loop order, cache blocking and SIMD register tiles, with FMA latency and throughput measured on both CPUs |
-| [Matrix multiplication on Apple M4's SME2 unit](docs/articles/sme2-gemm.md) | Article 2: the SME2 GEMM step by step, from outer products to 1.5 TFLOP/s, with the machine measured down to its TLBs |
-| [A power-of-two stride cuts SME2 GEMM throughput by two thirds on Apple M4](docs/articles/sme2-cache-associativity.md) | Article 3: L2 set conflicts at a 16 KiB row stride, located and measured, and the two fixes |
-| [Matrix multiplication on an RTX 5080](docs/articles/cuda-gemm.md) | Article 4: nine CUDA kernels from 3.7 to 120 TFLOP/s, with the GPU's peaks, occupancy and bank conflicts measured |
-| [Matrix multiplication in bf16, fp16, INT8 and FP8](docs/articles/lowp-gemm.md) | Article 5: the same GEMM in five low-precision formats on M4 NEON and SME2, Zen 5 AVX-512 and the RTX 5080: peaks per format, the kernel changes, and the accuracy cost |
 | [src/gemm/README.md](src/gemm/README.md) | Map of the kernels: files, techniques, registers and intrinsics per family. Each kernel's design is in its own header. |
 | [docs/kernel-design.md](docs/kernel-design.md) | File-by-file design: algorithms, layouts, edges, precision, benchmark methodology and supporting files |
 | [docs/kernels/](docs/kernels/README.md) | Register-tile and cache-block sweeps of the AVX2, AVX-512 and NEON kernels on Zen 5 and M4, with the reasons for each default |
