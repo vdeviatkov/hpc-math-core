@@ -1,11 +1,11 @@
 ---
-title: "Matrix Multiplication with SIMD on Apple M4 and AMD Zen 5: From 0.4 to 333 GFLOP/s on One Core"
-description: "One CPU core, two architectures: loop order, cache blocking and SIMD register tiles, with FMA latency and throughput measured on Apple M4 and AMD Zen 5. A compiler code-generation trap held AVX-512 at 60% of peak; a larger tile takes it to 92%."
+title: "Matrix Multiplication with SIMD on Apple M4 and AMD Zen 5: From 0.4 to 328 GFLOP/s on One Core"
+description: "One CPU core, two architectures: loop order, cache blocking and SIMD register tiles, with FMA latency and throughput measured on Apple M4 and AMD Zen 5. A compiler code-generation trap held AVX-512 at 60% of peak; measured register tiles and cache blocks take it to 91%."
 date: 2026-10-15
 series_part: 1
 permalink: /articles/simd-gemm.html
 ---
-# Matrix multiplication with SIMD on Apple M4 and AMD Zen 5: from 0.4 to 333 GFLOP/s on one core
+# Matrix multiplication with SIMD on Apple M4 and AMD Zen 5: from 0.4 to 328 GFLOP/s on one core
 
 *One thread on an Apple M4 Max P-core and an AMD Ryzen 9 9950X (Zen 5)
 core. Every number was measured on those machines; the code is in
@@ -18,7 +18,7 @@ conflicts, [part 4](cuda-gemm.md) moves it to an NVIDIA GPU and
 Matrix multiplication, C = A · B, is the operation the rest of this series
 optimises on ever more specialised hardware. Before matrix units and GPUs,
 there is the ordinary CPU core: vector registers and fused multiply-add
-(FMA) instructions. This article takes the textbook triple loop to 92% of
+(FMA) instructions. This article takes the textbook triple loop to 91% of
 what a Zen 5 core can compute, measures every step on two quite different
 cores, and isolates the three things that decide the result:
 which loop runs innermost, which data stays in cache, and how many
@@ -39,10 +39,11 @@ independent accumulators the inner loop keeps in registers.
   92% of peak** (+53%). The same change made the M4's FP64 kernel 26–38%
   faster for N ≥ 256.
 - With the tile shape a template parameter, every family was swept over
-  9–10 shapes. The winners: 6 × 2 for AVX2 (+14–35% over 4 × 2), 8 × 3 for
-  AVX-512 (+10–16% FP32 and +24–36% FP64 at N ≥ 1024 over 8 × 2), and on
-  the M4 a 6 × 4 tile once A is loaded with `LDR` instead of `LD1R`: 85%
-  of peak in FP32 and FP64, +25% and +48% over the previous kernels.
+  9–10 shapes. The winners: 6 × 2 for AVX2 (+14–35% over 4 × 2 at
+  N ≥ 256), 8 × 3 for AVX-512 (+10–16% FP32 and +26–38% FP64 at N ≥ 1024
+  over 8 × 2), and on the M4 a 6 × 4 tile once A is loaded with `LDR`
+  instead of `LD1R`: +25% FP32 and +48% FP64 at N = 256 over the previous
+  kernels at the same clock, 86% / 87% of peak with the current blocks.
 - The cache blocks around the tile were sizes nobody had measured. Swept
   the same way, the best keep each block of B within half of Zen 5's L2
   and make the blocks of A 6–8 times taller: at N = 4096 +10–12% for AVX2
@@ -60,7 +61,7 @@ column is N elements apart.
 
 | One core | Apple M4 Max P-core (12 P + 4 E cores) | AMD Ryzen 9 9950X (Zen 5, 16 cores) |
 |---|---|---|
-| Clock, measured under load | 3.96–4.13 GHz (4.49 GHz in the 2026-10-21 runs) | 5.71 GHz |
+| Clock, measured under load | 3.96–4.13 GHz (4.48–4.50 GHz on 2026-10-21) | 5.71 GHz |
 | Vector registers | 32 × 128-bit (4 FP32) | 32 × 512-bit (16 FP32) with AVX-512 |
 | L1 data cache | 128 KiB, 128-byte lines | 48 KiB, 64-byte lines |
 | L2 cache | 16 MiB, shared by 6 cores | 1 MiB, private |
@@ -130,8 +131,8 @@ memory. Vector instructions do not rescue it either: the AVX2, AVX-512 and
 NEON versions of this loop (`gemm_neon_naive`, `gemm_avx2_naive`,
 `gemm_avx512_naive`) gather B's column into a vector element by
 element. Only the NEON FP32 version helps, at mid sizes (3.5 against
-2.5 GFLOP/s at N = 256); the AVX2 and AVX-512 versions run at or below the
-scalar loop, and at N = 4096 all run within a few percent of it.
+2.5 GFLOP/s at N = 256); the AVX2 and AVX-512 versions run within about
+±8% of the scalar loop, and at N = 4096 all run within a few percent of it.
 
 ## Step 2: loop order — 52–73× faster
 
@@ -326,9 +327,13 @@ of 3; all shapes and FP64 in
 
 6 × 2 needs 15 registers and does not spill (GCC 13 alternates two
 broadcast registers and uses all 16); 7 × 2 needs 17 and spills
-accumulators to the stack in the inner loop. The library kernel now uses
-6 × 2. Its 64-row block is ten 6-row strips and one 4-row strip of the
-same kernel. Same session, old against new, alternated three times:
+accumulators to the stack in the inner loop. (With the 32 registers of
+the native Zen 5 build, 7 × 2 does not spill and is 3–8% faster from
+N = 512–1024 up; 6 × 2 is kept because it is the fastest that never
+spills on an AVX2-only CPU. The 3 × 3 shape, also swept, is not shown:
+149.5 / 84.6 / 73.9.) The library kernel now uses 6 × 2; its block, then
+64 rows, was ten 6-row strips and one 4-row strip of the same kernel.
+Same session, old against new, alternated three times:
 
 | `gemm_avx2_blocked`, GFLOP/s | N = 256 | 512 | 1024 | 4096 |
 |---|--:|--:|--:|--:|
@@ -337,10 +342,11 @@ same kernel. Same session, old against new, alternated three times:
 | FP64, 4 × 2 tile | 71.1 | 46.4 | 41.6 | 37.3 |
 | FP64, 6 × 2 tile | **83.8** | **62.3** | **54.3** | **48.1** |
 
-14–35% faster. (These are the `-march=native` build, the one every table
-here uses. On Zen 5 it enables AVX-512VL, which gives even 256-bit code 32
-YMM registers; the 16-register x86-64-v3 build gains about the same,
-12–37%.)
+14–35% faster from N = 256 up (11–12% at N = 64). (These are the
+`-march=native` build, the one every table here uses except the sweep
+above. On Zen 5 it enables AVX-512VL, which gives even 256-bit code 32 YMM
+registers; the 16-register x86-64-v3 build gains about the same, 13–37%
+from N = 256 up.)
 
 ### AVX-512 and NEON, swept the same way
 
@@ -351,7 +357,7 @@ has all of them).
 
 **AVX-512: 8 × 3.** The rule from the trap above holds across the sweep:
 every shape with 4 or fewer rows (4 × 2, 2 × 4, 4 × 4) has GCC fold the B
-loads into the FMAs and runs 21–62% behind the best shape at N ≤ 512. Of
+loads into the FMAs and runs 20–68% behind the best shape at N ≤ 512. Of
 the rest, a third vector on the 8-row tile pays where B's rows are 4 KiB
 apart and B comes from L2:
 
@@ -413,6 +419,12 @@ Two rules came out:
 | AVX2 | 64 × 256 × 256 | 384 × 256 × 256 FP32, × 128 FP64 | 95.4 → **105.6** | 48.1 → **53.8** |
 | NEON | 64 × 256 × 256 | 384 × 256 × 256 | 91.9 → **102.1** | 45.8 → **51.0** |
 
+Old blocks: the last runs of each kernel before the change
+([`bench_zen5_avx512_8x3.csv`](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/experiments/tile-sweeps/bench_zen5_avx512_8x3.csv),
+[avx2-tiles](https://github.com/vdeviatkov/hpc-math-core/tree/main/docs/experiments/cpu-simd/avx2-tiles),
+[`bench_m4_neon_6x4.csv`](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/experiments/tile-sweeps/bench_m4_neon_6x4.csv));
+new blocks: the runs in the table below.
+
 The smaller FP64 block of B also lifts AVX-512 FP64 at N = 512 and 1024
 by 22–23% (128.4 → 157.7, 123.4 → 151.0).
 
@@ -424,18 +436,19 @@ runs:
 | GFLOP/s, FP32 | N = 64 | 256 | 512 | 1024 | 4096 |
 |---|--:|--:|--:|--:|--:|
 | Zen 5, AVX-512, 8 × 3 | 297.7 | 324.4 | **327.9** | 312.8 | 294.7 |
-| Zen 5, AVX2, 6 × 2 | 166.7 | **171.7** | 169.7 | 126.9 | 105.6 |
+| Zen 5, AVX2, 6 × 2 | 166.6 | **171.7** | 169.7 | 126.9 | 105.6 |
 | M4, NEON, 6 × 4 ¹ | 122.4 | 122.9 | **123.8** | 121.2 | 102.1 |
 
 | GFLOP/s, FP64 | N = 64 | 256 | 512 | 1024 | 4096 |
 |---|--:|--:|--:|--:|--:|
 | Zen 5, AVX-512, 8 × 3 | 153.0 | **162.0** | 157.7 | 151.0 | 145.0 |
 | Zen 5, AVX2, 6 × 2 | **82.8** | 81.9 | 62.3 | 54.8 | 53.8 |
-| M4, NEON, 6 × 4 ¹ | 62.1 | **62.3** | 61.0 | 59.5 | 51.0 |
+| M4, NEON, 6 × 4 ¹ | 62.1 | **62.2** | 61.0 | 59.5 | 51.0 |
 
 Sources: [`bench_zen5_defaults.csv`](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/experiments/block-sweeps/bench_zen5_defaults.csv)
 and [`bench_m4_defaults.csv`](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/experiments/block-sweeps/bench_m4_defaults.csv).
-¹ At a core clock of about 4.49 GHz, against 3.96–4.13 GHz for the M4's
+¹ Run on 2026-10-22; the core clock measured in the M4 runs of
+2026-10-21 was 4.48–4.50 GHz (none was recorded for this run), against 3.96–4.13 GHz for the M4's
 other numbers in this article (the bars marked "before" in the chart
 below).
 
@@ -444,8 +457,11 @@ below).
 ![FP32 GEMM on one Apple M4 P-core, N = 512](assets/simd-m4.svg)
 
 At its best size the AVX-512 kernel runs at **91% of the core's FP32 peak
-and 90% of FP64**, AVX2 at 94% / 91%, NEON at 87% / 87% (of ~143 / ~71
-GFLOP/s at 4.49 GHz). Against the textbook loop at N = 4096 the AVX-512
+and 90% of FP64** (of the measured 362 / 180), AVX2 at 94% / 91%, NEON at
+86% / 87% (of ~144 / ~72 GFLOP/s at 4.49 GHz). The README's headline
+divides by the theoretical peaks (365 / 183 for AVX-512) and quotes the
+best result over every tile and block, so its percentages differ by about
+a point. Against the textbook loop at N = 4096 the AVX-512
 kernel is 704× faster in FP32.
 
 ## What remains: B's row stride
@@ -453,7 +469,7 @@ kernel is 704× faster in FP32.
 The register-tile kernels lose throughput as N grows, and the drops line
 up with the byte distance between B's rows, which these kernels read in
 place: AVX2 drops at FP32 N = 1024 and FP64 N = 512, both a 4 KiB stride,
-and so did AVX-512 with its earlier tile and blocks. The micro-kernel runs down 256 rows of B, and rows a power
+and so did AVX-512 with its earlier tile and blocks (−13%; −5% now). The micro-kernel runs down 256 rows of B, and rows a power
 of two apart compete for a few cache sets. The micro-kernel experiment
 measures it directly, on data small enough for L1:
 
@@ -469,7 +485,8 @@ cost among several; with 8 × 3 and the current blocks, −5% (327.9 →
 312.8).
 [Part 3](sme2-cache-associativity.md#the-same-experiment-on-amd-zen-5)
 isolates it on this core: with only the stride changed, B rows 4, 8 and
-16 KiB apart cost the kernel 14–17% against the same rows padded by one
+16 KiB apart cost the kernel (then with the 8 × 2 tile and 64-row
+blocks) 14–17% against the same rows padded by one
 64-byte line. Every multiple of 4 KiB folds a strip's rows onto 12 lines
 of L1 (64 sets × 12 ways); L2 conflicts, which cost the M4's SME2 kernel
 two thirds, appear to be absorbed by Zen 5's L3. The cure is to pad B's
@@ -515,9 +532,10 @@ before and after the tile changes.
   differently, which is why the kernel now uses a tile that is fast either
   way.
 - **The M4 ran with background load.** Two unrelated processes kept two
-  cores busy during the M4 measurements; the core clock moved between 3.96
-  and 4.13 GHz from one program to the next, and was 4.48–4.50 GHz in
-  the 2026-10-21 runs of the current NEON kernel. Treat M4 figures as ±5%,
+  cores busy during the 2026-10-15 measurements, and Spotlight indexing
+  and an IDE (load average 2–14) during those of 2026-10-21/22; the core
+  clock moved between 3.96 and 4.13 GHz from one program to the next on
+  10-15 and was 4.48–4.50 GHz on 10-21. Treat M4 figures as ±5%,
   and compare across the two dates in cycles.
 - **No hardware counters on the CPUs.** macOS has no public counter API,
   and the Linux machine restricts them. The explanations rest on controlled
@@ -532,7 +550,8 @@ before and after the tile changes.
    M4. Below that a kernel cannot reach peak, whatever else is right.
 3. **Read the machine code.** The AVX-512 kernel had enough accumulators on
    paper; the compiler's choice to re-load B in every FMA held it at 60%.
-   A larger tile fixed it: 92% of peak.
+   A larger tile fixed it: 92% of peak with 8 × 2, 91% with today's 8 × 3
+   and blocks.
 4. **The register tile is an outer product.** Every fast kernel in this
    series keeps a block of C in registers (or, on a matrix unit, in
    accumulator tiles) and adds outer products of a column of A and a row of
@@ -560,4 +579,6 @@ The kernels are in
 [`src/gemm/`](https://github.com/vdeviatkov/hpc-math-core/tree/main/src/gemm)
 (`naive.hpp`, `reordered.hpp`, `blocked.hpp`, `neon.hpp`, `avx2.hpp`,
 `avx512.hpp`). Raw data and method:
-[experiments/cpu-simd](https://github.com/vdeviatkov/hpc-math-core/tree/main/docs/experiments/cpu-simd).
+[experiments/cpu-simd](https://github.com/vdeviatkov/hpc-math-core/tree/main/docs/experiments/cpu-simd),
+[tile-sweeps](https://github.com/vdeviatkov/hpc-math-core/tree/main/docs/experiments/tile-sweeps)
+and [block-sweeps](https://github.com/vdeviatkov/hpc-math-core/tree/main/docs/experiments/block-sweeps).

@@ -11,7 +11,7 @@ the defaults:
 |---|---|---|---|--:|--:|
 | AVX2 | [avx2.md](avx2.md) | 6 × 2 (6 × 16 FP32) | AMD Zen 5 | 171.7 / 82.8 | 94% / 91% |
 | AVX-512 | [avx512.md](avx512.md) | 8 × 3 (8 × 48 FP32) | AMD Zen 5 | 327.9 / 162.0 | 91% / 90% |
-| NEON | [neon.md](neon.md) | 6 × 4 (6 × 16 FP32) | Apple M4 Max | 123.8 / 62.3 | 87% / 87% |
+| NEON | [neon.md](neon.md) | 6 × 4 (6 × 16 FP32) | Apple M4 Max | 123.8 / 62.2 | 86% / 87% |
 
 The cache blocks around the register tile are template parameters too
 (`gemm_<isa>_blocked<T, R, V, TileM, TileK, TileN>`), swept in

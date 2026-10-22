@@ -140,8 +140,8 @@ on constant inputs, with no memory traffic
 
 This is the timeline above, measured: an FMOPA's result is ready for the
 next FMOPA on the same tile after **4 cycles**, while the unit accepts
-**one new FMOPA per cycle**: measured, 1.03 cycles per FMOPA with four
-tiles, 512 FP32 flops each: 1.96 TFLOP/s. One tile runs at a quarter of peak, two at half, four fill the
+**one new FMOPA per cycle**. Measured: 1.03 cycles per FMOPA with four
+tiles; at 512 FP32 flops each that is 1.96 TFLOP/s. One tile runs at a quarter of peak, two at half, four fill the
 pipeline. FP64 has the same issue rate with a quarter of the work per
 instruction.
 
@@ -155,8 +155,8 @@ Two threads that land on the same cluster get no more than one: they share
 its SME unit. Spread across both performance clusters, the total
 approaches twice the single-thread figure (3,912 with 6 threads, 4,007
 with 8). With 12 threads it reaches 4,203, 7% above two units' worth;
-macOS chooses the cores, and where the extra comes from (the efficiency
-cluster has an SME unit too) was not measured. Within one cluster, a
+macOS chooses the cores, and where the extra comes from (perhaps an SME
+unit on the efficiency cluster) was not measured. Within one cluster, a
 second thread adds nothing.
 
 ## Outer products instead of dot products
@@ -176,7 +176,7 @@ ZA[t][r][c] += a[r] * b[c]          for r, c in 0..15      (512 flops, one instr
 
 With `a` taken from column `k` of A and `b` from row `k` of B, `K` such
 instructions produce a 16 × 16 block of `C = A·B`. Two vectors loaded yield
-256 multiply-adds, against 16 for an FMA on the same two vectors: the
+256 multiply-adds, against 16 for a 16-lane vector FMA on the same two vectors: the
 outer product reuses every element 16 times inside the instruction. That
 is why the SME unit does 64 times the work per instruction of a NEON
 FMA.
@@ -258,10 +258,9 @@ delivery, not by load instructions.) Code: [`gemm_sme_tiles` and its
 
 For FP64 the micro-tile is 2 × 4 tiles (16 × 32 elements, all eight FP64
 tiles): eight FMOPAs per 384 bytes loaded instead of four per 256 bytes,
-2.7 flops per byte instead of 2. That layout measured 9% faster than 2 × 2
-at N = 4096 (with the earlier block sizes described in step 3; a
-development measurement, recorded in the `sme.hpp` comments rather than in
-the experiment data).
+2.7 flops per byte instead of 2. A 2 × 2 layout for FP64 too measured 9%
+slower at N = 4096 (a development measurement, recorded in the `sme.hpp`
+comments rather than in the experiment data).
 
 | N | 256 | 512 | 1024 | 2048 | 4000 | 4096 |
 |---|--:|--:|--:|--:|--:|--:|
@@ -286,10 +285,10 @@ orders the loops so that each block is reused many times while it is
 cached:
 
 ```text
-for jc in 0 .. N step Nc:                  Nc = 4096 columns of B and C
+for jc in 0 .. N step Nc:                  Nc = 4096 columns of B and C (FP32 sizes)
   for pc in 0 .. K step Kc:                Kc = 2048
     B panel = B[pc .. pc+Kc, jc .. jc+Nc]  (32 MiB, FP32)
-    for ic in 0 .. M step Mc:              Mc = 1024
+    for ic in 0 .. M step Mc:              Mc = 1024 (FP64: 512)
       A block = A[ic .. ic+Mc, pc .. pc+Kc] (8 MiB)
       macro-kernel (streaming mode):
         for jr in 0 .. Nc step 32:         one B strip, Kc × 32 = 256 KiB
@@ -330,15 +329,15 @@ The orders matter:
 This is GotoBLAS's classic arrangement, A resident and B streamed, one
 cache level further out. Classic GotoBLAS keeps the A block in L2 and
 reuses each B micro-panel from L1. Here B strips are reused from L2,
-because the SME unit is a cluster resource and its operands come from L2:
-the evidence in [part 3](sme2-cache-associativity.md) points to L2 set
+because the SME unit is a cluster resource and its operands come from L2.
+The evidence in [part 3](sme2-cache-associativity.md) points to L2 set
 conflicts: the kernel collapses at about 600 rows per B strip, some 75
 times the 8 rows one L1 set holds.
 
 The packing code that writes the blocks runs on the core, and its TLBs
 cover them: a B strip (16 pages) fits the 128-entry first-level TLB, and
-an A block (512 pages) and a B panel (2,048 pages) the 3,072-entry
-second-level TLB.
+an A block (512 pages) and an FP32 B panel (2,048 pages) the 3,072-entry
+second-level TLB. FP64's 64 MiB B panel, 4,096 pages, does not fit it.
 
 | N | 256 | 512 | 1024 | 2048 | 4000 | 4096 |
 |---|--:|--:|--:|--:|--:|--:|
@@ -359,7 +358,7 @@ the next one was needed, and the panel, which competes with A and C for
 the same 16 MiB, kept partly falling out.
 
 A sweep of the complete kernel (step 4 below) over Mc and Kc, N = 4096 and
-Nc = 4096, median of 3 interleaved runs
+Nc = 4096, median of 3 runs, configurations in round-robin order
 ([`sme_block_sweep`](https://github.com/vdeviatkov/hpc-math-core/blob/main/benchmarks/experiments/sme_block_sweep.cpp)),
 shows where the optimum is:
 
@@ -371,16 +370,16 @@ shows where the optimum is:
 | 1024 | 1,370 | **1,517** | 1,351 |
 | 2048 | 1,404 | 1,262 | 1,113 |
 
-The best shape of each A-block size (Mc × Kc × 4 bytes) improves up to
-8 MiB and falls from 16 MiB, the size of L2. Of the three 8 MiB shapes,
+The best shape of each A-block size (Mc × Kc × 4 bytes) rises from 1 MiB
+to 8 MiB, where it is highest, and falls at 16 MiB, the size of L2. Of the three 8 MiB shapes,
 1024 × 2048 wins (1,517 GFLOP/s, against 1,451 for 512 × 4096 and 1,404
 for 2048 × 1024): with Kc = 4096 each B strip is twice as long (512 KiB)
 and serves half as many A strips (16). FP64 elements are twice as large, so FP64 uses Mc = 512
 for the same 8 MiB A block. Against the first sizing, measured old and new
 alternately, the complete kernel gains 4% at N = 2048 and 10–12% at
-N = 4000 and 4096 in FP32 and up to 7% in FP64. At N = 256, where one
-block covers the whole problem, it gains 11%, at N = 512 3%, and at
-N = 1024 it is unchanged within noise.
+N = 4000 and 4096 in FP32 and up to 7% in FP64. In FP32 at N = 256, where
+one block covers the whole problem, it gains 11% (FP64 3%), at N = 512 3%
+(FP64 unchanged), and at N = 1024 it is unchanged within noise.
 
 The optimum also depends on the matrix size, so for each size there is a
 best Mc, Kc and Nc, and a kernel can choose them per call from M, N and K.
@@ -541,14 +540,14 @@ GFLOP/s by matrix size. `gemm_sme` is single-threaded, so the fair
 comparison is with Accelerate restricted to one thread
 (`VECLIB_MAXIMUM_THREADS=1`); Accelerate's default, multi-threaded figures
 are listed separately. Peak is 1,963 GFLOP/s FP32 and 500 FP64 for one SME
-unit, twice that for two. `gemm_sme` comes from a separate run than the
-step tables above. The libraries are called through thin wrappers:
+unit, twice that for two. `gemm_sme` comes from a different run from the
+step tables above (where FP64 reaches 436 GFLOP/s at N = 4000). The libraries are called through thin wrappers:
 [`gemm_kleidiai`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/kleidiai.hpp) and, for Accelerate's
 `cblas_sgemm` / `cblas_dgemm`, [`gemm_amx`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/amx.hpp).
 
 | One thread | N = 256 | 512 | 1024 | 2048 | 4096 | best, % of one unit's peak |
 |---|--:|--:|--:|--:|--:|--:|
-| NEON, blocked, register-tiled, FP32 ([part 1](simd-gemm.md)) ¹ | 123 | 124 | 121 | — | 102 | 87% of NEON's ~143 |
+| NEON, blocked, register-tiled, FP32 ([part 1](simd-gemm.md)) ¹ | 123 | 124 | 121 | — | 102 | 86% of NEON's ~144 |
 | `gemm_sme`, FP32 | 839 | 1,332 | 1,385 | 1,465 | **1,504** | 77% |
 | Arm KleidiAI, FP32 | 1,055 | 1,511 | 1,659 | 1,454 | 1,019 | 85% |
 | Apple Accelerate, FP32, single thread | 1,692 | 1,718 | 1,629 | 1,681 | 1,599 | 88% |
@@ -560,11 +559,14 @@ step tables above. The libraries are called through thin wrappers:
 | Apple Accelerate, FP32, all cores | 1,685 | 2,651 | 3,178 | 3,127 | 3,115 | 81% |
 | Apple Accelerate, FP64, all cores | 458 | 782 | 804 | 782 | 787 | 80% |
 
-¹ Part 1's kernel with its current 6 × 4 tile and cache block, measured on 2026-10-22 at
-a core clock of 4.49 GHz, which sets NEON's peak; the SME unit's rate does
-not follow the core clock.
+¹ Part 1's kernel with its current 6 × 4 tile and cache block, measured on
+2026-10-22, ten days after the SME rows; NEON's peak assumes the 4.49 GHz
+core clock measured in the M4 runs of 2026-10-21. The SME rows ran at
+3.94–3.99 GHz, so the two are from different runs and clocks.
 
-- SME is **12× the best NEON kernel** on the same core (1,504 vs 124 GFLOP/s).
+- SME is **12× the best NEON result** on the same core (1,504 GFLOP/s at
+  N = 4096 against 124 at N = 512; at N = 4096 alone, 15×), from different
+  runs and clocks.
 - On one thread, `gemm_sme` reaches 85–94% of Accelerate for N ≥ 1024 in
   FP32, and in FP64 it is within 6% at N = 512 and ahead from N = 1024.
   Accelerate's lead is largest at small N, where `gemm_sme`'s fixed costs

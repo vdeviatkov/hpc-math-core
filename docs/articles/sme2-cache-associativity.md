@@ -1,6 +1,6 @@
 ---
 title: "A Power-of-Two Stride Cuts SME2 GEMM Throughput by Two Thirds on Apple M4"
-description: "An SME2 matrix multiplication on Apple M4 Max runs at a third of its speed when B's rows are 16 KiB apart. Controlled experiments point to L2 set conflicts; padding or packing B fixes it, and packing wins. The same experiment on AMD Zen 5 finds the same mechanism at a smaller cost: 13–17%, from L1 sets."
+description: "An SME2 matrix multiplication on Apple M4 Max runs at a third of its speed when B's rows are 16 KiB apart. Controlled experiments point to L2 set conflicts; padding or packing B fixes it, and packing wins. The same experiment on AMD Zen 5 finds the same mechanism at a smaller cost: 14–17%, from L1 sets."
 date: 2026-10-12
 series_part: 3
 permalink: /articles/sme2-cache-associativity.html
@@ -28,10 +28,11 @@ cliff to its cause and measures both fixes.
   core's own loads hit a limit of similar size: the evidence points to
   **L2 set conflicts**.
 - **Packing B** into contiguous strips removes the cliff for any stride. It
-  costs 3–5% of the runtime (2.5–4.9 ms of about 90 ms) and cuts compute
+  costs 3–5.5% of the runtime (2.5–4.9 ms of about 90 ms) and cuts compute
   time by 8–9% even when the stride is already padded.
 - **On AMD Zen 5 the same mechanism costs much less.** Part 1's AVX-512
-  kernel loses 13–17% at N = 1024, 2048 and 4096, against 68% here. Every
+  kernel (then with an 8 × 2 tile) loses 14–17% at N = 1024, 2048 and
+  4096 against the same rows padded by 64 B, against 68% here. Every
   multiple of 4 KiB folds a strip's rows onto 12 lines of L1; the L2
   limits behind the M4's cliff are there too, but a fast L3 backs them.
 
@@ -97,7 +98,7 @@ in part 2; the same kernels agree between the two within 2–3%.)
 | 4128 | 16,512 B | 1,356 | 1,433 |
 
 The dips sit exactly on the powers of two: −60% at 2048 and −68% at 4096
-against the size just below, with recovery 32 columns either side. Packed
+against the size just below, mostly recovered 32 columns either side. Packed
 B shows no cliff at all.
 
 ## Same multiplication, different stride: the cliff follows the bytes
@@ -150,8 +151,8 @@ Every in-place row starts exactly 128 lines after the previous one, so in
 this model all of them compete for the few ways of a single set, and the
 rest of the cache cannot help this strip. (The model has the 128 sets of
 the 128 KiB L1. In the 16 MiB L2 the same stride would leave a fraction
-of about 1/128 of the sets to these rows: hundreds of lines, not 8, which
-is the scale the measurements below find.) Packed rows walk through the sets one
+of about 1/128 of the cache to these rows: roughly a thousand lines, not
+8; the measurements below find about 450–640.) Packed rows walk through the sets one
 by one. Padding B by one line per row (16,512 B, 129 lines) also spreads
 the rows: each one moves one set further.
 
@@ -206,7 +207,7 @@ and B laid out once, N = 1024, Mc = 1024, 9 shuffled repetitions).
 | 1024 | 626 | 1,698 | 0.37 |
 | 2048 | 500 | 1,584 | 0.32 |
 
-From 64 to 576 rows the power-of-two stride costs 16–26%; between 576 and
+From 64 to 576 rows the power-of-two stride costs 14–26%; between 576 and
 640 rows it breaks, and from there it degrades with every row added, to a
 third of the padded throughput at the library's Kc = 2,048. The pointer
 chase below shows L1 keeping only 8 lines at this stride (consistent with
@@ -223,7 +224,8 @@ capacity at this stride independently of SME (cycles per load at
 | cycles per load | 3 | 24 | 33 | 41 | 52 | 100 | 144 |
 
 Only 8 lines stay in L1 (3 cycles). Up to 448 lines the loads hit L2:
-about 24 cycles, and about 33 from 256 lines on, where each line, alone on
+about 24 cycles (part 2's machine table, from a different chase, gives
+26–27), and about 33 from 256 lines on, where each line, alone on
 its own 16 KiB page, also misses the 128-entry first-level TLB. In the
 archived run the next step comes between 448 and 512 lines (it moved up
 to 640 in other, unarchived runs); beyond that, loads go further out. The
@@ -247,7 +249,7 @@ fix, for two reasons:
 
 - The caller owns B's layout. A library receiving a matrix with a 16 KiB
   stride cannot pad it without copying it, and a copy is what packing is.
-- Even padded, B in place trails packed B by 4–8% (8% from N = 3072 up). Macro-kernel only, `ldb = N + 32`:
+- Even padded, B in place trails packed B by 4–8% (7–8% from N = 3072 up). Macro-kernel only, `ldb = N + 32`:
 
 | N | 1024 | 2048 | 3072 | 3584 | 4096 | 4224 |
 |---|--:|--:|--:|--:|--:|--:|
@@ -286,8 +288,10 @@ Part 1's AVX-512 kernel, `gemm_avx512_blocked`, also reads B in place, and
 it also loses throughput at power-of-two sizes: FP32 at N = 1024 and FP64
 at N = 512, both rows 4 KiB apart ([part 1](simd-gemm.md)). The experiments
 above, repeated on one core of an AMD Ryzen 9 9950X with the kernel's 8 × 2
-register tile (its default when this was measured; it is 8 × 3 now and
-drops 5% instead of 13% from FP32 N = 512 to 1024, see [docs/kernels](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/kernels/avx512.md)), show when and how much
+register tile and 64-row blocks (its defaults when this was measured; in
+`bench_gemm` the library kernel dropped 13% from FP32 N = 512 to 1024 with
+them, and drops 5% with today's 8 × 3 tile and 512 × 256 × 512 blocks, see
+[docs/kernels](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/kernels/README.md)), show when and how much
 ([`avx512_b_stride`](https://github.com/vdeviatkov/hpc-math-core/blob/main/benchmarks/experiments/avx512_b_stride.cpp),
 data in [experiments/zen5-b-stride](https://github.com/vdeviatkov/hpc-math-core/tree/main/docs/experiments/zen5-b-stride)).
 The core runs at 5.71 GHz, pinned to one core of an idle machine; GCC 13.3.
@@ -325,7 +329,10 @@ levels and is one sample.)
 ### What it costs the GEMM
 
 The same multiplication with only B's row stride changed, as on the M4,
-using the library kernel's blocking (Kc = 256) and micro-kernel:
+using the library kernel's blocking of the time (64 × 256 × 512) and its
+8 × 2 micro-kernel. This harness is not `bench_gemm`, and its absolute
+numbers are about a fifth lower (220 against 282 GFLOP/s at N = 1024);
+only the ratios matter here:
 
 | N = M = K | B rows `4N` bytes apart | + 64 B | Change |
 |---|--:|--:|--:|
@@ -334,7 +341,7 @@ using the library kernel's blocking (Kc = 256) and micro-kernel:
 | 4096 (16 KiB) | 178 | 214 | −17% |
 
 GFLOP/s, median of 5. Changing N instead shows the same dips against the
-neighbouring sizes: −13% at N = 1024 (992: 258, 1024: 222, 1056: 253),
+mean of the neighbouring sizes: −13% at N = 1024 (992: 258, 1024: 222, 1056: 253),
 −17% at 2048 and −16% at 4096. The M4 lost 68% at N = 4096; Zen 5 loses a
 sixth.
 
@@ -344,43 +351,46 @@ The strip-height sweep separates the two. It changes only how many rows
 (Kc) the reused block of B has, for several strides (M = 512, K = 2048,
 N = 1024, GFLOP/s):
 
-| Rows per block | 4 KiB | 8 KiB | 16 KiB | 6 KiB | 4,352 B | 4 KiB + 64 B |
-|---:|--:|--:|--:|--:|--:|--:|
-| 16 | 144 | 205 | 204 | 240 | 253 | 250 |
-| 64 | 251 | 226 | 210 | 296 | 306 | 302 |
-| 256 | 275 | 241 | 222 | 313 | 313 | 311 |
-| 384 | 260 | 231 | 216 | 308 | 311 | 303 |
-| 512 | 200 | 175 | 173 | 243 | 271 | 280 |
-| 1024 | 163 | 192 | 140 | 215 | 269 | 277 |
+| Rows per block | 4 KiB | 8 KiB | 16 KiB | 6 KiB | 4,352 B | 4 KiB + 64 B | 8 KiB + 64 B | 16 KiB + 64 B |
+|---:|--:|--:|--:|--:|--:|--:|--:|--:|
+| 16 | 148 | 204 | 204 | 240 | 253 | 251 | 251 | 250 |
+| 64 | 251 | 225 | 207 | 296 | 306 | 305 | 305 | 271 |
+| 256 | 274 | 240 | 220 | 313 | 313 | 313 | 308 | 259 |
+| 384 | 261 | 202 | 217 | 308 | 311 | 307 | 302 | 256 |
+| 512 | 246 | 177 | 170 | 243 | 271 | 296 | 280 | 236 |
+| 1024 | 167 | 184 | 140 | 215 | 269 | 279 | 279 | 215 |
+
+(One run per cell, [`height.csv`](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/experiments/zen5-b-stride/height.csv); the CSV also has 32, 48, 96, 128, 192 and 768 rows.)
 
 - **Up to 384 rows**, while the block (rows × 2 KiB) fits L2 by capacity,
-  power-of-two strides lose 11–32% against the same stride padded by 64 B
-  (42% at 4 KiB for strips of only 16 rows, which L2 holds at any of these
-  strides). A 6 KiB stride, which gives a strip's rows two groups of L1
-  sets (24 lines) instead of one (12), runs within 3% of a fully spread
-  4,352-byte stride from 64 rows up. The loss follows the L1 limit, which
+  power-of-two strides lose 13–33% against the same stride padded by 64 B
+  from 32 rows up (41% at 4 KiB for strips of only 16 rows, which L2 holds
+  at any of these strides). A 6 KiB stride, which gives a strip's rows two
+  groups of L1 sets (24 lines) instead of one (12), runs within about 3% of
+  a fully spread 4,352-byte stride from 64 to 384 rows. The loss follows the L1 limit, which
   is the same at every multiple of 4 KiB.
 - **The L2 limits do not show.** If L2 sets were the cause, the loss would
   step up where the block passes what L2 keeps at that stride: 256, 128
   and 64 rows at 4, 8 and 16 KiB. It does not: at 8 KiB, 64 rows (inside
-  the limit) lose 25% and 256 rows (twice over) 23%; at 16 KiB, 64 rows
-  (at the limit) lose 22% and 256 rows (four times over) 15%. Rows that L2 conflicts evict
+  the limit) lose 26% and 256 rows (twice over) 22%; at 16 KiB, 64 rows
+  (at the limit) lose 24% and 256 rows (four times over) 15%. Rows that L2 conflicts evict
   come back from an L3 45 cycles away that does not conflict at these
   strides, and the kernel streams B in order, which the hardware
   prefetchers can follow; on the M4 the level behind L2 is the system
   cache at about 150 cycles (part 2). That explanation is an inference: no
   counters were read.
-- **From 512 rows** the block outgrows L2 itself (1 MiB) and is streamed
-  from L3 at every reuse. Every stride slows down, and power-of-two
-  strides lose 27–44% against padded ones, 6 KiB 11–20%.
+- **From 512 rows** the block fills L2 itself (1 MiB) with nothing left
+  for A and C, and is streamed from L3 at every reuse. Every stride slows
+  down, and power-of-two strides lose 17–44% against padded ones, 6 KiB
+  11–20% against 4,352 B.
 
 So on Zen 5 the stride matters whenever B's rows are a multiple of 4 KiB
 apart, FP32 with N a multiple of 1024 and FP64 with N a multiple of 512,
-and costs this kernel 13–17% at its block size; on the M4 the same
+and cost this kernel 14–17% at its block size of the time; on the M4 the same
 mechanism costs two thirds. Padding by one line removes it. Packing
 helps too, but less here than on the M4: in this experiment each B block
-is packed once per 64-row block of A (the library's loop order), so
-packing still reads the strided B N / 64 times. Packed, the GEMM runs at
+is packed once per 64-row block of A (the loop order and block of the
+time), so packing still reads the strided B N / 64 times. Packed, the GEMM runs at
 238, 231 and 202 GFLOP/s at the three power-of-two strides and 269, 269
 and 234 when padded. A GotoBLAS loop order, as in part 2, packs each block
 of B once; it was not measured on Zen 5.
@@ -414,14 +424,15 @@ What the experiments do not establish:
    large power of two leaves few cache sets for all the rows a loop reuses.
    Which level suffers, and how much, depends on the machine: on the M4,
    L2 from 8 KiB on, at a cost of up to two thirds; on Zen 5, L1 at every
-   multiple of 4 KiB, at a cost of 13–17% for part 1's kernel. 4096 FP32
+   multiple of 4 KiB, at a cost of 14–17% for part 1's kernel (with its
+   earlier 8 × 2 tile and 64-row blocks). 4096 FP32
    columns and 2048 FP64 columns are both 16 KiB.
 2. **Test with a padded leading dimension.** Running the same problem with
    `ldb = N + one cache line` separates a stride effect from everything
    else in one measurement.
 3. **Pack operands that are reused across a loop.** In a blocked GEMM the
    B strip is reused by every A strip; copying it into a contiguous buffer
-   costs 3–5% and makes performance independent of the caller's layout.
+   costs 3–5.5% and makes performance independent of the caller's layout.
 4. **Measure the conflicting capacity.** Sweeping the number of reused rows
    until the stride starts to hurt tells you which cache level is involved,
    without hardware counters. A threshold that halves when the stride

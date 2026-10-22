@@ -55,8 +55,8 @@
 <rect x="330" y="394" width="277.3" height="20" fill="#be4d14"/>
 <text x="615.3333333333334" y="409" font-size="13" text-anchor="start">4.16×</text>
 <text x="318" y="440" font-size="14" text-anchor="end">RTX 5080 · FP8 → fp32, sm_89 form</text>
-<rect x="330" y="426" width="277.3" height="20" fill="#be4d14"/>
-<text x="615.3333333333334" y="441" font-size="13" text-anchor="start">4.16×</text>
+<rect x="330" y="426" width="278.0" height="20" fill="#be4d14"/>
+<text x="616.0" y="441" font-size="13" text-anchor="start">4.17×</text>
 <text x="318" y="472" font-size="14" text-anchor="end">RTX 5080 · FP8 → fp32, block-scaled</text>
 <rect x="330" y="458" width="554.7" height="20" fill="#be4d14"/>
 <text x="892.6666666666667" y="473" font-size="13" text-anchor="start">8.32×</text>

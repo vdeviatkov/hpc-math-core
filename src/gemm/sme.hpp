@@ -42,8 +42,8 @@
  *
  * All four pack A, so each step changes one thing. Each is one template for
  * f32 and f64; the last three share macro_kernel. All are single-threaded:
- * compare against Accelerate with VECLIB_MAXIMUM_THREADS=1 (~1650 GFLOP/s
- * f32, ~410 f64 on one M4 Max core).
+ * compare against Accelerate with VECLIB_MAXIMUM_THREADS=1 (1,600–1,720
+ * GFLOP/s f32, 340–460 f64 on one M4 Max core, N = 256–4096).
  *
  * One M4 Max core, GFLOP/s, median of 3 runs, block sizes as below:
  *

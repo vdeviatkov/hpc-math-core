@@ -10,7 +10,8 @@ NVIDIA GeForce RTX 5080 (sm_120, 84 SMs), driver 615.71.09, VBIOS
 | [`peak.csv`](peak.csv) | [`cuda_peak`](../../../benchmarks/experiments/cuda_peak.cu) | FP32 / FP64 FMA, FP16 Tensor Core (`mma.sync.m16n8k16`, fp32 accumulate) and DRAM copy rates |
 | [`clocks.csv`](clocks.csv) | `cuda_peak hold <test> 8` + `nvidia-smi` | SM and memory clock, power and temperature under each load |
 | [`bench_gemm_cuda.txt`](bench_gemm_cuda.txt) | [`bench_gemm_cuda`](../../../benchmarks/bench_gemm_cuda.cpp) | every level and cuBLAS, GPU time of the GEMM alone, N = 256 … 16384 |
-| [`bench_gemm_cuda_level8.txt`](bench_gemm_cuda_level8.txt) | same, 2026-10-16, build `CMAKE_CUDA_ARCHITECTURES=120a` | Level 8 (`CudaTma`) with Level 7, cuBLAS SGEMM and cuBLAS FP16 rerun in the same session (median of 3; Level 7 and cuBLAS within 0.5% of the first run) |
+| [`bench_gemm_cuda_level8.txt`](bench_gemm_cuda_level8.txt) | same, 2026-10-16, build `CMAKE_CUDA_ARCHITECTURES=120a` | Level 8 (`CudaTma`) with Level 7, cuBLAS SGEMM and cuBLAS FP16 rerun in the same session (median of 3; Level 7 and cuBLAS FP16 within 0.5% of the first run at N ≥ 4096, 0.9% at N = 1024; cuBLAS SGEMM within 1%) |
+| [`profile_level8_N8192.csv`](profile_level8_N8192.csv) | Nsight Compute, 2026-10-16 | Level 8 (`kernel_tma`) at N = 8192: time, registers, occupancy limits, Tensor and FMA pipe activity, instructions, L2 hit rate, DRAM bytes |
 | [`profile.csv`](profile.csv) | Nsight Compute 2026 (`ncu`) | per-level counters at N = 4096, f32 |
 
 ## Peaks

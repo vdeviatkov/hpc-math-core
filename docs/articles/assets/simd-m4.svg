@@ -30,7 +30,7 @@
 <text x="238" y="216" font-size="14" text-anchor="end">NEON, 4 × 4 tile (before)</text>
 <rect x="250" y="202" width="430.5" height="20" fill="#c9d3de"/>
 <text x="688.4853333333333" y="217" font-size="13" text-anchor="start">95.0</text>
-<text x="238" y="248" font-size="14" text-anchor="end">NEON, 6 × 4 tile (2026-10-22)</text>
+<text x="238" y="248" font-size="14" text-anchor="end">NEON, 6 × 4 tile + blocks (2026-10-22)</text>
 <rect x="250" y="234" width="561.1" height="20" fill="#245ea8"/>
 <text x="819.136" y="249" font-size="13" text-anchor="start">124</text>
 <path d="M 898.2666666666667 92 V 260" stroke="#7a8794" stroke-dasharray="6 5"/>

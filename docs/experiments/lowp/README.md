@@ -2,10 +2,13 @@
 
 Data behind [part 5](../../articles/lowp-gemm.md). Measured on 2026-10-16.
 Part 5's M4 NEON table and the FP32 row of its Zen 5 table were re-measured
-on 2026-10-21, after part 1's FP32 kernels changed register tile:
-[`tile-sweeps/lowp_m4_neon_6x4.csv`](../tile-sweeps/lowp_m4_neon_6x4.csv)
+on 2026-10-22, after part 1's FP32 kernels changed register tile and cache
+block:
+[`block-sweeps/lowp_m4_defaults.csv`](../block-sweeps/lowp_m4_defaults.csv)
 (all NEON kernels, one session) and
-[`tile-sweeps/lowp_zen5_avx512_8x3.csv`](../tile-sweeps/lowp_zen5_avx512_8x3.csv).
+[`block-sweeps/lowp_zen5_defaults.csv`](../block-sweeps/lowp_zen5_defaults.csv).
+An intermediate re-run of 2026-10-21 (register tile only) is in
+[tile-sweeps](../tile-sweeps/README.md).
 The files here keep the first run.
 
 ## Machines and builds

@@ -122,7 +122,7 @@ ones; see `sme.hpp`). Separate run, load average ~6–7, median of 3:
 - All tiles → blocked: 3.4× f32 / 2.1× f64 at N=4000. Without blocking all of A is re-read for every B strip. N=4000 is as slow as N=4096 without blocking, so this is not a stride effect; capacity is the likely cause.
 - Blocked → `gemm_sme`: +4% at N=4000, but 2.3× f32 at N=2048 and 3.1× at N=4096 (1.7× / 1.9× f64): the B row stride effect below. With 2,048-row strips an 8 KiB stride (N=2048) hurts as much as a 16 KiB one.
 - At N ≤ 512 the kernels without B packing are faster (+18% f32 at N=256): everything fits in cache, and `gemm_sme` pays for the copy.
-- Against the previous block sizes (Mc = 128, Kc = 1024), measured interleaved: `gemm_sme` f32 +4% at N=2048, +10% at N=4000, +12% at N=4096, unchanged within noise at N=512–1024; f64 +2–7% at N ≥ 2048. All tables in this section use the current sizes.
+- Against the previous block sizes (Mc = 128, Kc = 1024), measured interleaved: `gemm_sme` f32 +4% at N=2048, +10% at N=4000, +12% at N=4096, +3% at N=512, unchanged within noise at N=1024; f64 +2–7% at N ≥ 2048. All tables in this section use the current sizes.
 
 #### SME: B row stride
 
@@ -178,7 +178,7 @@ Same machine and run as above. Every row uses one core, so this is the like-for-
 
 - f64: `gemm_sme` is within ~6% of Accelerate at N=512 and ahead from N=1024 up. Those gaps are close to the noise level of this run; Accelerate's dip at N=1024 appeared in two runs. Below N=512 Accelerate is far ahead (4× at N=64), because `gemm_sme` pays fixed per-call costs: allocating and packing A and B, plus a streaming-mode switch per block.
 - f32: `gemm_sme` reaches 85–94% of Accelerate for N ≥ 1024. It ties KleidiAI at N=2048 and beats it at N=4096 (1,504 vs 1,019); KleidiAI uses the same 2×2-tile micro-kernel but no cache blocking, so it drops at large N.
-- With all cores (default threading, wall-clock time): Accelerate 3,124 G/s f32 / 785 G/s f64 at N=4096. Roughly double the single-core figure, consistent with M4 Max's two performance clusters each having their own matrix unit.
+- With all cores (default threading, wall-clock time): Accelerate 3,124 G/s f32 / 785 G/s f64 at N=4096 in this run (3,115 / 787 in the run part 2 quotes). Roughly double the single-core figure, consistent with M4 Max's two performance clusters each having their own matrix unit.
 
 ### Apple AMX (via Accelerate.framework)
 
@@ -193,7 +193,7 @@ Same machine and run as above. Every row uses one core, so this is the like-for-
 
 (Recorded when the family still had three entry points — naive/reordered/blocked — that all called the same `cblas_*gemm`; they measured within ~1% of each other, which is why they were merged into `gemm_amx`. The row above is the former `gemm_amx_blocked`.)
 
-- Up to 3.3 TFLOP/s f32 and 860 GFLOP/s f64, the highest CPU throughput in this repo and ~2.3× / ~2.1× the single-threaded `gemm_sme` — but with every core available. Limited to one thread it reaches ~1.7 TFLOP/s f32 from N=256 up ([§ Matrix engines, single core](#matrix-engines-single-core)), so the climb from ~0.8 to ~3.3 TFLOP/s is about half problem size and half the second performance cluster.
+- Up to 3.3 TFLOP/s f32 and 860 GFLOP/s f64 in this run (best 3,178 / 804 in the later run that the README and part 2 quote), the highest CPU throughput in this repo and ~2.3× / ~2.1× the single-threaded `gemm_sme` — but with every core available. Limited to one thread it reaches ~1.7 TFLOP/s f32 from N=256 up ([§ Matrix engines, single core](#matrix-engines-single-core)), so the climb from ~0.8 to ~3.3 TFLOP/s is about half problem size and half the second performance cluster.
 - The f32/f64 ratio is ~3.8×, not the ~2× lane-count ratio seen elsewhere (NEON 2.0×, AVX-512 ~2×). It is close to the 4× of the M4's matrix unit, where an f64 outer product covers 8×8 elements against 16×16 for f32 (`gemm_sme` measures 3.5×) — consistent with Accelerate running on that unit, though Apple does not document it.
 - For production code on a Mac, call Accelerate. The hand-written kernels show how close one can get to it, and what each step contributes.
 

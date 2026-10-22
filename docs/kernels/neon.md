@@ -131,7 +131,7 @@ the loop.
 
 6 × 4 reaches 85% of the FP32 peak and 85% of FP64 (121.2 and 60.9
 GFLOP/s at N = 256). With the cache blocks chosen since
-([blocks.md](blocks.md)) it runs at 123.8 / 62.3 at its best size and
+([blocks.md](blocks.md)) it runs at 123.8 / 62.2 at its best size and
 102.1 / 51.0 at N = 4096 (was 91.9 / 45.8).
 
 ## History

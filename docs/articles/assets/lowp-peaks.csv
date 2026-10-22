@@ -9,6 +9,6 @@ label,value,group
 "Zen 5 AVX-512 · int8 (VPDPBUSD)",4.01,zen5
 "RTX 5080 · fp16, bf16 → fp32",2.08,gpu
 "RTX 5080 · fp16 → fp16",4.16,gpu
-"RTX 5080 · FP8 → fp32, sm_89 form",4.16,gpu
+"RTX 5080 · FP8 → fp32, sm_89 form",4.17,gpu
 "RTX 5080 · FP8 → fp32, block-scaled",8.32,gpu
 "RTX 5080 · int8 → int32",8.33,gpu

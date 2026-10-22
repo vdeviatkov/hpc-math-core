@@ -44,7 +44,8 @@ measures what each format costs in accuracy.
   on one Zen 5 core, 2.3× and 3.0× their FP32 kernels at N = 2,048, and
   419 TOP/s on the RTX 5080 at N = 16,384 (98% of cuBLAS). Each CUDA kernel serves all
   five formats; only the `mma.sync` instruction and the element width
-  change. Part 4's Level 8 reaches 97–102% of cuBLAS in every format.
+  change. Part 4's Level 8 reaches 97–102% of cuBLAS in every format at
+  N = 8,192 (97–103% at 16,384).
 
 ## The formats
 
@@ -157,7 +158,7 @@ compare directly:
 | | `FMLA .8h` | fp16 → fp16 | 3.4 | 268 | 2.0 |
 | | `SDOT` / `SMMLA` | int8 → int32 | 3.0 / 6.0 | 519 / 511 GOP/s | 3.8 |
 | M4 SME2 unit | `FMOPA` (4 tiles) | fp32 → fp32 | 4.5 | 2,018 GFLOP/s | 1 |
-| | widening `FMOPA`, `BFMOPA` | fp16, bf16 → fp32 | 9.1 | 2,018 | **1.0** |
+| | widening `FMOPA`, `BFMOPA` | fp16, bf16 → fp32 | 9.1 | 2,014–2,018 | **1.0** |
 | | `SMOPA` | int8 → int32 | 4.5 | 4,029 GOP/s | 2.0 |
 | Zen 5 core, AVX-512 | `VFMADD231PS` | fp32 → fp32 | 4.0 | 358 GFLOP/s | 1 |
 | | `VDPBF16PS` | bf16 → fp32 | 6.0 | 713 | 2.0 |
@@ -171,12 +172,13 @@ compare directly:
 | | `m16n8k32` | int8 → int32 | | 497 TOP/s | 8.3 |
 
 (Latency is per instruction with one accumulator; on SME2, with one ZA
-tile. The FP32 rows differ from earlier parts by a few percent because the
-clocks differ between sessions: the M4 P-core ran at 4.47 GHz here and at
-3.96–4.13 GHz in part 1 (NEON: 135 against ~130 GFLOP/s), and the FP32
-`FMOPA` peak is 2,018 GFLOP/s here, 1,963 in part 2: the SME unit gained 3% while the
-core clock gained 10%, so its rate does not follow the core clock, and its
-cycle counts here are in core cycles. Zen 5's 358 against
+tile. The FP32 rows differ from earlier parts because the sessions and
+the loops differ: the M4 P-core ran at 4.47 GHz here, and NEON FP32's 135
+GFLOP/s is 30.2 flops per cycle, 5% below the 31.8 that part 1's
+`fma_peak` measured; the FP32 `FMOPA` peak is 2,018 GFLOP/s here and 1,963
+in part 2, where the core ran at 3.94–3.99 GHz: the SME unit gained 3%
+while the core clock gained 12%, so its rate does not follow the core
+clock, and its cycle counts here are in core cycles. Zen 5's 358 against
 part 1's 362 is run-to-run variation at the same clock (5.70–5.71 GHz).
 Every ratio in this table compares rows from the same run.)
 
@@ -216,7 +218,8 @@ Medians of 3 repetitions, one thread:
 
 Code: [`gemm_avx512_bf16`, `gemm_avx512_i8`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/avx512_lowp.hpp).
 
-The micro-kernel is part 1's 8 × 2-register tile (8 rows × 32 columns of
+The micro-kernel is the 8 × 2-register tile part 1 used for FP32 when
+these kernels were written (it has since moved to 8 × 3): 8 rows × 32 columns of
 C, 16 accumulators), with `VDPBF16PS` or `VPDPBUSD` in place of the FMA.
 Per k group it loads two vectors of packed B (one 32-bit word per column)
 and broadcasts one 32-bit word of A (G consecutive k of one row, already
@@ -232,11 +235,12 @@ computed while packing it. The result is exact.
 |---|--:|--:|--:|--:|--:|
 | FP32, `gemm_avx512_blocked` | **324** | 311 | 303 | 294 | 91% |
 | bf16 | 566 | **609** | 608 | 593 | 85% |
-| INT8 | 708 | 905 | **922** | 894 | 64% |
+| INT8 | 708 | 905 | **922** | 893 | 64% |
 
 (The FP32 row is part 1's kernel with its current register tile and cache
-block, measured on 2026-10-22; Zen 5 runs at the same 5.70 GHz in every
-session, so it compares directly with the other rows.)
+block, measured on 2026-10-22; Zen 5 ran at 5.70–5.71 GHz in every
+session where the clock was recorded, so it compares with the other rows,
+which are from 2026-10-16. The ratios below therefore cross sessions.)
 
 At N = 4,096 bf16 is 2.0× and INT8 3.0× faster than FP32; best size
 against best size, 1.9× and 2.8×. The FP32 kernel reads B in place and
@@ -263,10 +267,10 @@ that part 1's FP32 kernel used until it moved to 6 × 4.
 | bf16, `BFMMLA` | **66** | **66** | **66** | 65 | 93% |
 | fp16 → FP32, `FMLAL` | 109 | **114** | 113 | 112 | 80% |
 | fp16 → fp16, `FMLA .8h` | 204 | **216** | 214 | 209 | 81% |
-| INT8, `SMMLA` | 449 | 493 | **503** | 491 | 97% |
+| INT8, `SMMLA` | 449 | 493 | **503** | 491 | 98% |
 
 (All rows from one session on 2026-10-22, with the FP32 kernel's current
-6 × 4 tile and cache block; the low-precision rows are within 1–3% of the
+6 × 4 tile and cache block; the low-precision rows are 0.7–2% below the
 first run on 2026-10-16.)
 
 The kernels follow the peaks. bf16 is the slowest kernel in the table
@@ -274,8 +278,8 @@ while running at 93% of its instruction's rate. `FMLAL` has FP32's
 arithmetic rate and moves half the bytes, yet runs 6% below the FP32
 kernel at N = 1,024: the FP32 kernel's larger tile and its `LDR` loads of
 A ([docs/kernels/neon.md](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/kernels/neon.md))
-gained more than the halved bytes; the fp16 kernels have neither. fp16 accumulation runs at 1.8× FP32. `SMMLA` runs at 97% of the
-`SDOT` peak (98% of its own) and 4.1–4.3× the FP32 kernel at
+gained more than the halved bytes; the fp16 kernels have neither. fp16 accumulation runs at 1.8× FP32 at N = 1,024–2,048. `SMMLA` runs at
+98% of its own peak (97% of `SDOT`'s) and 4.1–4.3× the FP32 kernel at
 N = 1,024–2,048: an 8 × 8 C block needs
 only 8 registers of operands per 16 instructions, so the loads never limit
 it.
@@ -344,7 +348,7 @@ chosen by measurement on all formats at N = 4,096 to 16,384
 
 - **Two pipeline stages, not three or four.** Three stages need 60 KiB of
   shared memory per block, so only one block fits in an SM's 100 KiB; two
-  stages (40 KiB) fit two blocks, and measured 8–18% faster for every
+  stages (40 KiB) fit two blocks, and measured 8–17% faster for every
   format.
 - **Grouped block order.** Blocks are numbered so that consecutive blocks
   walk down 8 rows of tiles before moving right; the blocks resident at one
@@ -380,7 +384,7 @@ cuBLAS through `cublasGemmEx`, and `cublasLtMatmul` for FP8. Medians of 3:
 
 For reference, part 4's FP32 results on the same GPU: 38.9 TFLOP/s for
 cuBLAS SGEMM on the FMA cores, 59.2 for cuBLAS TF32 on the Tensor Cores.
-INT8 and FP8 run about 7× faster than TF32, in cuBLAS and in Level 8
+INT8 and FP8 run 6.5–7× faster than TF32, in cuBLAS and in Level 8
 alike. At N = 16,384 every figure is within 3% of N = 8,192; there Level 8
 reaches 120.5 (bf16), 209.6 (fp16 → fp16), 419.0 (INT8) and 398.0 (FP8),
 97–103% of cuBLAS. At small sizes Level 8 is ahead in the 8-bit formats:
@@ -461,9 +465,9 @@ comparison isolates the kernel from the input rounding measured above
 - **FP32 accumulation:** |C − C_ref| ≤ 2 · K · u · Σₖ |A(i,k) · B(k,j)|
   with u = 2⁻²⁴, the standard bound for a sum of K terms in any order.
   Tensor Cores do not add in IEEE FP32 order, so this is checked rather
-  than assumed; the worst GPU element (printed by the test) used
-  7.5 · 2⁻²⁴ · Σ|ab|, far inside
-  the bound.
+  than assumed; in the test's shapes (K ≤ 8,195) the worst GPU element
+  used 7.5 · 2⁻²⁴ · Σ|ab|, and the benchmark's sampled error at
+  K = 16,384 is about 13 · 2⁻²⁴ · Σ|ab|: both far inside the bound.
 - **fp16 accumulation:** the same bound with u = 2⁻¹¹.
 - **Shapes:** partial register tiles in every dimension, K not a multiple
   of the k group, K across cache blocks and pipeline stages (up to 8,195),
@@ -493,7 +497,7 @@ because all three accumulate the same `mma` instructions in the same k order.
   the block-scaled FP8 instruction) is a property of consumer cards;
   data-centre GPUs run FP32 accumulation at full rate, and the ratios in
   the GPU rows would differ there.
-- **The M4 ran with background load** (load average 4–11). Repetitions
+- **The M4 ran with background load** (load average 2–11 across sessions). Repetitions
   agreed within 1%, but treat M4 figures as ±5%, as in parts 1–2.
 - **The Zen 5 INT8 kernel's gap** (64% of peak against bf16's 85%) was not
   investigated.
@@ -517,7 +521,7 @@ because all three accumulate the same `mma` instructions in the same k order.
    kernel reaches 91% of cuBLAS where the instruction is slow and 71–74%
    where it is fast: issue overhead hidden behind the math is not any
    more. Level 8 moves tiles with TMA and leaves the compute warps nothing
-   but `mma`: 97–102% of cuBLAS for every format.
+   but `mma`: 97–102% of cuBLAS for every format at N = 8,192.
 
 ## The series
 
