@@ -38,8 +38,8 @@ the caches and the TLB.
 ## The idea in three pictures
 
 A conventional SIMD GEMM builds C one row segment at a time (the register
-tile of [part 1](simd-gemm.md) is several row segments, 4 × 16 values on
-NEON, built from 16 vector FMAs per k step). SME2 builds it one square
+tile of [part 1](simd-gemm.md) is several row segments, 6 × 16 values on
+NEON, built from 24 vector FMAs per k step). SME2 builds it one square
 block at a time:
 
 ```text
@@ -548,7 +548,7 @@ step tables above. The libraries are called through thin wrappers:
 
 | One thread | N = 256 | 512 | 1024 | 2048 | 4096 | best, % of one unit's peak |
 |---|--:|--:|--:|--:|--:|--:|
-| NEON, blocked, register-tiled, FP32 ([part 1](simd-gemm.md)) | 94 | 95 | 91 | — | 70 | 73% of NEON's ~130 |
+| NEON, blocked, register-tiled, FP32 ([part 1](simd-gemm.md)) ¹ | 123 | 124 | 121 | — | 102 | 87% of NEON's ~143 |
 | `gemm_sme`, FP32 | 839 | 1,332 | 1,385 | 1,465 | **1,504** | 77% |
 | Arm KleidiAI, FP32 | 1,055 | 1,511 | 1,659 | 1,454 | 1,019 | 85% |
 | Apple Accelerate, FP32, single thread | 1,692 | 1,718 | 1,629 | 1,681 | 1,599 | 88% |
@@ -560,7 +560,11 @@ step tables above. The libraries are called through thin wrappers:
 | Apple Accelerate, FP32, all cores | 1,685 | 2,651 | 3,178 | 3,127 | 3,115 | 81% |
 | Apple Accelerate, FP64, all cores | 458 | 782 | 804 | 782 | 787 | 80% |
 
-- SME is **16× the best NEON kernel** on the same core (1,504 vs 95 GFLOP/s).
+¹ Part 1's kernel with its current 6 × 4 tile and cache block, measured on 2026-10-22 at
+a core clock of 4.49 GHz, which sets NEON's peak; the SME unit's rate does
+not follow the core clock.
+
+- SME is **12× the best NEON kernel** on the same core (1,504 vs 124 GFLOP/s).
 - On one thread, `gemm_sme` reaches 85–94% of Accelerate for N ≥ 1024 in
   FP32, and in FP64 it is within 6% at N = 512 and ahead from N = 1024.
   Accelerate's lead is largest at small N, where `gemm_sme`'s fixed costs

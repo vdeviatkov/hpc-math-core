@@ -18,6 +18,7 @@ Cache background: [docs/cache-behavior.md](../../docs/cache-behavior.md).
 | [`avx512.hpp`](avx512.hpp) | `gemm_avx512_{naive,reordered,blocked}` | `__AVX512F__` |
 | [`neon.hpp`](neon.hpp) | `gemm_neon_{naive,reordered,blocked}` | AArch64 NEON |
 | [`sve.hpp`](sve.hpp) | `gemm_sve_{naive,reordered,blocked}` | `__ARM_FEATURE_SVE` |
+| [`blocked_driver.hpp`](blocked_driver.hpp) | `detail::blocked_gemm<Micro, R, V, …>`: the cache-blocked, register-tiled driver of the AVX2, AVX-512 and NEON blocked kernels and their prefetch variants; any R × V tile, edges by smaller tiles of the same micro-kernel | always (the micro-kernels need their ISA) |
 | [`prefetch.hpp`](prefetch.hpp) | `gemm_{,avx2_,avx512_,neon_,sve_}blocked_prefetch` | per family |
 | [`sme.hpp`](sme.hpp) | `gemm_sme_1tile`, `gemm_sme_tiles`, `gemm_sme_blocked`, `gemm_sme` | SME2, `HPC_ENABLE_SME=ON` |
 | [`amx.hpp`](amx.hpp) | `gemm_amx` (Accelerate BLAS, Apple's route to its AMX unit) | Apple, `HPC_ENABLE_AMX` (default on) |
@@ -53,12 +54,14 @@ of level 2, and an added technique need not improve every shape.
 
 ## Families
 
+The AVX2, AVX-512 and NEON register tiles and cache blocks are template parameters (`gemm_<isa>_blocked<T, R, V, TileM, TileK, TileN>`); every shape and block measured, and why each default: [docs/kernels](../../docs/kernels/README.md).
+
 | Family | Register / tile | Key intrinsics or API |
 |---|---|---|
 | Scalar | — (auto-vectorised by the compiler at `-O3 -ffast-math`) | — |
-| AVX2 | 16 × 256-bit YMM: 8 f32 / 4 f64; C tile 4×16 f32, 4×8 f64 | `_mm256_fmadd_ps/pd`, `_mm256_broadcast_ss/sd` |
-| AVX-512 | 32 × 512-bit ZMM: 16 f32 / 8 f64; C tile 8×32 f32, 8×16 f64 | `_mm512_fmadd_ps/pd`, `_mm512_set1_ps/pd` |
-| NEON | 32 × 128-bit Q: 4 f32 / 2 f64; C tile 4×16 f32, 8×4 f64 | `vfmaq_f32/f64`, `vdupq_n_f32/f64` |
+| AVX2 | 16 × 256-bit YMM: 8 f32 / 4 f64; C tile 6×16 f32, 6×8 f64 by default (`avx2_micro<6, 2>`) | `_mm256_fmadd_ps/pd`, `_mm256_broadcast_ss/sd` |
+| AVX-512 | 32 × 512-bit ZMM: 16 f32 / 8 f64; C tile 8×48 f32, 8×24 f64 by default (`avx512_micro<8, 3>`) | `_mm512_fmadd_ps/pd`, `_mm512_set1_ps/pd` |
+| NEON | 32 × 128-bit Q: 4 f32 / 2 f64; C tile 6×16 f32, 6×8 f64 by default (`neon_micro<6, 4>`) | `vfmaq_lane_f32/f64` (A by element, loaded with `LDR`) |
 | SVE | vector length read at run time (128–2048 bit); C tile 4 rows × 2 vectors | `svmla_f32/f64_x`, `svwhilelt_b32/b64` (predicated tails) |
 | SME2 | ZA: 4 f32 / 8 f64 tiles of SVL×SVL; all used; at M4's 512-bit SVL, 32×32 f32 / 16×32 f64 C block | `svmopa_za32/za64_m`, `svld1_x2`, `svld1/st1_hor_za32/64` |
 | Accelerate | opaque | `cblas_sgemm`, `cblas_dgemm` |

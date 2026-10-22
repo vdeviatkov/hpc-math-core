@@ -14,7 +14,7 @@
  *         the cache sets the stride leaves to them, per level.
  *
  * ldb     The FP32 GEMM of gemm_avx512_blocked (same 64 x 256 x 512 blocking,
- *         same avx512_micro_8x2) with B stored at row stride ldb >= N. Only
+ *         same avx512_micro<8, 2>) with B stored at row stride ldb >= N. Only
  *         the stride changes; the multiplication does not. Each ldb is run
  *         with B read in place, as the library kernel does, and with each
  *         256 x 512 block of B packed into contiguous 32-column strips first
@@ -62,7 +62,7 @@ int main() {
 
 namespace {
 
-using hpc::gemm::avx512_micro_8x2;
+using hpc::gemm::avx512_micro;
 
 double g_ghz = 0;
 
@@ -128,8 +128,10 @@ void chase() {
 // ---------------------------------------------------------------------------
 // GEMM with B at row stride ldb, in place or packed per block
 // ---------------------------------------------------------------------------
-constexpr std::size_t kTileM = hpc::gemm::kAvx512TileM;  // 64
-constexpr std::size_t kTileN = hpc::gemm::kAvx512TileN;  // 512
+// The library's cache block when this experiment was run (2026-10-17); the
+// default is 512 × 256 × 512 since 2026-10-22 (docs/kernels/blocks.md).
+constexpr std::size_t kTileM = 64;
+constexpr std::size_t kTileN = 512;
 constexpr std::size_t kJStep = 32;                       // f32: 2 ZMM per micro-kernel call
 
 // C = A (M x K, lda K) * B (K x N, row stride ldb). M a multiple of 8, N of 32.
@@ -152,7 +154,7 @@ void gemm_strided(const float* A, const float* B, float* C, std::size_t M, std::
                 for (std::size_t i = i_blk; i < i_end; i += 8)
                     for (std::size_t j = 0; j < j_len; j += kJStep) {
                         const float* b = pack ? &buf[(j / kJStep) * k_len * kJStep] : b_blk + j;
-                        avx512_micro_8x2(A + i * K + k_blk, b, C + i * N + j_blk + j, K, pack ? kJStep : ldb, N,
+                        avx512_micro<8, 2>(A + i * K + k_blk, b, C + i * N + j_blk + j, K, pack ? kJStep : ldb, N,
                                          k_len);
                     }
             }

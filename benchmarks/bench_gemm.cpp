@@ -15,6 +15,11 @@
  * lambda is only instantiated when the family is available (time_gemm's
  * `if constexpr`). The full kernel list therefore always appears in the
  * output, and nothing times a substitute kernel.
+ *
+ * <Isa>Tile<R>x<V> rows (add_tiles) run the blocked SIMD kernels with other
+ * register-tile shapes: `--benchmark_filter='^Avx2Tile'` sweeps the AVX2
+ * tiles, and so on. <Isa>Block<M>x<K>x<N> rows (add_blocks) run them at
+ * their default tile with other cache blocks. docs/kernels/ has the results.
  */
 
 #include "gemm/amx.hpp"
@@ -137,6 +142,86 @@ void add(const std::string& name, const char* unavailable, Kernel kernel, Sizes<
 }
 
 #define HPC_KERNEL(fn) [](auto& A, auto& B, auto& C) { fn(A, B, C); }
+
+// A blocked SIMD kernel with an explicit register tile, R rows × V vectors.
+#define HPC_TILE(fn, R, V)                                                                    \
+    []<typename T>(const hpc::Matrix<T>& A, const hpc::Matrix<T>& B, hpc::Matrix<T>& C) {     \
+        fn<T, R, V>(A, B, C);                                                                 \
+    }
+
+/// Register-tile sweep: <Isa>Tile<R>x<V>/<type>/N=<n>, the library's blocked
+/// kernel with every listed tile shape (the defaults are 6x2 AVX2, 8x3
+/// AVX-512, 6x4 NEON). Results and the reasoning: docs/kernels/.
+void add_tiles() {
+    using namespace hpc::gemm;
+    constexpr Sizes<64, 256, 512, 1024, 4096> tiles{};  // the sizes of the main tables
+#define HPC_AVX2_TILE(R, V)                                                                   \
+    add<kHaveAvx2>("Avx2Tile" #R "x" #V, kNoAvx2, HPC_TILE(gemm_avx2_blocked, R, V), tiles)
+#define HPC_AVX512_TILE(R, V)                                                                 \
+    add<kHaveAvx512>("Avx512Tile" #R "x" #V, kNoAvx512, HPC_TILE(gemm_avx512_blocked, R, V), tiles)
+#define HPC_NEON_TILE(R, V)                                                                   \
+    add<kHaveNeon>("NeonTile" #R "x" #V, kNoNeon, HPC_TILE(gemm_neon_blocked, R, V), tiles)
+    // AVX2: 16 YMM registers; a tile needs R·V accumulators + V for B + 1.
+    HPC_AVX2_TILE(4, 2); HPC_AVX2_TILE(2, 4); HPC_AVX2_TILE(8, 1); HPC_AVX2_TILE(3, 3);
+    HPC_AVX2_TILE(5, 2); HPC_AVX2_TILE(6, 2); HPC_AVX2_TILE(4, 3); HPC_AVX2_TILE(3, 4);
+    HPC_AVX2_TILE(7, 2);
+    // AVX-512: 32 ZMM registers.
+    HPC_AVX512_TILE(4, 2); HPC_AVX512_TILE(2, 4); HPC_AVX512_TILE(6, 2); HPC_AVX512_TILE(8, 2);
+    HPC_AVX512_TILE(4, 4); HPC_AVX512_TILE(12, 2); HPC_AVX512_TILE(6, 3); HPC_AVX512_TILE(8, 3);
+    HPC_AVX512_TILE(14, 2); HPC_AVX512_TILE(16, 1);
+    // NEON: 32 Q registers.
+    HPC_NEON_TILE(4, 2); HPC_NEON_TILE(2, 4); HPC_NEON_TILE(4, 4); HPC_NEON_TILE(8, 2);
+    HPC_NEON_TILE(6, 3); HPC_NEON_TILE(8, 3); HPC_NEON_TILE(5, 4); HPC_NEON_TILE(6, 4);
+    HPC_NEON_TILE(12, 2); HPC_NEON_TILE(2, 8);
+#undef HPC_AVX2_TILE
+#undef HPC_AVX512_TILE
+#undef HPC_NEON_TILE
+}
+
+template <std::size_t... Vs>
+struct Vals {};
+
+/// Register <prefix><M>x<K>x<N> for every cache-block size in the grid
+/// Ms × Ks × Ns. `make` is a template lambda <M, K, N>() returning the
+/// kernel lambda for that block.
+template <bool Available, std::size_t... Ms, std::size_t... Ks, std::size_t... Ns, typename Make,
+          std::size_t... Sz>
+void add_block_grid(const std::string& prefix, const char* unavailable, Vals<Ms...>, Vals<Ks...>,
+                    Vals<Ns...>, Sizes<Sz...> sizes, Make make) {
+    auto one = [&]<std::size_t M, std::size_t K, std::size_t N>() {
+        add<Available>(prefix + std::to_string(M) + "x" + std::to_string(K) + "x" + std::to_string(N),
+                       unavailable, make.template operator()<M, K, N>(), sizes);
+    };
+    auto for_k = [&]<std::size_t M, std::size_t K>() { (one.template operator()<M, K, Ns>(), ...); };
+    auto for_m = [&]<std::size_t M>() { (for_k.template operator()<M, Ks>(), ...); };
+    (for_m.template operator()<Ms>(), ...);
+}
+
+// A blocked SIMD kernel at its default register tile with an explicit cache
+// block: TileM rows of A × TileK steps of k × TileN columns of B.
+#define HPC_BLOCK(fn, R, V)                                                                   \
+    []<std::size_t M, std::size_t K, std::size_t N>() {                                       \
+        return []<typename T>(const hpc::Matrix<T>& A, const hpc::Matrix<T>& B,               \
+                              hpc::Matrix<T>& C) { fn<T, R, V, M, K, N>(A, B, C); };          \
+    }
+
+/// Cache-block sweep: <Isa>Block<M>x<K>x<N>/<type>/N=<n>, the library's
+/// blocked kernel at its default register tile with every block in a
+/// 7 × 4 × 4 grid. M values are the default 64 and multiples of the
+/// tile's rows R.
+/// Results and the reasoning: docs/kernels/.
+void add_blocks() {
+    using namespace hpc::gemm;
+    constexpr Sizes<512, 1024, 4096> sizes{};
+    constexpr Vals<128, 256, 512, 1024> ks{};
+    constexpr Vals<128, 256, 512, 1024> ns{};
+    add_block_grid<kHaveAvx2>("Avx2Block", kNoAvx2, Vals<48, 64, 96, 192, 384, 768, 1536>{}, ks, ns, sizes,
+                              HPC_BLOCK(gemm_avx2_blocked, 6, 2));
+    add_block_grid<kHaveAvx512>("Avx512Block", kNoAvx512, Vals<32, 64, 128, 256, 512, 1024, 2048>{}, ks, ns, sizes,
+                                HPC_BLOCK(gemm_avx512_blocked, 8, 3));
+    add_block_grid<kHaveNeon>("NeonBlock", kNoNeon, Vals<48, 64, 96, 192, 384, 768, 1536>{}, ks, ns, sizes,
+                              HPC_BLOCK(gemm_neon_blocked, 6, 4));
+}
 
 /// Vector length in elements: "vl" for SVE, "svl" for SME's streaming length.
 struct SveVl {
@@ -286,6 +371,9 @@ void register_all() {
 
     add_bstride<float>();
     add_bstride<double>();
+
+    add_tiles();
+    add_blocks();
 }
 
 }  // namespace

@@ -1,0 +1,13 @@
+name,iterations,real_time,cpu_time,time_unit,bytes_per_second,items_per_second,label,error_occurred,error_message,"GFLOP/s"
+"NeonBlocked/f64/N=256",854,822.309,822.254,us,,,,,,4.08079e+10
+"NeonBlocked/f64/N=1024",13,53361.8,53358.8,us,,,,,,4.02461e+10
+"NeonBlocked/f32/N=256",2337,301.906,301.888,us,,,,,,1.11148e+11
+"NeonBlocked/f32/N=1024",33,20916.7,20915.5,us,,,,,,1.02674e+11
+"NeonTile4x4/f64/N=256",1147,612.11,611.99,us,,,,,,5.48284e+10
+"NeonTile4x4/f64/N=1024",16,44880,44876.6,us,,,,,,4.78531e+10
+"NeonTile4x4/f32/N=256",2337,300.94,300.908,us,,,,,,1.1151e+11
+"NeonTile4x4/f32/N=1024",33,20944.6,20941.8,us,,,,,,1.02545e+11
+"NeonTile8x2/f64/N=256",840,824.211,824.095,us,,,,,,4.07167e+10
+"NeonTile8x2/f64/N=1024",13,53535.7,53531.4,us,,,,,,4.01163e+10
+"NeonTile8x2/f32/N=256",1693,413.977,413.9,us,,,,,,8.1069e+10
+"NeonTile8x2/f32/N=1024",26,26524.5,26522.3,us,,,,,,8.09691e+10

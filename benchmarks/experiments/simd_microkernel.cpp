@@ -5,10 +5,10 @@
  *
  *   ./build/benchmarks/simd_microkernel > microkernel.csv
  *
- * The kernel is the one in neon.hpp / avx2.hpp / avx512.hpp: an R x (V·W)
- * block of C held in R·V vector accumulators, and per k step V vector loads
- * of B, R broadcasts of A and R·V FMAs, for k = 0 … 255 (the kernels' k
- * tile). It runs repeatedly on the same small A, B and C, so the operands
+ * The kernel is the library's own micro-kernel, neon_micro<R, V> /
+ * avx2_micro<R, V> / avx512_micro<R, V>: an R x (V·W) block of C held in R·V
+ * vector accumulators, and per k step V vector loads of B, R broadcasts of A
+ * and R·V FMAs, for k = 0 … 255 (the kernels' k tile). It runs repeatedly on the same small A, B and C, so the operands
  * come from L1 and nothing but the core is measured. Two variables:
  *
  *   rows R      the number of accumulators is R·V; the FMA latency × the
@@ -23,6 +23,9 @@
  */
 
 #include "core_clock.hpp"
+#include "gemm/avx2.hpp"
+#include "gemm/avx512.hpp"
+#include "gemm/neon.hpp"
 #include "simd_isa.hpp"
 
 #include <algorithm>
@@ -36,37 +39,45 @@ using namespace hpc::experiments;
 
 constexpr int kK = 256;  // k tile of the library kernels
 
-/// C[R][V·W] += A[R][kK] · B[kK][V·W], B rows ldb apart. Fully unrolled over
-/// R and V so the accumulators live in registers.
+/// The library micro-kernel of an ISA (simd_isa.hpp names the ISAs).
+template <typename Isa> struct Lib;
+#if HPC_HAS_NEON
+template <> struct Lib<NeonF32> {
+    template <int R, int V, typename T>
+    static void run(const T* a, const T* b, T* c, std::size_t lda, std::size_t ldb, std::size_t ldc,
+                    std::size_t k_len) {
+        hpc::gemm::neon_micro<R, V>(a, b, c, lda, ldb, ldc, k_len);
+    }
+};
+template <> struct Lib<NeonF64> : Lib<NeonF32> {};
+#endif
+#if HPC_HAS_AVX2
+template <> struct Lib<Avx2F32> {
+    template <int R, int V, typename T>
+    static void run(const T* a, const T* b, T* c, std::size_t lda, std::size_t ldb, std::size_t ldc,
+                    std::size_t k_len) {
+        hpc::gemm::avx2_micro<R, V>(a, b, c, lda, ldb, ldc, k_len);
+    }
+};
+template <> struct Lib<Avx2F64> : Lib<Avx2F32> {};
+#endif
+#if HPC_HAS_AVX512
+template <> struct Lib<Avx512F32> {
+    template <int R, int V, typename T>
+    static void run(const T* a, const T* b, T* c, std::size_t lda, std::size_t ldb, std::size_t ldc,
+                    std::size_t k_len) {
+        hpc::gemm::avx512_micro<R, V>(a, b, c, lda, ldb, ldc, k_len);
+    }
+};
+template <> struct Lib<Avx512F64> : Lib<Avx512F32> {};
+#endif
+
+/// C[R][V·W] += A[R][kK] · B[kK][V·W], B rows ldb apart. Not inlined, so the
+/// repeated calls on the same data cannot be merged.
 template <typename Isa, int R, int V>
 __attribute__((noinline)) void micro(const typename Isa::T* a, const typename Isa::T* b,
                                      typename Isa::T* c, int ldb) {
-    using Vec            = typename Isa::V;
-    constexpr int W      = Isa::lanes;
-    Vec acc[R][V];
-#pragma GCC unroll 16
-    for (int r = 0; r < R; ++r)
-#pragma GCC unroll 16
-        for (int v = 0; v < V; ++v)
-            acc[r][v] = Isa::load(c + r * V * W + v * W);
-    for (int k = 0; k < kK; ++k) {
-        Vec bv[V];
-#pragma GCC unroll 16
-        for (int v = 0; v < V; ++v)
-            bv[v] = Isa::load(b + k * ldb + v * W);
-#pragma GCC unroll 16
-        for (int r = 0; r < R; ++r) {
-            const Vec ar = Isa::splat(a[r * kK + k]);
-#pragma GCC unroll 16
-            for (int v = 0; v < V; ++v)
-                acc[r][v] = Isa::fma(acc[r][v], ar, bv[v]);
-        }
-    }
-#pragma GCC unroll 16
-    for (int r = 0; r < R; ++r)
-#pragma GCC unroll 16
-        for (int v = 0; v < V; ++v)
-            Isa::store(c + r * V * W + v * W, acc[r][v]);
+    Lib<Isa>::template run<R, V>(a, b, c, kK, static_cast<std::size_t>(ldb), V * Isa::lanes, kK);
 }
 
 double g_ghz = 0;
@@ -113,7 +124,7 @@ int main() {
     sweep<NeonF64, 2, 4, 6, 8, 10>();    // library: 8 x 2 vectors = 16
 #endif
 #if HPC_HAS_AVX2
-    sweep<Avx2F32, 2, 4, 5, 6>();        // library: 4 x 2 = 8 (16 registers in all)
+    sweep<Avx2F32, 2, 4, 5, 6>();        // library: 6 x 2 = 12 (15-16 of 16 registers)
     sweep<Avx2F64, 2, 4, 5, 6>();
 #endif
 #if HPC_HAS_AVX512

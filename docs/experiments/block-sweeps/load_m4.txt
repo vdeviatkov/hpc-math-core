@@ -1,0 +1,15 @@
+23:29  up 213 days, 22:31, 5 users, load averages: 7.81 5.63 6.31
+ 0:15  up 213 days, 23:17, 5 users, load averages: 3.30 3.78 4.73
+DONE
+# ext
+ 0:17  up 213 days, 23:19, 5 users, load averages: 3.32 3.65 4.56
+ 0:22  up 213 days, 23:24, 5 users, load averages: 2.01 2.73 3.86
+DONE
+# stage 2
+ 0:26  up 213 days, 23:28, 5 users, load averages: 5.84 5.31 4.91
+ 0:28  up 213 days, 23:30, 5 users, load averages: 3.17 4.44 4.61
+DONE
+# slices
+ 0:37  up 213 days, 23:39, 5 users, load averages: 7.14 5.44 4.84
+ 0:42  up 213 days, 23:44, 5 users, load averages: 3.05 4.35 4.57
+DONE

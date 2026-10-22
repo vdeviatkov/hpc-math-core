@@ -121,6 +121,14 @@ struct Kernel {
 };
 
 #define HPC_BOTH(name, fn) Kernel{name, &fn<float>, &fn<double>}
+// A blocked SIMD kernel with an explicit register tile: R rows × V vectors.
+// Shapes other than the defaults exercise the driver's edge handling: rows
+// left over from the 64-row block, fewer vectors, scalar columns.
+#define HPC_TILE(name, fn, R, V) Kernel{name, &fn<float, R, V>, &fn<double, R, V>}
+// Cache blocks that are not multiples of the tile rows or the vector width:
+// strips and tiles cut short at every block edge, not only at the matrix's.
+#define HPC_BLOCK(name, fn, R, V, M, K, N) \
+    Kernel{name, &fn<float, R, V, M, K, N>, &fn<double, R, V, M, K, N>}
 
 const Kernel kKernels[] = {
     HPC_BOTH("Reordered", gemm_reordered),
@@ -131,18 +139,34 @@ const Kernel kKernels[] = {
     HPC_BOTH("Avx2Reordered", gemm_avx2_reordered),
     HPC_BOTH("Avx2Blocked", gemm_avx2_blocked),
     HPC_BOTH("Avx2BlockedPrefetch", gemm_avx2_blocked_prefetch),
+    HPC_TILE("Avx2Blocked1x1", gemm_avx2_blocked, 1, 1),
+    HPC_TILE("Avx2Blocked4x2", gemm_avx2_blocked, 4, 2),
+    HPC_TILE("Avx2Blocked2x4", gemm_avx2_blocked, 2, 4),
+    HPC_TILE("Avx2Blocked4x3", gemm_avx2_blocked, 4, 3),
+    HPC_TILE("Avx2Blocked7x2", gemm_avx2_blocked, 7, 2),
+    HPC_BLOCK("Avx2Blocked_20x7x37", gemm_avx2_blocked, 6, 2, 20, 7, 37),
 #endif
 #if HPC_HAS_AVX512
     HPC_BOTH("Avx512Naive", gemm_avx512_naive),
     HPC_BOTH("Avx512Reordered", gemm_avx512_reordered),
     HPC_BOTH("Avx512Blocked", gemm_avx512_blocked),
     HPC_BOTH("Avx512BlockedPrefetch", gemm_avx512_blocked_prefetch),
+    HPC_TILE("Avx512Blocked8x2", gemm_avx512_blocked, 8, 2),
+    HPC_TILE("Avx512Blocked4x2", gemm_avx512_blocked, 4, 2),
+    HPC_TILE("Avx512Blocked6x3", gemm_avx512_blocked, 6, 3),
+    HPC_TILE("Avx512Blocked12x2", gemm_avx512_blocked, 12, 2),
+    HPC_BLOCK("Avx512Blocked_20x7x37", gemm_avx512_blocked, 8, 3, 20, 7, 37),
 #endif
 #if HPC_HAS_NEON
     HPC_BOTH("NeonNaive", gemm_neon_naive),
     HPC_BOTH("NeonReordered", gemm_neon_reordered),
     HPC_BOTH("NeonBlocked", gemm_neon_blocked),
     HPC_BOTH("NeonBlockedPrefetch", gemm_neon_blocked_prefetch),
+    HPC_TILE("NeonBlocked1x1", gemm_neon_blocked, 1, 1),
+    HPC_TILE("NeonBlocked4x2", gemm_neon_blocked, 4, 2),
+    HPC_TILE("NeonBlocked6x3", gemm_neon_blocked, 6, 3),
+    HPC_TILE("NeonBlocked3x5", gemm_neon_blocked, 3, 5),
+    HPC_BLOCK("NeonBlocked_20x7x37", gemm_neon_blocked, 6, 4, 20, 7, 37),
 #endif
 #if HPC_HAS_SVE
     HPC_BOTH("SveNaive", gemm_sve_naive),

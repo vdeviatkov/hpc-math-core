@@ -35,7 +35,8 @@ GEMM columns: GFLOP/s of B in place and packed, medians of 5 interleaved
 repetitions; every variant is checked against `gemm_avx512_blocked` before
 timing. The GEMM uses the library kernel's blocking (64 rows of A × `kc`
 rows of B × 512 columns, `kc` = 256 except in `height`) and its
-micro-kernel (`avx512_micro_8x2`, 8 × 32 tile). "Packed" copies each
+micro-kernel with the 8 × 2 tile it had then (`avx512_micro<8, 2>`, 8 × 32
+FP32; the library default is 8 × 3 since 2026-10-21). "Packed" copies each
 `kc` × 512 block of B into contiguous 32-column strips before use; with
 the library's loop order (64-row blocks of A outermost) that copy is
 repeated for every block of A, so packed B still reads the strided B

@@ -14,12 +14,12 @@
  *                         AVX2/scalar reordered on Zen 5: the loop streams B
  *                         and C, so it is limited by memory traffic, not FMA
  *                         width.
- *  gemm_avx512_blocked    tiled i → k → j with an 8×32 f32 / 8×16 f64 register
- *                         tile (8 rows × 2 ZMM). The fastest of the three.
+ *  gemm_avx512_blocked    tiled i → k → j with an 8×48 f32 / 8×24 f64 register
+ *                         tile (8 rows × 3 ZMM). The fastest of the three.
  *
  * Peak (2 FMA ports): 2 × 16 lanes × 2 FLOP = 64 FLOP/cycle f32, 32 f64.
- * The 32 ZMM registers leave room for the 16 accumulators, 2 B vectors and
- * the broadcast of the micro-kernel without spilling.
+ * The 32 ZMM registers leave room for the 24 accumulators and 3 B vectors
+ * of the micro-kernel without spilling.
  *
  * Available on Intel Skylake-SP/X and later server/workstation parts
  * (Cascade Lake, Ice Lake, Sapphire Rapids, Rocket Lake) and AMD Zen 4+.
@@ -31,6 +31,7 @@
  * capable CPU; HPC_ENABLE_AVX512=ON forces the flags otherwise.
  */
 
+#include "gemm/blocked_driver.hpp"
 #include "hpc/isa.hpp"
 #include "hpc/matrix.hpp"
 
@@ -202,20 +203,18 @@ void gemm_avx512_reordered(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C)
 #endif  // HPC_HAS_AVX512
 
 // ============================================================================
-// For Kernel 3: tile sizes (also used by gemm_avx512_blocked_prefetch)
+// For Kernel 3: cache tiles (also used by gemm_avx512_blocked_prefetch)
 // ============================================================================
 
-inline constexpr std::size_t kAvx512TileM = 64;   // outer i-tile (same as AVX2)
-inline constexpr std::size_t kAvx512TileK = 256;  // outer k-tile (same as AVX2)
-inline constexpr std::size_t kAvx512TileN = 512;  // outer j-tile — wider: 512 f32 = 2 KB/row
-
-// Micro-kernel unroll: 8 C rows × 2 ZMM vectors per row = 16 accumulators.
-// f32: 2 × 16 = 32 j-elements per call  (vs 16 in AVX2)
-// f64: 2 ×  8 = 16 j-elements per call  (vs  8 in AVX2)
-inline constexpr std::size_t kAvx512F32RegRows = 8;
-inline constexpr std::size_t kAvx512F32RegCols = 2;  // 2 ZMM → 32 f32
-inline constexpr std::size_t kAvx512F64RegRows = 8;
-inline constexpr std::size_t kAvx512F64RegCols = 2;  // 2 ZMM → 16 f64
+// Cache block, the default template arguments of gemm_avx512_blocked: TileM
+// rows of A × TileK steps of k × TileN columns of B. The B block is 512 KiB
+// in either type (2 KiB of each of 256 rows), half of Zen 5's 1 MiB L2; a
+// tall A block means each B block, re-read from memory once per i-block,
+// serves 64 row strips. Measured on Zen 5: docs/kernels/blocks.md.
+inline constexpr std::size_t kAvx512TileM = 512;
+inline constexpr std::size_t kAvx512TileK = 256;
+template <typename T>
+inline constexpr std::size_t kAvx512TileN = 2048 / sizeof(T);  // 512 f32, 256 f64
 
 // ============================================================================
 // For Kernel 3: the register-tile micro-kernel
@@ -224,26 +223,26 @@ inline constexpr std::size_t kAvx512F64RegCols = 2;  // 2 ZMM → 16 f64
 #if HPC_HAS_AVX512
 
 /**
- * @brief AVX-512 micro-kernel: C[0..8)[0..2W) += A[0..8)[0..k_len) × B[0..k_len)[0..2W)
+ * @brief AVX-512 micro-kernel: C[0..R)[0..V·W) += A[0..R)[0..k_len) × B[0..k_len)[0..V·W)
  *
- * W = 16 f32 / 8 f64 per ZMM. Per k step: 2 ZMM loads of B row k, 8
- * broadcasts of A(i+r, k), 16 FMAs into 16 accumulators (8 rows × 2 ZMM);
- * 16 + 2 + 1 of the 32 ZMM registers.
+ * W = 16 f32 / 8 f64 per ZMM. Per k step: V ZMM loads of B row k, R
+ * broadcasts of A(i+r, k), R·V FMAs into R·V accumulators. The default,
+ * R = 8, V = 3, uses 24 accumulators and 28 of the 32 ZMM registers.
  *
- * Why 8 rows, not 4. Zen 5 retires 2 FMAs per cycle with a 4-cycle latency,
+ * Why at least 6 rows. Zen 5 retires 2 FMAs per cycle with a 4-cycle latency,
  * so 8 independent accumulators are the bare minimum and 12 are needed for
  * the full rate (fma_peak). With 4 rows × 2 ZMM, GCC 13 also folds the B
  * loads into the FMAs as memory operands (vfmadd231ps (mem), …), re-loading
  * B for every FMA: 12 loads per k step for 8 FMAs, so the kernel ran into
- * the load ports at 60% of peak. With 8 rows it loads B once per k step and
- * every FMA is register-only: 97% of peak on L1-resident data
- * (simd_microkernel, docs/experiments/cpu-simd).
+ * the load ports at 60% of peak. With 6 or more rows it loads B once per k
+ * step and every FMA is register-only: 95–97% of peak on L1-resident data
+ * (simd_microkernel). Why the third vector: docs/kernels/avx512.md.
  *
  * @param a      Pointer to A(i, k_blk) — row-stride lda
  * @param b      Pointer to B(k_blk, j) — row-stride ldb
  * @param c      Pointer to C(i, j)     — row-stride ldc
  */
-/// ZMM operations per element type, for avx512_micro_8x2.
+/// ZMM operations per element type, for avx512_micro.
 template <typename T> struct Zmm;
 template <> struct Zmm<float> {
     using V = __m512;
@@ -260,37 +259,51 @@ template <> struct Zmm<double> {
     static V fma(V x, V y, V acc) { return _mm512_fmadd_pd(x, y, acc); }
 };
 
-template <typename T>
-inline void avx512_micro_8x2(const T* __restrict__ a, const T* __restrict__ b, T* __restrict__ c,
-                             std::size_t lda, std::size_t ldb, std::size_t ldc,
-                             std::size_t k_len) noexcept {
-    using Z                 = Zmm<T>;
-    using V                 = typename Z::V;
-    constexpr std::size_t W = 64 / sizeof(T);
-    constexpr int R         = 8;
+template <int R, int V, typename T>
+inline void avx512_micro(const T* __restrict__ a, const T* __restrict__ b, T* __restrict__ c,
+                         std::size_t lda, std::size_t ldb, std::size_t ldc, std::size_t k_len) noexcept {
+    // The loops below must unroll completely so acc[][] stays in registers.
+    static_assert(R >= 1 && R <= 16 && V >= 1 && V <= 16, "tile dimensions up to 16 (the unroll factor)");
+    using Ops               = Zmm<T>;
+    using Vec               = typename Ops::V;
+    constexpr std::size_t W = sizeof(Vec) / sizeof(T);  // lanes per vector
 
-    V acc[R][2];
-#pragma GCC unroll 8
-    for (int r = 0; r < R; ++r) {
-        acc[r][0] = Z::load(c + r * ldc);
-        acc[r][1] = Z::load(c + r * ldc + W);
-    }
+    Vec acc[R][V];
+#pragma GCC unroll 16
+    for (int r = 0; r < R; ++r)
+#pragma GCC unroll 16
+        for (int v = 0; v < V; ++v)
+            acc[r][v] = Ops::load(c + r * ldc + v * W);
     for (std::size_t k = 0; k < k_len; ++k) {
-        const V b0 = Z::load(b + k * ldb);
-        const V b1 = Z::load(b + k * ldb + W);
-#pragma GCC unroll 8
+        Vec bv[V];
+#pragma GCC unroll 16
+        for (int v = 0; v < V; ++v)
+            bv[v] = Ops::load(b + k * ldb + v * W);
+#pragma GCC unroll 16
         for (int r = 0; r < R; ++r) {
-            const V ar = Z::splat(a[r * lda + k]);
-            acc[r][0]  = Z::fma(ar, b0, acc[r][0]);
-            acc[r][1]  = Z::fma(ar, b1, acc[r][1]);
+            const Vec ar = Ops::splat(a[r * lda + k]);
+#pragma GCC unroll 16
+            for (int v = 0; v < V; ++v)
+                acc[r][v] = Ops::fma(ar, bv[v], acc[r][v]);
         }
     }
-#pragma GCC unroll 8
-    for (int r = 0; r < R; ++r) {
-        Z::store(c + r * ldc, acc[r][0]);
-        Z::store(c + r * ldc + W, acc[r][1]);
-    }
+#pragma GCC unroll 16
+    for (int r = 0; r < R; ++r)
+#pragma GCC unroll 16
+        for (int v = 0; v < V; ++v)
+            Ops::store(c + r * ldc + v * W, acc[r][v]);
 }
+
+/// The micro-kernel as blocked_gemm (blocked_driver.hpp) calls it.
+struct Avx512Micro {
+    template <typename T>
+    static constexpr std::size_t kLanes = 64 / sizeof(T);
+    template <int R, int V, typename T>
+    static void run(const T* a, const T* b, T* c, std::size_t lda, std::size_t ldb, std::size_t ldc,
+                    std::size_t k_len) noexcept {
+        avx512_micro<R, V>(a, b, c, lda, ldb, ldc, k_len);
+    }
+};
 
 #endif  // HPC_HAS_AVX512
 
@@ -302,79 +315,31 @@ inline void avx512_micro_8x2(const T* __restrict__ a, const T* __restrict__ b, T
  * @brief AVX-512 GEMM with cache-blocking and 512-bit register-tiled micro-kernel.
  *
  * Counterpart of gemm_avx2_blocked: i-k-j order, 3-level tiling
- * (kAvx512TileM × kAvx512TileK × kAvx512TileN = 64 × 256 × 512), and an
- * 8×32 f32 / 8×16 f64 C tile held in ZMM registers for a whole k-tile, so C
- * is stored once per kAvx512TileK steps instead of every step.
+ * (kAvx512TileM × kAvx512TileK × kAvx512TileN = 512 × 256 × 512 f32 or
+ * × 256 f64), and an
+ * R rows × V ZMM register tile of C held for a whole k-tile, so C is stored
+ * once per kAvx512TileK steps instead of every step. The default, 8 × 3
+ * (8×48 f32 / 8×24 f64, 24 accumulators, 28 of 32 ZMM registers), is the
+ * measured best on Zen 5 (docs/kernels/avx512.md); other shapes,
+ * gemm_avx512_blocked<T, R, V>, run through the same driver
+ * (blocked_driver.hpp).
  *
- * Tile footprints (f32): A 64 KB, B 512 KB, C 128 KB. The f64 B panel is
- * 1 MiB — exactly Zen 5's per-core L2, before A and C are counted.
- * Capacity and B row-stride conflicts can both affect the f64 drop;
- * the stride probe isolates the latter (docs/experiments/cpu-simd).
+ * Block footprints: B 512 KiB in either type (with 512 f64 columns it was
+ * 1 MiB, all of Zen 5's L2, and f64 ran up to 30% slower), A 512 KiB f32 /
+ * 1 MiB f64. The cache block and the register tile are template parameters:
+ * gemm_avx512_blocked<T, R, V, TileM, TileK, TileN>.
  */
 #if !HPC_HAS_AVX512
-template <typename T>
+template <typename T, int R = 8, int V = 3, std::size_t TileM = kAvx512TileM,
+          std::size_t TileK = kAvx512TileK, std::size_t TileN = kAvx512TileN<T>>
 void gemm_avx512_blocked(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) = delete;  // AVX512F not available on this target
 #else
-template <typename T>
+template <typename T, int R = 8, int V = 3, std::size_t TileM = kAvx512TileM,
+          std::size_t TileK = kAvx512TileK, std::size_t TileN = kAvx512TileN<T>>
 void gemm_avx512_blocked(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
     static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>,
                   "gemm_avx512_blocked: T must be float or double");
-
-    const std::size_t M   = A.rows();
-    const std::size_t K   = A.cols();
-    const std::size_t N   = B.cols();
-    const std::size_t lda = K;
-    const std::size_t ldb = N;
-    const std::size_t ldc = N;
-
-    assert(B.rows() == K && C.rows() == M && C.cols() == N);
-    C.zero();
-
-    // ZMM SIMD width and micro-kernel step.
-    constexpr std::size_t kSimdW   = (sizeof(T) == 4) ? 16 : 8;
-    constexpr std::size_t kRegRows = (sizeof(T) == 4) ? kAvx512F32RegRows : kAvx512F64RegRows;
-    constexpr std::size_t kRegCols = (sizeof(T) == 4) ? kAvx512F32RegCols : kAvx512F64RegCols;
-    constexpr std::size_t kJStep   = kSimdW * kRegCols;  // 32 f32 or 16 f64 per micro-kernel call
-
-    for (std::size_t i_blk = 0; i_blk < M; i_blk += kAvx512TileM) {
-        const std::size_t i_end = std::min(i_blk + kAvx512TileM, M);
-
-        for (std::size_t k_blk = 0; k_blk < K; k_blk += kAvx512TileK) {
-            const std::size_t k_end = std::min(k_blk + kAvx512TileK, K);
-            const std::size_t k_len = k_end - k_blk;
-
-            for (std::size_t j_blk = 0; j_blk < N; j_blk += kAvx512TileN) {
-                const std::size_t j_end = std::min(j_blk + kAvx512TileN, N);
-
-                // --- AVX-512 hot path ---
-                std::size_t i = i_blk;
-                for (; i + kRegRows <= i_end; i += kRegRows) {
-                    const T* a_ptr = A.data() + i * lda + k_blk;
-                    const T* b_ptr = B.data() + k_blk * ldb + j_blk;
-
-                    std::size_t j = j_blk;
-                    for (; j + kJStep <= j_end; j += kJStep)
-                        avx512_micro_8x2(a_ptr, b_ptr + (j - j_blk), C.data() + i * ldc + j, lda,
-                                         ldb, ldc, k_len);
-                    // Scalar j-tail (j not a multiple of kJStep)
-                    for (; j < j_end; ++j)
-                        for (std::size_t ii = i; ii < i + kRegRows; ++ii) {
-                            T acc{};
-                            for (std::size_t k = k_blk; k < k_end; ++k)
-                                acc += A(ii, k) * B(k, j);
-                            C(ii, j) += acc;
-                        }
-                }
-                // Scalar i-tail (M not a multiple of kRegRows)
-                for (; i < i_end; ++i)
-                    for (std::size_t k = k_blk; k < k_end; ++k) {
-                        const T a_ik = A(i, k);
-                        for (std::size_t j = j_blk; j < j_end; ++j)
-                            C(i, j) += a_ik * B(k, j);
-                    }
-            }
-        }
-    }
+    detail::blocked_gemm<Avx512Micro, R, V, TileM, TileK, TileN>(A, B, C);
 }
 #endif  // HPC_HAS_AVX512
 

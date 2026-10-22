@@ -1,0 +1,3 @@
+22:20  up 213 days, 21:21, 5 users, load averages: 13.60 13.29 11.12
+22:26  up 213 days, 21:28, 5 users, load averages: 9.29 7.67 8.91
+DONE

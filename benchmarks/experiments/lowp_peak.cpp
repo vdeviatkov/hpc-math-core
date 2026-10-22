@@ -89,7 +89,7 @@ double run() {
     return best;
 }
 
-void row(const char* isa, const char* instr, int ops, int accumulators, double seconds, double instrs) {
+[[maybe_unused]] void row(const char* isa, const char* instr, int ops, int accumulators, double seconds, double instrs) {
     const double cycles = seconds * g_ghz * 1e9 / instrs;
     std::printf("%s,%s,%d,%d,%.3f,%.2f,%.1f\n", isa, instr, ops, accumulators, cycles, 1.0 / cycles,
                 instrs * ops / seconds / 1e9);

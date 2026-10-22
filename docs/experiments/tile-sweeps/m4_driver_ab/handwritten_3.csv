@@ -1,0 +1,5 @@
+name,iterations,real_time,cpu_time,time_unit,bytes_per_second,items_per_second,label,error_occurred,error_message,"GFLOP/s"
+"NeonBlocked/f64/N=256",854,818.762,818.708,us,,,,,,4.09846e+10
+"NeonBlocked/f64/N=1024",13,53135.7,53130.7,us,,,,,,4.04189e+10
+"NeonBlocked/f32/N=256",2028,347.942,347.923,us,,,,,,9.64422e+10
+"NeonBlocked/f32/N=1024",31,22515.5,22513.9,us,,,,,,9.53846e+10

@@ -1,0 +1,17 @@
+name,iterations,real_time,cpu_time,time_unit,bytes_per_second,items_per_second,label,error_occurred,error_message,"GFLOP/s"
+"Avx512Blocked/f32/N=256_mean",3,0.103458,0.103454,ms,,,,,,3.24341e+11
+"Avx512Blocked/f32/N=256_median",3,0.103458,0.103454,ms,,,,,,3.24341e+11
+"Avx512Blocked/f32/N=256_stddev",3,5.68416e-07,5.55932e-07,ms,,,,,,1.74292e+06
+"Avx512Blocked/f32/N=256_cv",3,5.49417e-06,5.3737e-06,,,,,,,5.37373e-06
+"Avx512Blocked/f32/N=1024_mean",3,6.89036,6.89003,ms,,,,,,3.1168e+11
+"Avx512Blocked/f32/N=1024_median",3,6.89041,6.88994,ms,,,,,,3.11684e+11
+"Avx512Blocked/f32/N=1024_stddev",3,0.00321729,0.00340758,ms,,,,,,1.54144e+08
+"Avx512Blocked/f32/N=1024_cv",3,0.000466925,0.000494567,,,,,,,0.000494558
+"Avx512Blocked/f32/N=2048_mean",3,58.0728,58.0682,ms,,,,,,2.95886e+11
+"Avx512Blocked/f32/N=2048_median",3,57.6986,57.6949,ms,,,,,,2.97771e+11
+"Avx512Blocked/f32/N=2048_stddev",3,0.716248,0.715303,ms,,,,,,3.61943e+09
+"Avx512Blocked/f32/N=2048_cv",3,0.0123336,0.0123183,,,,,,,0.0122325
+"Avx512Blocked/f32/N=4096_mean",3,595.281,595.237,ms,,,,,,2.30899e+11
+"Avx512Blocked/f32/N=4096_median",3,594.518,594.462,ms,,,,,,2.31199e+11
+"Avx512Blocked/f32/N=4096_stddev",3,1.67486,1.675,ms,,,,,,6.48753e+08
+"Avx512Blocked/f32/N=4096_cv",3,0.00281357,0.002814,,,,,,,0.00280969

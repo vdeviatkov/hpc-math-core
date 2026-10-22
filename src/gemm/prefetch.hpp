@@ -32,7 +32,7 @@
  *  Prefetch distance
  * ============================================================
  *
- * Distance D = rows ahead of the current micro-kernel call.
+ * Distance D = register-tile strips ahead of the current one (D · R rows).
  * D is exposed as template parameter PfDist (default = 4).
  * The benchmark sweeps PfDist in {2, 4, 8, 16} per ISA family.
  *
@@ -41,9 +41,11 @@
  *  Design
  * ============================================================
  *
- * Each wrapper repeats its base kernel's tiled loop, adds __builtin_prefetch
- * before each micro-kernel call, and calls the same micro-kernel. Like its
- * base kernel it is declared `= delete` on an unsupported ISA.
+ * The AVX2, AVX-512 and NEON variants are their base kernel's driver
+ * (blocked_driver.hpp) with PfDist > 0, at the base kernel's default
+ * register tile. The scalar and SVE variants repeat their base kernel's
+ * loop with the hints added. Like its base kernel, each is declared
+ * `= delete` on an unsupported ISA.
  */
 
 #include "gemm/avx2.hpp"
@@ -58,29 +60,12 @@
 #include <cstddef>
 #include <type_traits>
 
-#if defined(_MSC_VER)
-#include <intrin.h>
-#endif
-
 namespace hpc::gemm {
 
 /// Default prefetch distance in micro-kernel rows.
 inline constexpr std::size_t kDefaultPrefetchDist = 4;
 
-/// Prefetch helper. rw: 0=read, 1=write; loc: temporal locality 0..3.
-template <int Rw = 0, int Loc = 2>
-inline void pf(const void* addr) noexcept {
-#if defined(_MSC_VER)
-    // _MM_HINT_T0=1 (L1), _MM_HINT_T1=2 (L2), _MM_HINT_T2=3 (L3), _MM_HINT_NTA=0
-    constexpr int hint = (Loc == 3) ? _MM_HINT_T0
-                       : (Loc == 2) ? _MM_HINT_T1
-                       : (Loc == 1) ? _MM_HINT_T2
-                       :              _MM_HINT_NTA;
-    _mm_prefetch(static_cast<const char*>(addr), hint);
-#else
-    __builtin_prefetch(addr, Rw, Loc);
-#endif
-}
+using detail::pf;  // software prefetch helper, blocked_driver.hpp
 
 // ============================================================================
 // 1.  Scalar blocked + prefetch
@@ -136,54 +121,7 @@ void gemm_avx2_blocked_prefetch(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) 
 template <typename T, std::size_t PfDist = kDefaultPrefetchDist>
 void gemm_avx2_blocked_prefetch(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
     static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>);
-    const std::size_t M   = A.rows();
-    const std::size_t K   = A.cols();
-    const std::size_t N   = B.cols();
-    const std::size_t lda = K, ldb = N, ldc = N;
-    assert(B.rows() == K && C.rows() == M && C.cols() == N);
-    C.zero();
-
-    constexpr std::size_t kSimdW   = (sizeof(T) == 4) ? 8u : 4u;
-    constexpr std::size_t kRegRows = (sizeof(T) == 4) ? kF32RegRows : kF64RegRows;
-    constexpr std::size_t kRegCols = (sizeof(T) == 4) ? kF32RegCols : kF64RegCols;
-    constexpr std::size_t kJStep   = kSimdW * kRegCols;
-
-    for (std::size_t i_blk = 0; i_blk < M; i_blk += kAvx2TileM) {
-        const std::size_t i_end = std::min(i_blk + kAvx2TileM, M);
-        for (std::size_t k_blk = 0; k_blk < K; k_blk += kAvx2TileK) {
-            const std::size_t k_end = std::min(k_blk + kAvx2TileK, K);
-            const std::size_t k_len = k_end - k_blk;
-            if (k_blk + kAvx2TileK < K)
-                pf<0, 2>(B.data() + (k_blk + kAvx2TileK) * ldb);
-            for (std::size_t j_blk = 0; j_blk < N; j_blk += kAvx2TileN) {
-                const std::size_t j_end = std::min(j_blk + kAvx2TileN, N);
-                std::size_t i = i_blk;
-                for (; i + kRegRows <= i_end; i += kRegRows) {
-                    if (i + kRegRows * PfDist < i_end) {
-                        pf<0, 2>(A.data() + (i + kRegRows * PfDist) * lda + k_blk);  // [PF-A]
-                        pf<1, 3>(C.data() + (i + kRegRows * PfDist) * ldc + j_blk);  // [PF-C]
-                    }
-                    const T* a_ptr = A.data() + i * lda + k_blk;
-                    const T* b_ptr = B.data() + k_blk * ldb + j_blk;
-                    std::size_t j = j_blk;
-                    for (; j + kJStep <= j_end; j += kJStep)
-                        avx2_micro_4x2(a_ptr, b_ptr + (j - j_blk), C.data() + i * ldc + j, lda, ldb,
-                                       ldc, k_len);
-                    for (; j < j_end; ++j)
-                        for (std::size_t ii = i; ii < i + kRegRows; ++ii) {
-                            T acc{};
-                            for (std::size_t k = k_blk; k < k_end; ++k) acc += A(ii, k) * B(k, j);
-                            C(ii, j) += acc;
-                        }
-                }
-                for (; i < i_end; ++i)
-                    for (std::size_t k = k_blk; k < k_end; ++k) {
-                        const T a_ik = A(i, k);
-                        for (std::size_t j = j_blk; j < j_end; ++j) C(i, j) += a_ik * B(k, j);
-                    }
-            }
-        }
-    }
+    detail::blocked_gemm<Avx2Micro, 6, 2, kAvx2TileM, kAvx2TileK, kAvx2TileN<T>, PfDist>(A, B, C);
 }
 #endif  // HPC_HAS_AVX2
 
@@ -197,54 +135,7 @@ void gemm_avx512_blocked_prefetch(const Matrix<T>&, const Matrix<T>&, Matrix<T>&
 template <typename T, std::size_t PfDist = kDefaultPrefetchDist>
 void gemm_avx512_blocked_prefetch(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
     static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>);
-    const std::size_t M   = A.rows();
-    const std::size_t K   = A.cols();
-    const std::size_t N   = B.cols();
-    const std::size_t lda = K, ldb = N, ldc = N;
-    assert(B.rows() == K && C.rows() == M && C.cols() == N);
-    C.zero();
-
-    constexpr std::size_t kSimdW   = (sizeof(T) == 4) ? 16u : 8u;
-    constexpr std::size_t kRegRows = (sizeof(T) == 4) ? kAvx512F32RegRows : kAvx512F64RegRows;
-    constexpr std::size_t kRegCols = (sizeof(T) == 4) ? kAvx512F32RegCols : kAvx512F64RegCols;
-    constexpr std::size_t kJStep   = kSimdW * kRegCols;
-
-    for (std::size_t i_blk = 0; i_blk < M; i_blk += kAvx512TileM) {
-        const std::size_t i_end = std::min(i_blk + kAvx512TileM, M);
-        for (std::size_t k_blk = 0; k_blk < K; k_blk += kAvx512TileK) {
-            const std::size_t k_end = std::min(k_blk + kAvx512TileK, K);
-            const std::size_t k_len = k_end - k_blk;
-            if (k_blk + kAvx512TileK < K)
-                pf<0, 2>(B.data() + (k_blk + kAvx512TileK) * ldb);
-            for (std::size_t j_blk = 0; j_blk < N; j_blk += kAvx512TileN) {
-                const std::size_t j_end = std::min(j_blk + kAvx512TileN, N);
-                std::size_t i = i_blk;
-                for (; i + kRegRows <= i_end; i += kRegRows) {
-                    if (i + kRegRows * PfDist < i_end) {
-                        pf<0, 2>(A.data() + (i + kRegRows * PfDist) * lda + k_blk);
-                        pf<1, 3>(C.data() + (i + kRegRows * PfDist) * ldc + j_blk);
-                    }
-                    const T* a_ptr = A.data() + i * lda + k_blk;
-                    const T* b_ptr = B.data() + k_blk * ldb + j_blk;
-                    std::size_t j = j_blk;
-                    for (; j + kJStep <= j_end; j += kJStep)
-                        avx512_micro_8x2(a_ptr, b_ptr + (j - j_blk), C.data() + i * ldc + j, lda,
-                                         ldb, ldc, k_len);
-                    for (; j < j_end; ++j)
-                        for (std::size_t ii = i; ii < i + kRegRows; ++ii) {
-                            T acc{};
-                            for (std::size_t k = k_blk; k < k_end; ++k) acc += A(ii, k) * B(k, j);
-                            C(ii, j) += acc;
-                        }
-                }
-                for (; i < i_end; ++i)
-                    for (std::size_t k = k_blk; k < k_end; ++k) {
-                        const T a_ik = A(i, k);
-                        for (std::size_t j = j_blk; j < j_end; ++j) C(i, j) += a_ik * B(k, j);
-                    }
-            }
-        }
-    }
+    detail::blocked_gemm<Avx512Micro, 8, 3, kAvx512TileM, kAvx512TileK, kAvx512TileN<T>, PfDist>(A, B, C);
 }
 #endif  // HPC_HAS_AVX512
 
@@ -258,56 +149,7 @@ void gemm_neon_blocked_prefetch(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) 
 template <typename T, std::size_t PfDist = kDefaultPrefetchDist>
 void gemm_neon_blocked_prefetch(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
     static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>);
-    const std::size_t M   = A.rows();
-    const std::size_t K   = A.cols();
-    const std::size_t N   = B.cols();
-    const std::size_t lda = K, ldb = N, ldc = N;
-    assert(B.rows() == K && C.rows() == M && C.cols() == N);
-    C.zero();
-
-    // NEON: 4 f32 per lane, kNeonF32RegCols=4 Q-vecs → kJStep=16
-    //       2 f64 per lane, kNeonF64RegCols=2 Q-vecs → kJStep=4
-    constexpr std::size_t kSimdW   = (sizeof(T) == 4) ? 4u : 2u;
-    constexpr std::size_t kRegRows = (sizeof(T) == 4) ? kNeonF32RegRows : kNeonF64RegRows;
-    constexpr std::size_t kRegCols = (sizeof(T) == 4) ? kNeonF32RegCols : kNeonF64RegCols;
-    constexpr std::size_t kJStep   = kSimdW * kRegCols;
-
-    for (std::size_t i_blk = 0; i_blk < M; i_blk += kNeonTileM) {
-        const std::size_t i_end = std::min(i_blk + kNeonTileM, M);
-        for (std::size_t k_blk = 0; k_blk < K; k_blk += kNeonTileK) {
-            const std::size_t k_end = std::min(k_blk + kNeonTileK, K);
-            const std::size_t k_len = k_end - k_blk;
-            if (k_blk + kNeonTileK < K)
-                pf<0, 2>(B.data() + (k_blk + kNeonTileK) * ldb);  // [PF-B]
-            for (std::size_t j_blk = 0; j_blk < N; j_blk += kNeonTileN) {
-                const std::size_t j_end = std::min(j_blk + kNeonTileN, N);
-                std::size_t i = i_blk;
-                for (; i + kRegRows <= i_end; i += kRegRows) {
-                    if (i + kRegRows * PfDist < i_end) {
-                        pf<0, 2>(A.data() + (i + kRegRows * PfDist) * lda + k_blk);  // [PF-A]
-                        pf<1, 3>(C.data() + (i + kRegRows * PfDist) * ldc + j_blk);  // [PF-C]
-                    }
-                    const T* a_ptr = A.data() + i * lda + k_blk;
-                    const T* b_ptr = B.data() + k_blk * ldb + j_blk;
-                    std::size_t j = j_blk;
-                    for (; j + kJStep <= j_end; j += kJStep)
-                        neon_micro<T, kRegRows, kRegCols>(a_ptr, b_ptr + (j - j_blk), C.data() + i * ldc + j,
-                                                          lda, ldb, ldc, k_len);
-                    for (; j < j_end; ++j)
-                        for (std::size_t ii = i; ii < i + kRegRows; ++ii) {
-                            T acc{};
-                            for (std::size_t k = k_blk; k < k_end; ++k) acc += A(ii, k) * B(k, j);
-                            C(ii, j) += acc;
-                        }
-                }
-                for (; i < i_end; ++i)
-                    for (std::size_t k = k_blk; k < k_end; ++k) {
-                        const T a_ik = A(i, k);
-                        for (std::size_t j = j_blk; j < j_end; ++j) C(i, j) += a_ik * B(k, j);
-                    }
-            }
-        }
-    }
+    detail::blocked_gemm<NeonMicro, 6, 4, kNeonTileM, kNeonTileK, kNeonTileN, PfDist>(A, B, C);
 }
 #endif  // HPC_HAS_NEON
 

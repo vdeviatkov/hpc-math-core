@@ -1,0 +1,11 @@
+ 23:30:23 up 12:18,  4 users,  load average: 0.81, 0.32, 0.18
+ 23:49:40 up 12:37,  4 users,  load average: 1.00, 1.00, 0.83
+DONE
+# ext
+ 00:18:31 up 13:06,  4 users,  load average: 0.74, 0.32, 0.31
+ 00:25:58 up 13:13,  4 users,  load average: 1.28, 1.00, 0.65
+DONE
+# stage 2
+ 00:26:21 up 13:13,  4 users,  load average: 0.84, 0.92, 0.63
+ 00:29:32 up 13:17,  4 users,  load average: 1.02, 0.99, 0.72
+DONE

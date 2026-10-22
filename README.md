@@ -15,9 +15,9 @@ Best kernel per family, single-threaded unless noted. Full output, speedup table
 | Family | Hardware | f32 peak | f64 peak |
 |---|---|---|---|
 | Scalar, cache-blocked (`gemm_blocked`) | Apple M4 Max | 83 GFLOP/s | 26 GFLOP/s |
-| ARM NEON (`gemm_neon_blocked`) | Apple M4 Max | 95 GFLOP/s | 40 GFLOP/s |
-| AVX2 (`gemm_avx2_blocked`) | AMD Zen 5, GCC | 151 GFLOP/s | 75 GFLOP/s |
-| AVX-512 (`gemm_avx512_blocked`) | AMD Zen 5, GCC | **333 GFLOP/s** | **162 GFLOP/s** |
+| ARM NEON (`gemm_neon_blocked`) ⁴ | Apple M4 Max | 124 GFLOP/s | 62 GFLOP/s |
+| AVX2 (`gemm_avx2_blocked`) ⁴ | AMD Zen 5, GCC | 172 GFLOP/s | 84 GFLOP/s |
+| AVX-512 (`gemm_avx512_blocked`) ⁴ | AMD Zen 5, GCC | **331 GFLOP/s** | **162 GFLOP/s** |
 | ARM SME2 (`gemm_sme`) | Apple M4 Max | **1.53 TFLOP/s** | **436 GFLOP/s** |
 | Apple AMX via Accelerate (`gemm_amx`) ¹ | Apple M4 Max | 3.18 TFLOP/s | 804 GFLOP/s |
 | Accelerate / KleidiAI, 1 core (reference) | Apple M4 Max | 1.72 / 1.66 TFLOP/s | 456 GFLOP/s / — |
@@ -28,6 +28,7 @@ Best kernel per family, single-threaded unless noted. Full output, speedup table
 ¹ Vendor BLAS with its default threading (all cores) — not a single-core comparison.
 ² GPU time of the GEMM alone, data already on the GPU (as the CPU rows measure the multiplication alone); best over N ≤ 16384.
 ³ fp16 inputs, fp32 accumulate; 100 % of cuBLAS FP16 on the same GPU at N = 16384 (Level 7, `gemm_cuda_wmma_pipelined`: 101 TFLOP/s, 83 %).
+⁴ Best over every register-tile shape and cache block measured ([docs/kernels](docs/kernels/README.md)). The defaults reach 124 / 62 (NEON 6×4), 172 / 83 (AVX2 6×2) and 328 / 162 (AVX-512 8×3); the AVX-512 f32 best is the 14×2 tile at N = 256, the AVX2 f64 best the 6×2 tile with the earlier 64-row block. At N = 4096 the defaults run at 102 / 51, 106 / 54 and 295 / 145.
 
 Low precision, best size, GOP/s counting a multiply-add as 2 ([article 5](docs/articles/lowp-gemm.md)):
 
@@ -116,6 +117,7 @@ docs/                         Benchmark results, build guide, kernel design guid
 | [Matrix multiplication in bf16, fp16, INT8 and FP8](docs/articles/lowp-gemm.md) | Article 5: the same GEMM in five low-precision formats on M4 NEON and SME2, Zen 5 AVX-512 and the RTX 5080: peaks per format, the kernel changes, and the accuracy cost |
 | [src/gemm/README.md](src/gemm/README.md) | Map of the kernels: files, techniques, registers and intrinsics per family. Each kernel's design is in its own header. |
 | [docs/kernel-design.md](docs/kernel-design.md) | File-by-file design: algorithms, layouts, edges, precision, benchmark methodology and supporting files |
+| [docs/kernels/](docs/kernels/README.md) | Register-tile and cache-block sweeps of the AVX2, AVX-512 and NEON kernels on Zen 5 and M4, with the reasons for each default |
 | [docs/benchmarks.md](docs/benchmarks.md) | All measurements and their analysis: Apple M4 Max, AMD Zen 5, RTX 5080 |
 | [docs/build.md](docs/build.md) | Build on Linux, macOS and Windows, CMake options, SME/AMX flags, what runs where, CI |
 | [docs/cache-behavior.md](docs/cache-behavior.md) | Background: cache lines, reuse distance, working sets, memory-bound limits, GPU memory hierarchy |

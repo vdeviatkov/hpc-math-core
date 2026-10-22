@@ -2,7 +2,8 @@
 
 Raw data behind the article
 [*Matrix multiplication with SIMD on Apple M4 and AMD Zen 5*](../../articles/simd-gemm.md).
-2026-10-15, one thread.
+2026-10-15, one thread. These files record the kernels as they were then;
+the current register tiles are measured in [tile-sweeps](../tile-sweeps/README.md).
 
 | Machine | Compiler | Flags | Load |
 |---|---|---|---|
@@ -91,3 +92,17 @@ cmake --build build --target fma_peak simd_microkernel bench_gemm
 ./build/benchmarks/simd_microkernel > microkernel.csv
 ./build/benchmarks/bench_gemm --benchmark_format=csv > bench.csv
 ```
+
+## AVX2 register tile: 4 × 2 → 6 × 2 (2026-10-21)
+
+Files in [`avx2-tiles/`](avx2-tiles/). Same machine and compiler, one core
+pinned (`taskset -c 2`), idle. The comparison of all tile shapes is in
+[tile-sweeps](../tile-sweeps/README.md) and [docs/kernels/avx2.md](../../kernels/avx2.md).
+
+| File | Program | What |
+|---|---|---|
+| `library_{native,v3}_{old,new}_{1,2,3}.csv` | `bench_gemm`, filter `^(Avx2Blocked\|Avx512Blocked)(Pf4)?/` | the library before (git HEAD, 4×2 AVX2 tile) and after (6×2), three alternating runs per build; AVX-512 rows check that its rewrite to the `avx512_micro<8, 2>` template is neutral (±0.7%) |
+
+Later tile changes (AVX-512 8 × 2 → 8 × 3, NEON → 6 × 4 with `LDR`) are
+recorded in [tile-sweeps](../tile-sweeps/README.md); the tables above keep
+the kernels as they were measured on 2026-10-15.

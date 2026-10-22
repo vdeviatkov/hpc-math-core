@@ -285,7 +285,9 @@ all. At these sizes it pays for itself several times over.
 Part 1's AVX-512 kernel, `gemm_avx512_blocked`, also reads B in place, and
 it also loses throughput at power-of-two sizes: FP32 at N = 1024 and FP64
 at N = 512, both rows 4 KiB apart ([part 1](simd-gemm.md)). The experiments
-above, repeated on one core of an AMD Ryzen 9 9950X, show when and how much
+above, repeated on one core of an AMD Ryzen 9 9950X with the kernel's 8 × 2
+register tile (its default when this was measured; it is 8 × 3 now and
+drops 5% instead of 13% from FP32 N = 512 to 1024, see [docs/kernels](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/kernels/avx512.md)), show when and how much
 ([`avx512_b_stride`](https://github.com/vdeviatkov/hpc-math-core/blob/main/benchmarks/experiments/avx512_b_stride.cpp),
 data in [experiments/zen5-b-stride](https://github.com/vdeviatkov/hpc-math-core/tree/main/docs/experiments/zen5-b-stride)).
 The core runs at 5.71 GHz, pinned to one core of an idle machine; GCC 13.3.

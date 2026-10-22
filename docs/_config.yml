@@ -20,3 +20,4 @@ exclude:
   - cache-behavior.md
   - kernel-design.md
   - experiments/
+  - kernels/

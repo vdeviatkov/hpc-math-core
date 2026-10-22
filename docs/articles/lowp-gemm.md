@@ -41,7 +41,7 @@ measures what each format costs in accuracy.
   uses it; switching the hand-written kernels to it took FP8 from 214 to
   291 TFLOP/s (cp.async kernel) and from 233 to 387 (part 4's Level 8).
 - **The kernels:** INT8 reaches 3,525 GOP/s on one M4 SME2 unit and 922
-  on one Zen 5 core, 2.3× and 4.0× their FP32 kernels at N = 2,048, and
+  on one Zen 5 core, 2.3× and 3.0× their FP32 kernels at N = 2,048, and
   419 TOP/s on the RTX 5080 at N = 16,384 (98% of cuBLAS). Each CUDA kernel serves all
   five formats; only the `mma.sync` instruction and the element width
   change. Part 4's Level 8 reaches 97–102% of cuBLAS in every format.
@@ -230,15 +230,18 @@ computed while packing it. The result is exact.
 
 | GFLOP/s or GOP/s | N = 256 | 1,024 | 2,048 | 4,096 | best, % of peak |
 |---|--:|--:|--:|--:|--:|
-| FP32, `gemm_avx512_blocked` | 328 | 278 | 232 | 198 | 92% |
+| FP32, `gemm_avx512_blocked` | **324** | 311 | 303 | 294 | 91% |
 | bf16 | 566 | **609** | 608 | 593 | 85% |
 | INT8 | 708 | 905 | **922** | 894 | 64% |
 
-At N = 4,096 bf16 is 3.0× and INT8 4.5× faster than FP32, more than the
-peak ratios: the FP32 kernel reads B in place and loses throughput to
-part 1's stride conflicts as N grows, while the low-precision kernels pack
-B, as they must, and stay flat. Best size against best size the ratios
-are 1.9× and 2.8×. INT8 reaches 64% of its peak where bf16 reaches 85%;
+(The FP32 row is part 1's kernel with its current register tile and cache
+block, measured on 2026-10-22; Zen 5 runs at the same 5.70 GHz in every
+session, so it compares directly with the other rows.)
+
+At N = 4,096 bf16 is 2.0× and INT8 3.0× faster than FP32; best size
+against best size, 1.9× and 2.8×. The FP32 kernel reads B in place and
+still loses a little to part 1's stride conflicts as N grows, while the
+low-precision kernels pack B, as they must, and stay flat. INT8 reaches 64% of its peak where bf16 reaches 85%;
 this article did not isolate that gap.
 
 ### Apple M4, NEON
@@ -251,24 +254,31 @@ each (G = 4 bf16 or 8 INT8), and adds their 2 × 2 product to a 2 × 2 tile
 of C held in one register. The micro-kernel arranges 16 such tiles into an
 8 × 8 block of C: per k group, 4 registers of A (row pairs) and 4 of B
 (column pairs) feed 16 instructions, the outer product of part 1 at the
-granularity of 2 × 2 tiles. `FMLAL` and `FMLA .8h` keep part 1's 4-row
-FP32 tile.
+granularity of 2 × 2 tiles. `FMLAL` and `FMLA .8h` keep the 4 × 4 tile
+that part 1's FP32 kernel used until it moved to 6 × 4.
 
 | GFLOP/s or GOP/s | N = 256 | 1,024 | 2,048 | 4,096 | best, % of peak |
 |---|--:|--:|--:|--:|--:|
-| FP32, `gemm_neon_blocked` | 96 | 94 | 90 | 74 | 71% |
-| bf16, `BFMMLA` | 67 | 67 | 67 | 66 | 94% |
-| fp16 → FP32, `FMLAL` | 111 | **115** | 114 | 114 | 81% |
-| fp16 → fp16, `FMLA .8h` | 208 | **218** | 216 | 214 | 81% |
-| INT8, `SMMLA` | 456 | 502 | **508** | 497 | 98% |
+| FP32, `gemm_neon_blocked` | **122** | 121 | 118 | 101 | 90% |
+| bf16, `BFMMLA` | **66** | **66** | **66** | 65 | 93% |
+| fp16 → FP32, `FMLAL` | 109 | **114** | 113 | 112 | 80% |
+| fp16 → fp16, `FMLA .8h` | 204 | **216** | 214 | 209 | 81% |
+| INT8, `SMMLA` | 449 | 493 | **503** | 491 | 97% |
+
+(All rows from one session on 2026-10-22, with the FP32 kernel's current
+6 × 4 tile and cache block; the low-precision rows are within 1–3% of the
+first run on 2026-10-16.)
 
 The kernels follow the peaks. bf16 is the slowest kernel in the table
-while running at 94% of its instruction's rate. `FMLAL` beats FP32 by 22%
-at N = 1,024 with the same arithmetic rate, because it moves half the
-bytes; fp16 accumulation nearly doubles that. `SMMLA` runs at 98% of the
-`SDOT` peak (99.6% of its own) and 5.3–5.6× the FP32 kernel at
-N = 1,024–2,048: an 8 × 8 C block needs only 8 registers of operands per
-16 instructions, so the loads never limit it.
+while running at 93% of its instruction's rate. `FMLAL` has FP32's
+arithmetic rate and moves half the bytes, yet runs 6% below the FP32
+kernel at N = 1,024: the FP32 kernel's larger tile and its `LDR` loads of
+A ([docs/kernels/neon.md](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/kernels/neon.md))
+gained more than the halved bytes; the fp16 kernels have neither. fp16 accumulation runs at 1.8× FP32. `SMMLA` runs at 97% of the
+`SDOT` peak (98% of its own) and 4.1–4.3× the FP32 kernel at
+N = 1,024–2,048: an 8 × 8 C block needs
+only 8 registers of operands per 16 instructions, so the loads never limit
+it.
 
 ### Apple M4, SME2
 

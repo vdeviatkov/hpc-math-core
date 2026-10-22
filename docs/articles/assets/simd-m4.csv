@@ -2,4 +2,5 @@ label,value,group
 "naive, i-j-k",2.29,scalar
 "reordered, i-k-j",31.64,scalar
 "cache-blocked",48.54,scalar
-"NEON register tile",94.96,simd
+"NEON, 4 × 4 tile (before)",94.96,old
+"NEON, 6 × 4 tile (2026-10-22)",123.78,simd

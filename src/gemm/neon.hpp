@@ -11,25 +11,26 @@
  *                       and C rows. Measured on M4 Max: no faster than scalar
  *                       gemm_reordered, which the compiler auto-vectorises.
  *  gemm_neon_blocked    tiled i → k → j with a C tile held in Q registers for
- *                       a whole k-tile: 4×16 f32 (4 rows × 4 Q) or 8×4 f64
- *                       (8 rows × 2 Q). The fastest of the three.
+ *                       a whole k-tile: 6 rows × 4 Q by default (6×16 f32,
+ *                       6×8 f64). The fastest of the three.
  *
- * AArch64 has 32 × 128-bit Q registers (4 f32 / 2 f64). Both micro-kernels
- * keep 16 accumulators: f32 with 4 broadcasts of A and 4 B vectors live (24
- * of 32), f64 with 2 B vectors and a broadcast (19 of 32).
+ * AArch64 has 32 × 128-bit Q registers (4 f32 / 2 f64). The 6 × 4 tile keeps
+ * 24 accumulators, 4 B vectors and one element of A live (29 of 32).
  *
- * Apple M4 P-core (measured with fma_peak at ~4.05 GHz, docs/experiments/
- * cpu-simd): up to 4 FMAs per cycle, ~3-cycle latency.
- *   f32: 4 pipes × 4 lanes × 2 FLOP = 32 FLOP/cycle → ~130 GFLOP/s
- *   f64: 4 pipes × 2 lanes × 2 FLOP = 16 FLOP/cycle →  ~65 GFLOP/s
- * gemm_neon_blocked reaches ~95 / ~40 GFLOP/s (≈73% / 61%). NEON is half the
- * width of AVX2, but twice the FMA pipes give the same FLOP/cycle.
+ * Apple M4 P-core (measured with fma_peak, docs/experiments/cpu-simd): up
+ * to 4 FMAs per cycle, ~3-cycle latency.
+ *   f32: 4 pipes × 4 lanes × 2 FLOP = 32 FLOP/cycle → ~143 GFLOP/s at 4.49 GHz
+ *   f64: 4 pipes × 2 lanes × 2 FLOP = 16 FLOP/cycle →  ~72 GFLOP/s
+ * gemm_neon_blocked reaches ~121 / ~60 GFLOP/s at N = 256–1024 (≈85% /
+ * 84%; docs/kernels/neon.md). NEON is half the width of AVX2, but twice the
+ * FMA pipes give the same FLOP/cycle.
  *
  * HPC_HAS_NEON (hpc/isa.hpp) requires AArch64: the kernels use f64 lanes
  * and vfmaq_f64, which 32-bit ARMv7 NEON lacks. Where it is 0 the kernels
  * are declared `= delete`.
  */
 
+#include "gemm/blocked_driver.hpp"
 #include "hpc/isa.hpp"
 #include "hpc/matrix.hpp"
 
@@ -196,20 +197,16 @@ void gemm_neon_reordered(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
 #endif  // HPC_HAS_NEON
 
 // ============================================================================
-// For Kernel 3: tile sizes (also used by gemm_neon_blocked_prefetch)
+// For Kernel 3: cache tiles (also used by gemm_neon_blocked_prefetch)
 // ============================================================================
 
-inline constexpr std::size_t kNeonTileM = 64;   // outer i-tile
-inline constexpr std::size_t kNeonTileK = 256;  // outer k-tile
-inline constexpr std::size_t kNeonTileN = 256;  // outer j-tile
-
-// f32 micro-kernel: 4 rows × 4 Q-vectors per row = 4×16 j-elements
-inline constexpr std::size_t kNeonF32RegRows = 4;
-inline constexpr std::size_t kNeonF32RegCols = 4;  // 4 Q-vectors → 16 f32
-
-// f64 micro-kernel: 8 rows × 2 Q-vectors per row = 8×4 j-elements
-inline constexpr std::size_t kNeonF64RegRows = 8;
-inline constexpr std::size_t kNeonF64RegCols = 2;  // 2 Q-vectors → 4 f64
+// Cache block, the default template arguments of gemm_neon_blocked: TileM
+// rows of A × TileK steps of k × TileN columns of B (B block 256 KiB f32,
+// 512 KiB f64). A tall A block means each B block, re-read from memory once
+// per i-block, serves 64 row strips. Measured on M4: docs/kernels/blocks.md.
+inline constexpr std::size_t kNeonTileM = 384;
+inline constexpr std::size_t kNeonTileK = 256;
+inline constexpr std::size_t kNeonTileN = 256;
 
 // ============================================================================
 // For Kernel 3: the register-tile micro-kernel
@@ -217,21 +214,36 @@ inline constexpr std::size_t kNeonF64RegCols = 2;  // 2 Q-vectors → 4 f64
 
 #if HPC_HAS_NEON
 
-/// Q-register (128-bit) operations per element type, for neon_micro.
+/// Q-register (128-bit) operations per element type, for neon_micro. S is a
+/// 64-bit D register holding one element of A in lane 0; fma multiplies a
+/// B vector by that lane (FMLA by element).
 template <typename T> struct Q;
 template <> struct Q<float> {
     using V = float32x4_t;
+    using S = float32x2_t;
     static V load(const float* p) { return vld1q_f32(p); }
     static void store(float* p, V v) { vst1q_f32(p, v); }
-    static V splat(float x) { return vdupq_n_f32(x); }
-    static V fma(V acc, V x, V y) { return vfmaq_f32(acc, x, y); }
+    static S load_lane0(const float* p) {
+#if defined(__GNUC__)
+        // A plain LDR. From intrinsics (vld1_lane, vset_lane) Clang 17 folds
+        // the load and the by-element FMA back into LD1R, which neon_micro
+        // must avoid.
+        S x;
+        asm("ldr %s0, %1" : "=w"(x) : "m"(*p));
+        return x;
+#else
+        return vld1_dup_f32(p);
+#endif
+    }
+    static V fma(S a, V b, V acc) { return vfmaq_lane_f32(acc, b, a, 0); }
 };
 template <> struct Q<double> {
     using V = float64x2_t;
+    using S = float64x1_t;
     static V load(const double* p) { return vld1q_f64(p); }
     static void store(double* p, V v) { vst1q_f64(p, v); }
-    static V splat(double x) { return vdupq_n_f64(x); }
-    static V fma(V acc, V x, V y) { return vfmaq_f64(acc, x, y); }
+    static S load_lane0(const double* p) { return vld1_f64(p); }  // LDR d
+    static V fma(S a, V b, V acc) { return vfmaq_lane_f64(acc, b, a, 0); }
 };
 
 /**
@@ -239,59 +251,67 @@ template <> struct Q<double> {
  *
  * W = 4 f32 / 2 f64 per Q register; R rows × V Q-vectors of C stay in
  * R·V accumulators for the whole k loop. Per k step: V loads of B row k,
- * R broadcasts of A(i+r, k), R·V FMAs. The library uses two shapes, both
- * with 16 accumulators:
+ * R scalar loads of A(i+r, k), R·V FMAs. The P-core issues up to 4 FMAs
+ * per cycle with a ~3.3-cycle latency, so it takes 12–16 independent
+ * accumulators to keep the pipes busy (fma_peak). gemm_neon_blocked uses
+ * R = 6, V = 4 (docs/kernels/neon.md).
  *
- *   f32  R = 4, V = 4   a 4 × 16 tile
- *   f64  R = 8, V = 2   an 8 × 4 tile
- *
- * The P-core issues up to 4 FMAs per cycle with a ~3.3-cycle latency, so
- * it takes 12–16 independent accumulators to keep the pipes busy
- * (fma_peak). The f64 kernel had a 4 × 4 tile with 8 accumulators before,
- * and ran at half this one's rate on L1-resident data (simd_microkernel,
- * docs/experiments/cpu-simd).
- *
- * The source broadcasts each A(i+r, k) with vdup and uses plain vfmaq;
- * Clang 17 (-O3 -mcpu=apple-m4) turns each broadcast into one ld1r
- * (load and replicate), so a k step of the f32 kernel is 2 ldp of B,
- * 4 ld1r of A and 16 fmla.
+ * A(i+r, k) is loaded with a plain LDR into lane 0 of a D register and
+ * multiplied by element (FMLA v.4s, v.4s, v.s[0]); a k step of the 6 × 4
+ * tile is 2 ldp of B, 6 ldr of A and 24 fmla. Broadcasting A with LD1R
+ * (load and replicate), which Clang emits for vdupq + vfmaq, held the
+ * tiles with many rows back on M4: with LDR the 6 × 4 tile is 23–30%
+ * faster in the full multiplication (docs/kernels/neon.md).
  *
  * @param a  Pointer to A(i, k_blk) — row-stride lda
  * @param b  Pointer to B(k_blk, j) — row-stride ldb
  * @param c  Pointer to C(i, j)     — row-stride ldc
  */
-template <typename T, std::size_t R, std::size_t V>
+template <int R, int V, typename T>
 inline void neon_micro(const T* __restrict__ a, const T* __restrict__ b, T* __restrict__ c,
                        std::size_t lda, std::size_t ldb, std::size_t ldc, std::size_t k_len) noexcept {
-    using N                 = Q<T>;
-    using Vec               = typename N::V;
-    constexpr std::size_t W = 16 / sizeof(T);
+    // The loops below must unroll completely so acc[][] stays in registers.
+    static_assert(R >= 1 && R <= 16 && V >= 1 && V <= 16, "tile dimensions up to 16 (the unroll factor)");
+    using Ops               = Q<T>;
+    using Vec               = typename Ops::V;
+    constexpr std::size_t W = sizeof(Vec) / sizeof(T);  // lanes per vector
 
     Vec acc[R][V];
-#pragma GCC unroll 8
-    for (std::size_t r = 0; r < R; ++r)
-#pragma GCC unroll 4
-        for (std::size_t v = 0; v < V; ++v)
-            acc[r][v] = N::load(c + r * ldc + v * W);
+#pragma GCC unroll 16
+    for (int r = 0; r < R; ++r)
+#pragma GCC unroll 16
+        for (int v = 0; v < V; ++v)
+            acc[r][v] = Ops::load(c + r * ldc + v * W);
     for (std::size_t k = 0; k < k_len; ++k) {
         Vec bv[V];
-#pragma GCC unroll 4
-        for (std::size_t v = 0; v < V; ++v)
-            bv[v] = N::load(b + k * ldb + v * W);
-#pragma GCC unroll 8
-        for (std::size_t r = 0; r < R; ++r) {
-            const Vec ar = N::splat(a[r * lda + k]);
-#pragma GCC unroll 4
-            for (std::size_t v = 0; v < V; ++v)
-                acc[r][v] = N::fma(acc[r][v], ar, bv[v]);
+#pragma GCC unroll 16
+        for (int v = 0; v < V; ++v)
+            bv[v] = Ops::load(b + k * ldb + v * W);
+#pragma GCC unroll 16
+        for (int r = 0; r < R; ++r) {
+            const auto ar = Ops::load_lane0(a + r * lda + k);
+#pragma GCC unroll 16
+            for (int v = 0; v < V; ++v)
+                acc[r][v] = Ops::fma(ar, bv[v], acc[r][v]);
         }
     }
-#pragma GCC unroll 8
-    for (std::size_t r = 0; r < R; ++r)
-#pragma GCC unroll 4
-        for (std::size_t v = 0; v < V; ++v)
-            N::store(c + r * ldc + v * W, acc[r][v]);
+#pragma GCC unroll 16
+    for (int r = 0; r < R; ++r)
+#pragma GCC unroll 16
+        for (int v = 0; v < V; ++v)
+            Ops::store(c + r * ldc + v * W, acc[r][v]);
 }
+
+/// The micro-kernel as blocked_gemm (blocked_driver.hpp) calls it.
+struct NeonMicro {
+    template <typename T>
+    static constexpr std::size_t kLanes = 16 / sizeof(T);
+    template <int R, int V, typename T>
+    static void run(const T* a, const T* b, T* c, std::size_t lda, std::size_t ldb, std::size_t ldc,
+                    std::size_t k_len) noexcept {
+        neon_micro<R, V>(a, b, c, lda, ldb, ldc, k_len);
+    }
+};
 
 #endif  // HPC_HAS_NEON
 
@@ -303,74 +323,25 @@ inline void neon_micro(const T* __restrict__ a, const T* __restrict__ b, T* __re
  * @brief NEON GEMM with cache-blocking and register-tiled micro-kernel.
  *
  * Counterpart of gemm_avx2_blocked: i-k-j order, 3-level tiling
- * (kNeonTileM × kNeonTileK × kNeonTileN), and a 4×16 f32 / 8×4 f64 C tile
- * held in Q registers for a whole k-tile, so C is stored once per
- * kNeonTileK steps instead of being reloaded every k-iteration as in
- * gemm_neon_reordered at large N.
+ * (kNeonTileM × kNeonTileK × kNeonTileN), and an R rows × V Q-register tile
+ * of C held for a whole k-tile, so C is stored once per kNeonTileK steps
+ * instead of being reloaded every k-iteration as in gemm_neon_reordered at
+ * large N. The default, 6 rows × 4 Q-vectors (6×16 f32, 6×8 f64), is the
+ * measured best on Apple M4 (docs/kernels/neon.md); other shapes,
+ * gemm_neon_blocked<T, R, V>, run through the same driver
+ * (blocked_driver.hpp).
  */
 #if !HPC_HAS_NEON
-template <typename T>
+template <typename T, int R = 6, int V = 4, std::size_t TileM = kNeonTileM,
+          std::size_t TileK = kNeonTileK, std::size_t TileN = kNeonTileN>
 void gemm_neon_blocked(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) = delete;  // ARM_NEON not available on this target
 #else
-template <typename T>
+template <typename T, int R = 6, int V = 4, std::size_t TileM = kNeonTileM,
+          std::size_t TileK = kNeonTileK, std::size_t TileN = kNeonTileN>
 void gemm_neon_blocked(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
     static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>,
                   "gemm_neon_blocked: T must be float or double");
-
-    const std::size_t M   = A.rows();
-    const std::size_t K   = A.cols();
-    const std::size_t N   = B.cols();
-    const std::size_t lda = K;
-    const std::size_t ldb = N;
-    const std::size_t ldc = N;
-
-    assert(B.rows() == K && C.rows() == M && C.cols() == N);
-    C.zero();
-
-    constexpr std::size_t kSimdW   = (sizeof(T) == 4) ? 4 : 2;
-    constexpr std::size_t kRegRows = (sizeof(T) == 4) ? kNeonF32RegRows : kNeonF64RegRows;
-    constexpr std::size_t kRegCols = (sizeof(T) == 4) ? kNeonF32RegCols : kNeonF64RegCols;
-    constexpr std::size_t kJStep   = kSimdW * kRegCols;  // 16 f32 or 4 f64 per micro-kernel call
-
-    for (std::size_t i_blk = 0; i_blk < M; i_blk += kNeonTileM) {
-        const std::size_t i_end = std::min(i_blk + kNeonTileM, M);
-
-        for (std::size_t k_blk = 0; k_blk < K; k_blk += kNeonTileK) {
-            const std::size_t k_end = std::min(k_blk + kNeonTileK, K);
-            const std::size_t k_len = k_end - k_blk;
-
-            for (std::size_t j_blk = 0; j_blk < N; j_blk += kNeonTileN) {
-                const std::size_t j_end = std::min(j_blk + kNeonTileN, N);
-
-                // --- NEON hot path ---
-                std::size_t i = i_blk;
-                for (; i + kRegRows <= i_end; i += kRegRows) {
-                    const T* a_ptr = A.data() + i * lda + k_blk;
-                    const T* b_ptr = B.data() + k_blk * ldb + j_blk;
-
-                    std::size_t j = j_blk;
-                    for (; j + kJStep <= j_end; j += kJStep)
-                        neon_micro<T, kRegRows, kRegCols>(a_ptr, b_ptr + (j - j_blk), C.data() + i * ldc + j,
-                                                          lda, ldb, ldc, k_len);
-                    // Scalar j-tail
-                    for (; j < j_end; ++j)
-                        for (std::size_t ii = i; ii < i + kRegRows; ++ii) {
-                            T acc{};
-                            for (std::size_t k = k_blk; k < k_end; ++k)
-                                acc += A(ii, k) * B(k, j);
-                            C(ii, j) += acc;
-                        }
-                }
-                // Scalar i-tail
-                for (; i < i_end; ++i)
-                    for (std::size_t k = k_blk; k < k_end; ++k) {
-                        const T a_ik = A(i, k);
-                        for (std::size_t j = j_blk; j < j_end; ++j)
-                            C(i, j) += a_ik * B(k, j);
-                    }
-            }
-        }
-    }
+    detail::blocked_gemm<NeonMicro, R, V, TileM, TileK, TileN>(A, B, C);
 }
 #endif  // HPC_HAS_NEON
 

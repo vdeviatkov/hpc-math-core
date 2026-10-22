@@ -100,38 +100,63 @@ C tile in registers for a whole k-block, amortizing C traffic and reusing
 both A broadcasts and B loads. None packs B. Full SIMD loads are unaligned
 where needed, because the Matrix base alignment does not align every row.
 
+### `src/gemm/blocked_driver.hpp`
+
+The AVX2, AVX-512 and NEON blocked kernels (and their prefetch variants)
+are one driver, `detail::blocked_gemm<Micro, R, V, TileM, TileK, TileN,
+PfDist>`, around a family's micro-kernel. The register tile, R rows × V
+vectors, and the cache block, TileM × TileK × TileN, are template
+parameters of every `gemm_<isa>_blocked<T, R, V, TileM, TileK, TileN>`,
+with measured defaults; `bench_gemm` sweeps both (`<Isa>Tile<R>x<V>`,
+`<Isa>Block<M>x<K>x<N>`, [docs/kernels](kernels/README.md)) and the tests
+run several, including blocks that are not multiples of the tile. Remainders use the same micro-kernel: a strip of fewer than R rows
+runs `Micro::run<rows, V>`, the last whole vectors of a block run a
+narrower tile, and only columns that do not fill one vector take a scalar
+loop. `PfDist > 0` adds the prefetch hints of `prefetch.hpp`. Every loop in
+a micro-kernel is unrolled with `#pragma GCC unroll 16`, so R and V are
+limited to 16 (a `static_assert`); a partially unrolled loop would move the
+accumulators to memory.
+
 ### `src/gemm/avx2.hpp`
 
 256-bit vectors contain 8 floats or 4 doubles. The blocked kernel uses
-64x256x256 outer M/K/N tiles and a 4-row by 2-vector register tile: 4x16
-float or 4x8 double. Eight accumulators, two B vectors and up to four A
-broadcasts fit the 16 YMM registers. One micro-kernel template,
-`avx2_micro_4x2<T>`, serves both types through a small `Ymm<T>` traits
-struct; its fixed-count loops are fully unrolled, so the accumulator array
-lives in registers. Scalar j tails accumulate dot products for the
-remaining columns; scalar i tails use i-k-j. The prefetch family reuses
-these micro-kernels. AVX2 alone is insufficient: the code emits FMA too.
+384x256 outer M/K blocks with 1 KiB of each B row (256 float / 128 double
+columns: a 256 KiB B block) and a 6-row by 2-vector register tile: 6x16
+float or 6x8 double, 12 accumulators. With two B vectors and one or two
+A broadcasts that is 15-16 of the 16 YMM registers, without spilling; 7
+rows spill. Each 64-row block is ten 6-row strips and one 4-row strip of
+the same micro-kernel. The micro-kernel template `avx2_micro<R, V>`
+(rows, vectors; element type deduced) serves both types through a small
+`Ymm<T>` traits struct. The tile was chosen by sweeping nine shapes in the
+16- and 32-register builds ([kernels/avx2.md](kernels/avx2.md)). AVX2
+alone is insufficient: the code emits FMA too.
 
 ### `src/gemm/avx512.hpp`
 
-512-bit vectors double the lane count. Outer tiles are 64x256x512; the
-micro-kernel holds eight rows by two vectors, or 8x32 float / 8x16 double,
-in 16 of 32 ZMM registers. The larger tile supplies more independent FMA
-chains and encourages GCC to load B once instead of folding a repeated
-memory operand into every FMA. One micro-kernel template,
-`avx512_micro_8x2<T>`, handles both types through a `Zmm<T>` traits struct; scalar row/column tails preserve arbitrary shapes.
-The register shape is supported by the recorded Zen 5 experiment, not a
-universal optimum for all AVX-512 CPUs or compiler versions.
+512-bit vectors double the lane count. Outer blocks are 512x256 with
+2 KiB of each B row (512 float / 256 double columns: a 512 KiB B block,
+half of Zen 5's L2; [kernels/blocks.md](kernels/blocks.md)); the
+default tile is eight rows by three vectors, 8x48 float / 8x24 double, 24
+accumulators in 28 of 32 ZMM registers. With 4 or fewer rows GCC folds the
+B loads into every FMA as memory operands and the kernel becomes
+load-bound; with 6 and more it loads B once per k step. The micro-kernel
+template `avx512_micro<R, V>` handles both types through a `Zmm<T>` traits
+struct. The shape was chosen by sweeping ten on Zen 5
+([kernels/avx512.md](kernels/avx512.md)); it is not a universal optimum
+for all AVX-512 CPUs or compiler versions.
 
 ### `src/gemm/neon.hpp`
 
 AArch64 NEON provides 32 128-bit registers, containing 4 floats or 2 doubles.
-Outer tiles are 64x256x256. Float uses a 4x16 tile (4x4 vectors); double
-uses 8x4 (8x2 vectors), both with 16 accumulator chains. The double tile's
-extra rows hide FMA latency better than the former 4-row tile on M4.
-One template, `neon_micro<T, R, V>` with a `Q<T>` traits struct, gives
-both shapes. Clang 17 emits each A broadcast as one `ld1r` (load and
-replicate); that is a compiler choice, not an intrinsic guarantee. Scalar tails handle incomplete tiles.
+Outer blocks are 384x256x256. Both types use a 6-row by 4-vector tile
+(6x16 float, 6x8 double), 24 accumulators in 29 of 32 registers, chosen by
+sweeping ten shapes on M4 ([kernels/neon.md](kernels/neon.md)). One
+template, `neon_micro<R, V>` with a `Q<T>` traits struct, serves both
+types. Each A element is loaded with a plain `LDR` into lane 0 of a D
+register and multiplied by element; the `vdupq` + `vfmaq` form compiles to
+`LD1R` (load and replicate), which held tiles with many rows 23-30% back on
+M4. For float, Clang turns every intrinsic spelling back into `LD1R`, so
+`Q<float>::load_lane0` is a one-instruction inline `asm` on GCC/Clang.
 AArch64 is required because these kernels include double-precision FMA.
 
 ### `src/gemm/sve.hpp`
@@ -221,8 +246,8 @@ multiple of G. Article: [part 5](articles/lowp-gemm.md).
 | File | Design |
 |---|---|
 | `src/gemm/lowp_reference.hpp` | `gemm_lowp_reference`: products summed in double (exactly in int64 for INT8), rounded once. The tests' reference; `lowp_out_t<In>` names the output type. |
-| `src/gemm/avx512_lowp.hpp` | `gemm_avx512_bf16` (`VDPBF16PS`), `gemm_avx512_i8` (`VPDPBUSD`). Part 1's 8 × 32 tile, 16 accumulators. `VPDPBUSD` is unsigned × signed, so A is stored + 128 and 128 · Σ B(k, j) is subtracted at the end (column sums computed while packing B): exact. Mc = 128, Kc = 1024 bytes of k, Nc = 512. |
-| `src/gemm/neon_lowp.hpp` | `gemm_neon_bf16` (`BFMMLA`) and `gemm_neon_i8` (`SMMLA`): 2 × 2-tile matrix instructions arranged as an 8 × 8 C block in 16 registers. `gemm_neon_f16` (`FMLAL`, FP32 accumulate) and `gemm_neon_f16_acc` (`FMLA .8h`, fp16 accumulate, widened on store) keep part 1's 4-row tile. |
+| `src/gemm/avx512_lowp.hpp` | `gemm_avx512_bf16` (`VDPBF16PS`), `gemm_avx512_i8` (`VPDPBUSD`). An 8 × 32 tile, 16 accumulators. `VPDPBUSD` is unsigned × signed, so A is stored + 128 and 128 · Σ B(k, j) is subtracted at the end (column sums computed while packing B): exact. Mc = 128, Kc = 1024 bytes of k, Nc = 512. |
+| `src/gemm/neon_lowp.hpp` | `gemm_neon_bf16` (`BFMMLA`) and `gemm_neon_i8` (`SMMLA`): 2 × 2-tile matrix instructions arranged as an 8 × 8 C block in 16 registers. `gemm_neon_f16` (`FMLAL`, FP32 accumulate) and `gemm_neon_f16_acc` (`FMLA .8h`, fp16 accumulate, widened on store) use a 4-row tile with 16 accumulators. |
 | `src/gemm/sme_lowp.hpp` | `gemm_sme_widening<fp16 \| bf16 \| int8_t>`: `gemm_sme`'s structure with widening `FMOPA` / `SMOPA` into the four 32-bit ZA tiles. A packed by NEON transposes of 32-bit words, B by zipping G rows. Blocks keep the FP32 kernel's sizes in bytes (8 MiB A block). |
 | `src/gemm/cuda_lowp.hpp`, `src/cuda/gemm_lowp.cu` | One `mma.sync` kernel template per format struct (`Bf16`, `Fp16`, `Fp16Acc16`, `Int8`, `Fp8`), in two kernels: `kernel_lowp` (cp.async, 2 stages, padded rows, 128 × 128) and `kernel_tma` (Level 8). Both take A and B K-major (B transposed), so one non-transposing `ldmatrix` serves 8- and 16-bit formats. FP8 uses the block-scaled `kind::mxf8f6f4` instruction with unit scales in an `sm_120a` build (full rate), the sm_89 form otherwise. cuBLAS / cuBLASLt references on the same buffers. Matrix wrappers pad, transpose B and select the implementation (`CudaLowpImpl`). |
 | `src/cuda/gemm_lowp_stub.cpp` | The same symbols without CUDA; every format reports unsupported and kernels throw. |
@@ -322,7 +347,7 @@ does not automatically preserve a cycle or cache interpretation.
 | `core_clock.hpp` | Times a long chain of dependent integer adds and estimates GHz assuming one add per cycle. Best of 20 reduces interruptions; scheduler migration, frequency changes and a different add latency can bias the estimate. This is a calibration for the measured machines. |
 | `simd_isa.hpp` | Small vector-operation adapters let FMA and micro-kernel experiments share one loop while changing ISA/precision. It is experiment infrastructure, not runtime dispatch. |
 | `fma_peak.cpp` | Named independent accumulators plus compiler barriers prevent dead-code elimination and artificial merging. Sweeping chains separates latency from throughput; excess chains can spill and then measure register pressure. Reports best of five. |
-| `simd_microkernel.cpp` | Sweeps register-tile rows and vectors on repeatedly reused data, comparing packed B with ldb=256/1024. The accessed data is small, but stride conflicts can keep it from remaining in L1 despite fitting by capacity. Reports best of five. |
+| `simd_microkernel.cpp` | Runs the library micro-kernels (`neon_micro`, `avx2_micro`, `avx512_micro`) alone for several row counts on repeatedly reused data, comparing packed B with ldb=256/1024. Strides are compile-time constants here, so the code generated can differ from the library kernel's. The accessed data is small, but stride conflicts can keep it from remaining in L1 despite fitting by capacity. Reports best of five. |
 | `cache_chase.cpp` | A random cyclic pointer chain defeats independent-load overlap and sequential prefetch. Size, stride and one-line-per-page sweeps probe cache/TLB latency. Its 128-byte lines and 16 KiB pages model Apple Silicon; they are not queried portably. |
 | `sme_fmopa.cpp` | Explicitly zeros ZA, then repeats constant-vector outer products on 1/2/4/8 tile chains. Multiple threads probe shared matrix-unit capacity. Threads are scheduled by the OS, not pinned; cluster placement is inferred. The printed flop counts assume M4's 512-bit SVL. |
 | `sme_b_layout.cpp` | Compares identical logical products with padded or packed B. Both full-driver timing and intrusive phase clocks are recorded in shuffled order; phase medians need not sum to end-to-end medians. Validates every layout before timing. |
@@ -350,6 +375,7 @@ does not automatically preserve a cycle or cache interpretation.
 | `docs/articles/assets/render_charts.py` | Standard-library SVG generator. CSVs beside it hold curated chart values; strip-height medians are calculated from raw experiment samples. Labels distinguish categorical x axes from numerical spacing. |
 | `docs/articles/assets/*.csv`, `*.svg` | Curated numeric inputs and generated charts. Keep SVGs reproducible from those inputs; do not edit generated numbers independently. |
 | `docs/experiments/cpu-simd/*` | Raw FMA, micro-kernel and GEMM runs, plus focused post-tile-change measurements. README identifies compiler, load and which rows replace the older tile. |
+| `docs/experiments/tile-sweeps/*`, `docs/kernels/*` | `bench_gemm` register-tile sweeps on Zen 5 and M4, the re-measured default kernels, and the pages that compare the shapes. |
 | `docs/experiments/sme2-gemm/*` | Raw SME ladder, block-sweep and vendor-comparison samples behind part 2; the README records their provenance. |
 | `docs/experiments/zen5-b-stride/*` | Pointer chase and stride / size / height sweeps behind part 3's Zen 5 section; the README lists the cache geometry and method. |
 | `docs/experiments/lowp/*` | Instruction peaks, CPU and GPU GEMM runs, accuracy and Nsight counters behind part 5; the README lists machines, builds and method. |

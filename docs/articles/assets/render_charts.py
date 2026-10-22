@@ -166,8 +166,8 @@ def main():
          references=[(182.3, "AVX2 peak 182"), (362, "AVX-512 peak 362")], colors=simd)
     bars("simd-m4.svg", "FP32 GEMM on one Apple M4 P-core",
          "Apple M4 Max · N = 512 · Apple Clang 17 · one thread",
-         load_bars("simd-m4.csv"), "GFLOP/s", 140, 20,
-         references=[(130, "NEON peak ~130")], colors=simd)
+         load_bars("simd-m4.csv"), "GFLOP/s", 150, 25,
+         references=[(143, "NEON peak ~143 at 4.49 GHz")], colors=simd)
     bars("lowp-peaks.svg", "Peak multiply-add rate by input format",
          "Measured instruction throughput ÷ FP32 peak of the same unit (RTX 5080: FP32 FMA cores)",
          load_bars("lowp-peaks.csv"), "× the FP32 peak", 9, 1,
