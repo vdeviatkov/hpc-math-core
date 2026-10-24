@@ -16,13 +16,22 @@
  * gemm_reordered streams whole rows: for large N, row i of C (N elements)
  * is evicted between consecutive k-iterations and every row of B is reread
  * from far away for each i. Tiling bounds the working set of the three
- * inner loops, independent of N:
+ * inner loops. The nominal footprint of three full tiles is independent of N:
  *
  *   WS = (T×T for A + T×T for B + T×T for C) × sizeof(T)
- *      = 3 × 64 × 64 × 8 B ≈ 96 KB   for the default T=64 and double
+ *      = 48 KiB for float, 96 KiB for double, at the default tile size 64.
  *
- * which stays in L2 on both benchmark machines, so the B tile is reused
- * from cache across all T rows of the i-tile.
+ * This fits by capacity in L2 on both benchmark machines, but 64 is a
+ * portable baseline, not an explicit L2 placement request. On M4's 128 KiB
+ * L1D both footprints fit nominally; on Zen 5's 48 KiB L1D the float
+ * footprint leaves no headroom and the double footprint exceeds capacity.
+ *
+ * All three full tiles need not remain in L1 simultaneously: for reuse of
+ * B between consecutive i rows, the hot data is roughly the B tile plus
+ * one row segment each of A and C (16.5 KiB float / 33 KiB double at 64).
+ * These are useful-data sizes, not residency guarantees: row alignment,
+ * cache-line coverage, competing data and especially stride-induced set
+ * conflicts can evict B even when its useful data fits by total capacity.
  *
  * The cost is shorter inner loops, which hurts auto-vectorisation: on Zen 5
  * gemm_blocked loses to gemm_reordered at N ≤ 512 and wins at N=4096
