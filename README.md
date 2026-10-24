@@ -50,7 +50,7 @@ Low precision, best size, GOP/s counting a multiply-add as 2 ([article 5](docs/a
 
 | Kernel | Hardware | bf16 → fp32, measured / peak | INT8 → INT32, measured / peak |
 |---|---|--:|--:|
-| `gemm_avx512_bf16` / `gemm_avx512_i8` | AMD Zen 5, 1 core | 609 / 713 (85%) | 922 / 1,435 (64%) |
+| `gemm_avx512_bf16` / `gemm_avx512_i8` | AMD Zen 5, 1 core | 638 / 713 (90%) | 1,139 / 1,435 (79%) |
 | `gemm_neon_bf16` / `gemm_neon_i8` | Apple M4 Max, 1 P-core | 66 / 71 (93%) | 503 / 511 (98%) |
 | `gemm_sme_widening` | Apple M4 Max, 1 SME unit | 1,774 / 2,018 (88%) | 3,525 / 4,029 (87%) |
 | `gemm_cuda_lowp_tma_device` (Level 8) | NVIDIA RTX 5080 | 120,500 / 124,000 (97%) | 419,000 / 497,000 (84%) |

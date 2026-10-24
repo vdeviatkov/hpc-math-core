@@ -40,8 +40,8 @@ measures what each format costs in accuracy.
   rate. It needs an `sm_120a` build. cuBLAS
   uses it; switching the hand-written kernels to it took FP8 from 214 to
   291 TFLOP/s (cp.async kernel) and from 233 to 387 (part 4's Level 8).
-- **The kernels:** INT8 reaches 3,525 GOP/s on one M4 SME2 unit and 922
-  on one Zen 5 core, 2.3× and 3.0× their FP32 kernels at N = 2,048, and
+- **The kernels:** INT8 reaches 3,525 GOP/s on one M4 SME2 unit and 1,138
+  on one Zen 5 core, 2.3× and 3.8× their FP32 kernels at N = 2,048, and
   419 TOP/s on the RTX 5080 at N = 16,384 (98% of cuBLAS). Each CUDA kernel serves all
   five formats; only the `mma.sync` instruction and the element width
   change. Part 4's Level 8 reaches 97–102% of cuBLAS in every format at
@@ -218,35 +218,47 @@ Medians of 3 repetitions, one thread:
 
 Code: [`gemm_avx512_bf16`, `gemm_avx512_i8`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/avx512_lowp.hpp).
 
-The micro-kernel is the 8 × 2-register tile part 1 used for FP32 when
-these kernels were written (it has since moved to 8 × 3): 8 rows × 32 columns of
-C, 16 accumulators), with `VDPBF16PS` or `VPDPBUSD` in place of the FMA.
-Per k group it loads two vectors of packed B (one 32-bit word per column)
-and broadcasts one 32-bit word of A (G consecutive k of one row, already
-contiguous in row-major A).
+The micro-kernel is an 8 × 2-register tile (8 rows × 32 columns of C,
+16 accumulators) with `VDPBF16PS` or `VPDPBUSD` in place of the FMA. Per
+k group it loads two vectors of packed B (one 32-bit word per column) and
+broadcasts one 32-bit word of A per row: G consecutive k of one row,
+already contiguous in row-major A, so A is read in place. Only B is
+packed, because only B's layout is wrong for the instruction.
 
 `VPDPBUSD` multiplies *unsigned* bytes by signed bytes, and Zen 5 has no
-signed × signed form. The kernel stores A + 128 (flipping each byte's sign
-bit makes it unsigned) and starts every accumulator of C(i,j) at
-−128 · Σₖ B(k,j), which cancels the excess; the column sums of B are
-computed while packing it. The result is exact.
+signed × signed form. B is packed as b + 128 (flipping each byte's sign
+bit makes it unsigned), A stays signed, and the accumulators of row i start
+at −128 · Σₖ A(i,k), which cancels the excess. The result is exact.
+
+The intrinsic `_mm512_dpbusd_epi32` hid a compiler problem: GCC 13
+surrounds every `VPDPBUSD` with register copies of its accumulator, 61
+instructions per k group for 16 dot products. At Zen 5's two dot products
+per cycle a k group needs 8 cycles, and 61 instructions in 8 cycles is at
+the core's documented 8-wide dispatch, so the front end, not the
+dot-product units, set the pace. Written as a one-instruction `asm`, the
+loop is 30 instructions and runs 16–26% faster (three alternated runs of
+each version; `VDPBF16PS` compiles without the copies):
+
+| `gemm_avx512_i8`, GOP/s | N = 256 | 1,024 | 2,048 | 4,096 |
+|---|--:|--:|--:|--:|
+| intrinsic (and A packed) | 709 | 901 | 930 | 885 |
+| one-instruction `asm` | **826** | **1,138** | **1,138** | **1,037** |
+
+All three kernels in one session, the current versions:
 
 | GFLOP/s or GOP/s | N = 256 | 1,024 | 2,048 | 4,096 | best, % of peak |
 |---|--:|--:|--:|--:|--:|
-| FP32, `gemm_avx512_blocked` | **324** | 311 | 303 | 294 | 91% |
-| bf16 | 566 | **609** | 608 | 593 | 85% |
-| INT8 | 708 | 905 | **922** | 893 | 64% |
+| FP32, `gemm_avx512_blocked` | **325** | 311 | 302 | 295 | 91% |
+| bf16 | 619 | **638** | 606 | 574 | 90% |
+| INT8 | 824 | **1,139** | 1,138 | 1,038 | 79% |
 
-(The FP32 row is part 1's kernel with its current register tile and cache
-block, measured on 2026-10-22; Zen 5 ran at 5.70–5.71 GHz in every
-session where the clock was recorded, so it compares with the other rows,
-which are from 2026-10-16. The ratios below therefore cross sessions.)
-
-At N = 4,096 bf16 is 2.0× and INT8 3.0× faster than FP32; best size
-against best size, 1.9× and 2.8×. The FP32 kernel reads B in place and
-still loses a little to part 1's stride conflicts as N grows, while the
-low-precision kernels pack B, as they must, and stay flat. INT8 reaches 64% of its peak where bf16 reaches 85%;
-this article did not isolate that gap.
+At N = 4,096 bf16 is 1.9× and INT8 3.5× faster than FP32; best size
+against best size, 2.0× and 3.5×, against peak ratios of 2.0 and 4.0.
+bf16 and INT8 drop from N = 2,048 to 4,096, probably because A is now
+read in place: at N = 4,096 its rows are 8 or 4 KiB apart, the stride
+conflict of part 1, which packing A avoided. bf16 is 2% slower at
+N = 4,096 than with A packed, and 1–9% faster at the other sizes; at
+N = 4,000 it is not slower.
 
 ### Apple M4, NEON
 
@@ -499,8 +511,8 @@ because all three accumulate the same `mma` instructions in the same k order.
   the GPU rows would differ there.
 - **The M4 ran with background load** (load average 2–11 across sessions). Repetitions
   agreed within 1%, but treat M4 figures as ±5%, as in parts 1–2.
-- **The Zen 5 INT8 kernel's gap** (64% of peak against bf16's 85%) was not
-  investigated.
+- **The Zen 5 INT8 kernel** reaches 79% of its peak against bf16's 90%;
+  the rest of that gap was not investigated.
 
 ## Takeaways
 

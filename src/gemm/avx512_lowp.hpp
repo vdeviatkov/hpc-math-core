@@ -9,21 +9,24 @@
  *
  * Both instructions add, into each 32-bit lane, a dot product of G
  * consecutive elements (G = 2 bf16, 4 INT8): one instruction does G times
- * the FP32 FMA's work on 16 lanes. The micro-kernel is the FP32 kernel's
- * 8 × 2-ZMM tile (16 accumulators, 8 rows × 32 columns of C, avx512.hpp);
- * per k group it loads 2 vectors of B and broadcasts 8 words of A.
+ * the FP32 FMA's work on 16 lanes. The micro-kernel is an 8 × 2-ZMM tile
+ * (16 accumulators, 8 rows × 32 columns of C); per k group it loads 2
+ * vectors of B and broadcasts one 32-bit word of A per row.
  *
- * Packing follows from the instruction: a lane needs G consecutive k of one
- * column of B, so B is packed with G rows interleaved (word [kg][c] =
- * B(G·kg … G·kg+G−1, c)); a broadcast needs G consecutive k of one row of
- * A, which row-major A already has, so A is packed only to collect the 8
- * rows of a strip and pad K to a whole group.
+ * Only B is packed, because the instruction asks for it: a lane needs G
+ * consecutive k of one column of B, so B is packed with G rows interleaved
+ * (word [kg][c] = B(G·kg … G·kg+G−1, c)), once per kc × nc block, and the
+ * block serves every row of A. A broadcast needs G consecutive k of one row
+ * of A, which row-major A already has, so A is read in place.
  *
- * INT8 signedness: VPDPBUSD multiplies unsigned bytes (first operand) by
- * signed bytes. A is packed with its sign bit flipped (a + 128, as uint8),
- * and the extra 128 · Σ_k B(k, j) is subtracted from every C(i, j); the
- * column sums are computed while packing B. The result is exact in INT32.
- * (Zen 5 has no AVX-VNNI-INT8 signed × signed form.)
+ * INT8 signedness: VPDPBUSD multiplies unsigned bytes by signed bytes, and
+ * Zen 5 has no signed × signed form. B is packed as b + 128 (its sign bit
+ * flipped, as uint8) and A stays signed; the extra 128 · Σ_k A(i, k) is
+ * subtracted by starting row i's accumulators at minus that. Exact in INT32.
+ *
+ * Edges: a tile narrower than 32 columns uses masked loads and stores of C;
+ * rows past the edge repeat the last row and are not stored; a last k
+ * group shorter than G is padded with zeros.
  *
  * Blocking (elements): Mc = 128, Kc = 512 bf16 / 1024 INT8 (the same
  * bytes), Nc = 512; a 32-column B strip (32 KiB) stays in the 48 KiB L1.
@@ -69,153 +72,142 @@ inline constexpr std::size_t kKc = 1024 / sizeof(In);  // 512 bf16, 1024 INT8
 
 inline std::size_t round_up(std::size_t x, std::size_t m) { return (x + m - 1) / m * m; }
 
-/// Pack mc × kc of A into 8-row strips of k-group words: [w·8 + r]. INT8
-/// words have their sign bits flipped (a + 128 as uint8).
-template <typename In>
-void pack_a(const In* A, std::size_t lda, std::size_t mc, std::size_t kc, std::uint32_t* dst) {
+/// What differs between the two formats: the accumulator vector, the
+/// dot-product instruction and how C is loaded and stored (masked, so a
+/// tile narrower than 32 columns needs no special case).
+template <typename In> struct Dot;
+template <> struct Dot<bf16> {
+    using V = __m512;
+    static constexpr std::uint32_t kFlip = 0;  // B packed as is
+    static V load(const float* p, __mmask16 m) { return _mm512_maskz_loadu_ps(m, p); }
+    static void store(float* p, V v, __mmask16 m) { _mm512_mask_storeu_ps(p, m, v); }
+    static V set1(std::int32_t) { return _mm512_setzero_ps(); }
+    static V dot(V acc, __m512i a, __m512i b) { return _mm512_dpbf16_ps(acc, (__m512bh)a, (__m512bh)b); }
+};
+template <> struct Dot<std::int8_t> {
+    using V = __m512i;
+    static constexpr std::uint32_t kFlip = 0x80808080u;  // B packed as b + 128 (unsigned)
+    static V load(const std::int32_t* p, __mmask16 m) { return _mm512_maskz_loadu_epi32(m, p); }
+    static void store(std::int32_t* p, V v, __mmask16 m) { _mm512_mask_storeu_epi32(p, m, v); }
+    static V set1(std::int32_t x) { return _mm512_set1_epi32(x); }
+    // VPDPBUSD multiplies unsigned bytes (B + 128) by signed bytes (A). With
+    // the intrinsic, GCC 13 copies every accumulator to another register
+    // around each VPDPBUSD (30 extra moves per 16 dot products), and the
+    // loop then runs out of front-end bandwidth: 935 instead of 1,195 GOP/s
+    // on Zen 5. The one-instruction asm keeps each accumulator in place.
+    static V dot(V acc, __m512i a, __m512i b) {
+#if defined(__GNUC__)
+        asm("vpdpbusd %2, %1, %0" : "+v"(acc) : "v"(b), "v"(a));
+        return acc;
+#else
+        return _mm512_dpbusd_epi32(acc, b, a);
+#endif
+    }
+};
+
+/// k groups [0, kw) of an 8 × 32 tile: row r of A starts at a[r] (G
+/// consecutive elements per group), B at b (packed, 32 words per group).
+template <typename In, typename V>
+[[gnu::always_inline]] inline void k_loop(V (&acc)[kMr][2], const In* const (&a)[kMr],
+                                          const std::uint32_t* b, std::size_t kw) {
     constexpr std::size_t G = kG<In>;
-    const std::size_t kw = (kc + G - 1) / G, full = kc / G;
-    constexpr std::uint32_t flip = std::is_same_v<In, std::int8_t> ? 0x80808080u : 0u;
-    for (std::size_t i0 = 0; i0 < mc; i0 += kMr) {
-        std::uint32_t* strip = dst + i0 * kw;
-        for (std::size_t r = 0; r < kMr; ++r) {
-            if (i0 + r >= mc) {
-                for (std::size_t w = 0; w < kw; ++w)
-                    strip[w * kMr + r] = flip;  // a zero row: 0 + 128 for INT8
-                continue;
-            }
-            const In* src = A + (i0 + r) * lda;
-            for (std::size_t w = 0; w < full; ++w) {
-                std::uint32_t word;
-                std::memcpy(&word, src + w * G, 4);
-                strip[w * kMr + r] = word ^ flip;
-            }
-            if (full < kw) {
-                In g[4] = {};
-                std::memcpy(g, src + full * G, (kc - full * G) * sizeof(In));
-                std::uint32_t word;
-                std::memcpy(&word, g, 4);
-                strip[full * kMr + r] = word ^ flip;
-            }
-        }
-    }
-}
-
-/// Pack kc × nc of B into 32-column strips of k-group words: [w·32 + c].
-/// For INT8, colsum[j] = Σ_k B(k, j) over this k block.
-template <typename In>
-void pack_b(const In* B, std::size_t ldb, std::size_t kc, std::size_t nc, std::uint32_t* dst,
-            std::int32_t* colsum) {
-    constexpr std::size_t G = kG<In>;
-    const std::size_t kw    = (kc + G - 1) / G;
-    for (std::size_t j0 = 0; j0 < nc; j0 += kNr) {
-        const std::size_t cols = std::min(kNr, nc - j0);
-        std::uint32_t* strip   = dst + j0 * kw;
-        for (std::size_t w = 0; w < kw; ++w) {
-            std::uint32_t* out = strip + w * kNr;
-            const In* row      = B + w * G * ldb + j0;
-            std::size_t c      = 0;
-            if ((w + 1) * G <= kc) {
-                if constexpr (G == 2) {  // interleave two rows of 16-bit: 16 columns per step
-                    for (; c + 16 <= cols; c += 16) {
-                        const __m256i r0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(row + c));
-                        const __m256i r1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(row + ldb + c));
-                        const __m256i lo = _mm256_unpacklo_epi16(r0, r1);  // cols 0-3, 8-11
-                        const __m256i hi = _mm256_unpackhi_epi16(r0, r1);  // cols 4-7, 12-15
-                        _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + c),
-                                            _mm256_permute2x128_si256(lo, hi, 0x20));
-                        _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + c + 8),
-                                            _mm256_permute2x128_si256(lo, hi, 0x31));
-                    }
-                }
-            }
-            for (; c < cols; ++c) {
-                In g[4] = {};
-                for (std::size_t e = 0; e < G && w * G + e < kc; ++e)
-                    g[e] = row[e * ldb + c];
-                std::memcpy(&out[c], g, 4);
-            }
-            std::fill(out + cols, out + kNr, 0u);
-        }
-    }
-    if constexpr (std::is_same_v<In, std::int8_t>) {
-        std::fill(colsum, colsum + round_up(nc, kNr), 0);
-        for (std::size_t k = 0; k < kc; ++k)
-            for (std::size_t j = 0; j < nc; ++j)
-                colsum[j] += B[k * ldb + j];
-    }
-}
-
-/// Accumulator vector per input type (a traits struct, not std::conditional_t,
-/// which drops the vector types' attributes).
-template <typename In> struct AccVec;
-template <> struct AccVec<bf16> { using V = __m512; };
-template <> struct AccVec<std::int8_t> { using V = __m512i; };
-
-/// 8 × 32 tile: C (+)= A strip · B strip over kw k groups.
-template <typename In>
-void micro(const std::uint32_t* __restrict a, const std::uint32_t* __restrict b,
-           lowp_out_t<In>* __restrict c, std::size_t ldc, std::size_t kw, std::size_t rows,
-           std::size_t cols, bool accumulate, const std::int32_t* colsum) {
-    using Out          = lowp_out_t<In>;
-    constexpr bool kI8 = std::is_same_v<In, std::int8_t>;
-    using V            = typename AccVec<In>::V;
-    const bool full    = rows == kMr && cols == kNr;
-    alignas(64) Out tmp[kMr][kNr];
-    Out* base            = full ? c : &tmp[0][0];
-    const std::size_t ld = full ? ldc : kNr;
-    if (!full && accumulate)
-        for (std::size_t r = 0; r < rows; ++r)
-            for (std::size_t j = 0; j < cols; ++j)
-                tmp[r][j] = c[r * ldc + j];
-
-    V acc[kMr][2];
-    if constexpr (kI8) {
-        // Subtract 128 · colsum: A was offset by +128.
-        const __m512i corr0 = _mm512_slli_epi32(_mm512_loadu_si512(colsum), 7);
-        const __m512i corr1 = _mm512_slli_epi32(_mm512_loadu_si512(colsum + 16), 7);
-        for (std::size_t r = 0; r < kMr; ++r) {
-            const __m512i c0 = accumulate ? _mm512_loadu_si512(base + r * ld) : _mm512_setzero_si512();
-            const __m512i c1 = accumulate ? _mm512_loadu_si512(base + r * ld + 16) : _mm512_setzero_si512();
-            acc[r][0] = _mm512_sub_epi32(c0, corr0);
-            acc[r][1] = _mm512_sub_epi32(c1, corr1);
-        }
-    } else {
-        for (std::size_t r = 0; r < kMr; ++r) {
-            acc[r][0] = accumulate ? _mm512_loadu_ps(base + r * ld) : _mm512_setzero_ps();
-            acc[r][1] = accumulate ? _mm512_loadu_ps(base + r * ld + 16) : _mm512_setzero_ps();
-        }
-    }
     for (std::size_t w = 0; w < kw; ++w) {
         const __m512i b0 = _mm512_loadu_si512(b + w * kNr);
         const __m512i b1 = _mm512_loadu_si512(b + w * kNr + 16);
 #pragma GCC unroll 8
         for (std::size_t r = 0; r < kMr; ++r) {
-            const __m512i ar = _mm512_set1_epi32(static_cast<int>(a[w * kMr + r]));
-            if constexpr (kI8) {
-                acc[r][0] = _mm512_dpbusd_epi32(acc[r][0], ar, b0);
-                acc[r][1] = _mm512_dpbusd_epi32(acc[r][1], ar, b1);
-            } else {
-                acc[r][0] = _mm512_dpbf16_ps(acc[r][0], (__m512bh)ar, (__m512bh)b0);
-                acc[r][1] = _mm512_dpbf16_ps(acc[r][1], (__m512bh)ar, (__m512bh)b1);
+            std::uint32_t word;
+            std::memcpy(&word, a[r] + w * G, 4);
+            const __m512i av = _mm512_set1_epi32(static_cast<int>(word));
+            acc[r][0]        = Dot<In>::dot(acc[r][0], av, b0);
+            acc[r][1]        = Dot<In>::dot(acc[r][1], av, b1);
+        }
+    }
+}
+
+/// Pack kc × nc of B into 32-column strips of k-group words, [w·32 + c]:
+/// word w of column c holds B(G·w … G·w+G−1, c), the G values one lane of
+/// the dot product multiplies. Missing rows and columns are zero (before
+/// the INT8 offset, which their zero A partner cancels).
+template <typename In>
+void pack_b(const In* B, std::size_t ldb, std::size_t kc, std::size_t nc, std::uint32_t* dst) {
+    constexpr std::size_t G = kG<In>;
+    const std::size_t kw    = (kc + G - 1) / G;
+    for (std::size_t j0 = 0; j0 < nc; j0 += kNr) {
+        const std::size_t cols = std::min(kNr, nc - j0);
+        for (std::size_t w = 0; w < kw; ++w) {
+            std::uint32_t* out = dst + j0 * kw + w * kNr;
+            const In* row      = B + w * G * ldb + j0;
+            std::size_t c      = 0;
+            if constexpr (G == 2) {  // bf16: interleave two rows, 16 columns per step
+                if (cols == kNr && (w + 1) * G <= kc)
+                    for (; c < kNr; c += 16) {
+                        const __m256i r0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(row + c));
+                        const __m256i r1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(row + ldb + c));
+                        const __m256i lo = _mm256_unpacklo_epi16(r0, r1);  // columns 0-3, 8-11
+                        const __m256i hi = _mm256_unpackhi_epi16(r0, r1);  // columns 4-7, 12-15
+                        _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + c), _mm256_permute2x128_si256(lo, hi, 0x20));
+                        _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + c + 8), _mm256_permute2x128_si256(lo, hi, 0x31));
+                    }
+            }
+            for (; c < kNr; ++c) {
+                In g[4] = {};
+                for (std::size_t e = 0; c < cols && e < G && w * G + e < kc; ++e)
+                    g[e] = row[e * ldb + c];
+                std::uint32_t word;
+                std::memcpy(&word, g, 4);
+                out[c] = word ^ Dot<In>::kFlip;
             }
         }
     }
-    for (std::size_t r = 0; r < kMr; ++r) {
-        if constexpr (kI8) {
-            _mm512_storeu_si512(base + r * ld, acc[r][0]);
-            _mm512_storeu_si512(base + r * ld + 16, acc[r][1]);
-        } else {
-            _mm512_storeu_ps(base + r * ld, acc[r][0]);
-            _mm512_storeu_ps(base + r * ld + 16, acc[r][1]);
-        }
-    }
-    if (!full)
-        for (std::size_t r = 0; r < rows; ++r)
-            for (std::size_t j = 0; j < cols; ++j)
-                c[r * ldc + j] = tmp[r][j];
 }
 
+/// C(rows × cols) (+)= A(rows × kc, in place) · B strip (packed), for one
+/// 8 × 32 tile. `init` is the start value of every accumulator of row r
+/// when `accumulate` is false (INT8: −128 · Σ_k A(r, k)), else C is loaded.
+template <typename In>
+void micro(const In* a, std::size_t lda, const std::uint32_t* __restrict b, lowp_out_t<In>* c,
+           std::size_t ldc, std::size_t kc, std::size_t rows, std::size_t cols, bool accumulate,
+           const std::int32_t* init) {
+    using Ops                = Dot<In>;
+    using V                  = typename Ops::V;
+    constexpr std::size_t G  = kG<In>;
+    const std::size_t full   = kc / G;  // whole k groups; a partial one follows if kc % G
+    const __mmask16 m0       = cols >= 16 ? 0xFFFF : static_cast<__mmask16>((1u << cols) - 1);
+    const __mmask16 m1       = cols >= 32 ? 0xFFFF : cols <= 16 ? 0 : static_cast<__mmask16>((1u << (cols - 16)) - 1);
+
+    // Rows past the edge repeat the last row; they are computed, not stored.
+    const In* ar[kMr];
+    V acc[kMr][2];
+    for (std::size_t r = 0; r < kMr; ++r) {
+        const std::size_t rr = std::min(r, rows - 1);
+        ar[r]                = a + rr * lda;
+        if (accumulate) {
+            acc[r][0] = Ops::load(c + rr * ldc, m0);
+            acc[r][1] = Ops::load(c + rr * ldc + 16, m1);
+        } else {
+            acc[r][0] = acc[r][1] = Ops::set1(init ? init[rr] : 0);
+        }
+    }
+    k_loop<In>(acc, ar, b, full);
+    if (full * G < kc) {  // a last k group shorter than G, padded with zeros
+        In tail[kMr][4] = {};
+        const In* tp[kMr];
+        for (std::size_t r = 0; r < kMr; ++r) {
+            std::memcpy(tail[r], ar[r] + full * G, (kc - full * G) * sizeof(In));
+            tp[r] = tail[r];
+        }
+        k_loop<In>(acc, tp, b + full * kNr, 1);
+    }
+    for (std::size_t r = 0; r < rows; ++r) {
+        Ops::store(c + r * ldc, acc[r][0], m0);
+        Ops::store(c + r * ldc + 16, acc[r][1], m1);
+    }
+}
+
+/// GotoBLAS order: each kc × nc block of B is packed once and serves every
+/// row of A, which is read in place. For INT8 the +128 offset on B adds
+/// 128 · Σ_k A(i, k) to row i; the accumulators start at minus that.
 template <typename In>
 void driver(const Matrix<In>& A, const Matrix<In>& B, Matrix<lowp_out_t<In>>& C) {
     const std::size_t M = A.rows(), K = A.cols(), N = B.cols();
@@ -225,25 +217,29 @@ void driver(const Matrix<In>& A, const Matrix<In>& B, Matrix<lowp_out_t<In>>& C)
     if (M == 0 || N == 0 || K == 0)
         return;
     constexpr std::size_t G = kG<In>, Kc = kKc<In>;
-    const std::size_t kw_max = (std::min(Kc, K) + G - 1) / G;
-    Matrix<std::uint32_t> a_pack(round_up(std::min(kMc, M), kMr), kw_max);
-    Matrix<std::uint32_t> b_pack(kw_max, round_up(std::min(kNc, N), kNr));
-    std::vector<std::int32_t> colsum(round_up(std::min(kNc, N), kNr) + kNr, 0);
+    std::vector<std::int32_t> offset;  // −128 · row sums of A (INT8 only)
+    if constexpr (std::is_same_v<In, std::int8_t>) {
+        offset.resize(M);
+        for (std::size_t i = 0; i < M; ++i) {
+            std::int32_t s = 0;
+            for (std::size_t k = 0; k < K; ++k)
+                s += A(i, k);
+            offset[i] = -128 * s;
+        }
+    }
+    std::vector<std::uint32_t> b_pack(((std::min(Kc, K) + G - 1) / G) * round_up(std::min(kNc, N), kNr));
     for (std::size_t jc = 0; jc < N; jc += kNc) {
         const std::size_t nc = std::min(kNc, N - jc);
         for (std::size_t pc = 0; pc < K; pc += Kc) {
             const std::size_t kc = std::min(Kc, K - pc), kw = (kc + G - 1) / G;
-            pack_b<In>(B.data() + pc * N + jc, N, kc, nc, b_pack.data(), colsum.data());
-            for (std::size_t ic = 0; ic < M; ic += kMc) {
-                const std::size_t mc = std::min(kMc, M - ic);
-                pack_a<In>(A.data() + ic * K + pc, K, mc, kc, a_pack.data());
+            pack_b<In>(B.data() + pc * N + jc, N, kc, nc, b_pack.data());
+            for (std::size_t ic = 0; ic < M; ic += kMc)
                 for (std::size_t jr = 0; jr < nc; jr += kNr)
-                    for (std::size_t ir = 0; ir < mc; ir += kMr)
-                        micro<In>(a_pack.data() + ir * kw, b_pack.data() + jr * kw,
-                                  C.data() + (ic + ir) * N + jc + jr, N, kw,
-                                  std::min(kMr, mc - ir), std::min(kNr, nc - jr), pc > 0,
-                                  colsum.data() + jr);
-            }
+                    for (std::size_t ir = ic; ir < std::min(ic + kMc, M); ir += kMr)
+                        micro<In>(A.data() + ir * K + pc, K, b_pack.data() + jr * kw,
+                                  C.data() + ir * N + jc + jr, N, kc, std::min(kMr, M - ir),
+                                  std::min(kNr, nc - jr), pc > 0,
+                                  offset.empty() ? nullptr : offset.data() + ir);
         }
     }
 }

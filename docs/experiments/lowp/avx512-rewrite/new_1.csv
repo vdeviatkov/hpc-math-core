@@ -1,0 +1,9 @@
+name,iterations,real_time,cpu_time,time_unit,bytes_per_second,items_per_second,label,error_occurred,error_message,"GFLOP/s"
+"Avx512Dpbf16/bf16/N=256",12953,0.0541577,0.0541506,ms,,,,,,6.1965e+11
+"Avx512Dpbf16/bf16/N=1024",209,3.35263,3.35233,ms,,,,,,6.40594e+11
+"Avx512Dpbf16/bf16/N=2048",25,28.2446,28.2431,ms,,,,,,6.08286e+11
+"Avx512Dpbf16/bf16/N=4096",3,239.379,239.367,ms,,,,,,5.74178e+11
+"Avx512Vnni/int8/N=256",17235,0.0406238,0.0406104,ms,,,,,,8.26252e+11
+"Avx512Vnni/int8/N=1024",370,1.89239,1.89208,ms,,,,,,1.13498e+12
+"Avx512Vnni/int8/N=2048",47,15.1207,15.1199,ms,,,,,,1.13625e+12
+"Avx512Vnni/int8/N=4096",5,132.38,132.367,ms,,,,,,1.03832e+12

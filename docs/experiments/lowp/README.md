@@ -11,6 +11,14 @@ An intermediate re-run of 2026-10-21 (register tile only) is in
 [tile-sweeps](../tile-sweeps/README.md).
 The files here keep the first run.
 
+On 2026-10-23 the Zen 5 low-precision kernels were rewritten (A read in
+place, B carries the INT8 offset, masked edges, `VPDPBUSD` as inline asm):
+[`avx512-rewrite/`](avx512-rewrite/) holds three alternated runs of the
+old (`old_<run>.csv`) and new (`new_<run>.csv`) kernels, one repetition
+each, and the final run of all three Zen 5 kernels in one session
+(`bench_lowp_zen5_rewrite.csv`, 3 repetitions) that part 5 and
+docs/benchmarks.md quote.
+
 ## Machines and builds
 
 | | Apple M4 Max (P-core, SME unit) | AMD Ryzen 9 9950X (Zen 5) | NVIDIA RTX 5080 (sm_120) |

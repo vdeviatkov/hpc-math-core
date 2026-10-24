@@ -573,14 +573,15 @@ Apple M4 Max, one P-core / one SME unit, GFLOP/s or GOP/s
 | `NeonSmmla` | int8 | 449 | 493 | 503 | 491 |
 
 AMD Zen 5, one core, GFLOP/s or GOP/s (`bench_gemm_lowp`, pinned to core 2;
-the f32 row with the current kernel on 2026-10-22,
-[`lowp_zen5_defaults.csv`](experiments/block-sweeps/lowp_zen5_defaults.csv)):
+all rows one session on 2026-10-23, after the rewrite of the low-precision
+kernels,
+[`bench_lowp_zen5_rewrite.csv`](experiments/lowp/avx512-rewrite/bench_lowp_zen5_rewrite.csv)):
 
 | Kernel | Format | N=256 | N=1024 | N=2048 | N=4096 |
 |---|---|--:|--:|--:|--:|
-| `Avx512Blocked` | f32 | 324 | 311 | 303 | 294 |
-| `Avx512Dpbf16` | bf16 | 566 | 609 | 608 | 593 |
-| `Avx512Vnni` | int8 | 708 | 905 | 922 | 893 |
+| `Avx512Blocked` | f32 | 325 | 311 | 302 | 295 |
+| `Avx512Dpbf16` | bf16 | 619 | 638 | 606 | 574 |
+| `Avx512Vnni` | int8 | 824 | 1,139 | 1,138 | 1,038 |
 
 RTX 5080, TFLOP/s or TOP/s, GPU time of the GEMM alone
 (`bench_gemm_lowp_cuda`, `CMAKE_CUDA_ARCHITECTURES=120a`; fp16_acc16 sums in

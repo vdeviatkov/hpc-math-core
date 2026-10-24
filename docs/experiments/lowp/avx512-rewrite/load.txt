@@ -1,0 +1,6 @@
+ 20:22:51 up 2 days,  9:10,  4 users,  load average: 0.64, 0.78, 0.63
+ 20:23:45 up 2 days,  9:11,  4 users,  load average: 0.92, 0.84, 0.66
+DONE
+# final
+ 20:24:05 up 2 days,  9:11,  4 users,  load average: 0.74, 0.80, 0.65
+ 20:24:39 up 2 days,  9:12,  4 users,  load average: 0.91, 0.84, 0.67
