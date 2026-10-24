@@ -2,17 +2,21 @@
 
 Measured throughput for every kernel family in this repository, on the three
 machines it has been verified on. All numbers come from
-`bench_gemm` / `bench_gemm_cuda` and, for low precision, `bench_gemm_lowp` /
-`bench_gemm_lowp_cuda` (Google Benchmark) built in
-Release mode as described in [build.md](build.md). CPU kernels are strictly
-single-threaded unless noted (Apple AMX via Accelerate is the exception).
+`bench_gemm` / `bench_gemm_cuda` / `bench_gemm_metal` and, for low
+precision, `bench_gemm_lowp` / `bench_gemm_lowp_cuda` (Google Benchmark)
+built in Release mode as described in [build.md](build.md), and for the
+Python frameworks from `benchmarks/python/bench_frameworks.py`. CPU kernels
+are strictly single-threaded unless noted (Apple AMX via Accelerate and
+`gemm_sme_mt` are the exceptions).
 
 Contents
 
 - [Deriving GFLOP/s](#deriving-gflops)
-- [Apple M4 Max](#apple-m4-max) — scalar · NEON · SME2 · AMX · KleidiAI
+- [Apple M4 Max](#apple-m4-max) — scalar · NEON · SME2 (one and several units) · AMX · KleidiAI
+- [Apple M4 Max GPU — Metal](#apple-m4-max-gpu--metal) — Metal Levels 0-5 · MPS reference
 - [AMD Zen 5](#amd-zen-5--avx2--avx-512-linux--gcc) — scalar · AVX2 · AVX-512
 - [NVIDIA RTX 5080](#nvidia-rtx-5080--cuda) — CUDA Levels 0-8 · cuBLAS reference
+- [Frameworks](#frameworks-numpy-pytorch-jax-triton) — NumPy · PyTorch · JAX on the M4 Max; Triton (needs an NVIDIA GPU, not yet measured)
 - [Low precision](#low-precision-bf16-fp16-int8-fp8) — bf16 · fp16 · INT8 · FP8 on all three machines
 
 Each machine section has the same shape: build metadata, GFLOP/s by kernel
@@ -196,6 +200,40 @@ Same machine and run as above. Every row uses one core, so this is the like-for-
 - Up to 3.3 TFLOP/s f32 and 860 GFLOP/s f64 in this run (best 3,178 / 804 in the later run that the README and part 2 quote), the highest CPU throughput in this repo and ~2.3× / ~2.1× the single-threaded `gemm_sme` — but with every core available. Limited to one thread it reaches ~1.7 TFLOP/s f32 from N=256 up ([§ Matrix engines, single core](#matrix-engines-single-core)), so the climb from ~0.8 to ~3.3 TFLOP/s is about half problem size and half the second performance cluster.
 - The f32/f64 ratio is ~3.8×, not the ~2× lane-count ratio seen elsewhere (NEON 2.0×, AVX-512 ~2×). It is close to the 4× of the M4's matrix unit, where an f64 outer product covers 8×8 elements against 16×16 for f32 (`gemm_sme` measures 3.5×) — consistent with Accelerate running on that unit, though Apple does not document it.
 - For production code on a Mac, call Accelerate. The hand-written kernels show how close one can get to it, and what each step contributes.
+
+### Several SME units (`gemm_sme_mt`)
+
+> **Command:** `./build/benchmarks/bench_gemm --benchmark_filter='^(SmeMt|Sme|Amx)/' --benchmark_repetitions=5 --benchmark_enable_random_interleaving=true` (wall-clock time for `SmeMt` and `Amx`)
+> **Date:** 2026-10-24, load average 2.6–6.2. Median of 5 interleaved repetitions. Data: [experiments/sme-mt](experiments/sme-mt/README.md)
+
+`gemm_sme` is one thread, so one SME unit; the M4 Max has one per P-cluster,
+two in all. `gemm_sme_mt` runs `gemm_sme`'s blocking on 8 threads: the B
+panel is packed once and shared, and threads take chunks of A rows from an
+atomic counter, so the work balances whichever cluster each thread lands
+on (macOS cannot pin threads). Design and the thread sweep:
+[kernels/sme.md § Several SME units](kernels/sme.md#several-sme-units).
+
+| Kernel | N=64 | N=256 | N=512 | N=1024 | N=2048 | N=4000 | N=4096 |
+|---|--:|--:|--:|--:|--:|--:|--:|
+| `gemm_sme` f32, 1 thread | 276 | 849 | 1,350 | 1,419 | 1,514 | 1,551 | 1,541 |
+| `gemm_sme_mt` f32, 8 threads | 26 | 370 | 1,480 | 2,670 | 3,071 | **3,498** | **3,496** |
+| Accelerate f32, all cores | 785 | 1,711 | 2,639 | **3,211** | 3,195 | — | 3,160 |
+| `gemm_sme` f64, 1 thread | 86 | 326 | 402 | 421 | 424 | 440 | 429 |
+| `gemm_sme_mt` f64, 8 threads | 14 | 270 | 618 | 758 | 894 | **915** | **914** |
+| Accelerate f64, all cores | 325 | 462 | 797 | 827 | 785 | — | 783 |
+
+- From N=2048 up, `gemm_sme_mt` matches or beats Accelerate with all cores:
+  at N=4096, 111% in f32 and 117% in f64. Against the two units' measured
+  peak (3.93 / 1.00 TFLOP/s) that is 89% / 91%, against 79% / 86% for
+  `gemm_sme` on one unit.
+- 2.3× `gemm_sme` in f32 and 2.1× in f64 at N=4096, a little more than two
+  units. One candidate is packing, which `gemm_sme` does on its one core and
+  `gemm_sme_mt` spreads over eight; it was not measured separately.
+- At N=1024 it reaches 83% / 92% of Accelerate. Below N≈512 creating 8
+  threads per call costs more than it saves (26 GFLOP/s at N=64), so small
+  products should call `gemm_sme`. A first version with equal static row
+  bands, and the evidence that macOS keeps a few threads on one cluster, are
+  in [kernels/sme.md](kernels/sme.md#several-sme-units).
 
 ### Prefetch distance sweep
 
@@ -545,6 +583,145 @@ per thread then, 118 now) already cap it at 2. That register pressure (occupancy
 unused warp slots per Nsight) constrains occupancy; it does not by itself
 prove the remaining performance bottleneck. Deeper pipelines and split-K
 are possible experiments, not measured fixes for the remaining gap.
+
+---
+
+## Apple M4 Max GPU — Metal
+
+> **Machine:** Apple M4 Max, 40-core GPU, macOS 26.3.1, Apple Clang 17, Metal shaders compiled at run time with fast math
+> **Build:** default (`HPC_ENABLE_METAL` is on on Apple); `cmake -B build -DCMAKE_BUILD_TYPE=Release`
+> **Command:** `./build/benchmarks/bench_gemm_metal --benchmark_repetitions=5 --benchmark_min_time=1s --benchmark_enable_random_interleaving=true`
+> **Date:** 2026-10-24, AC power, load average 1.5–3.6. Median of 5 interleaved repetitions; cv up to 17% per row. Data and method: [experiments/metal-m4](experiments/metal-m4/README.md)
+
+What each level adds: [src/gemm/metal.hpp](../src/gemm/metal.hpp). Apple
+GPUs have no FP64, so every row is f32 in and out; the F16 rows multiply
+fp16 copies of A and B, converted once before timing, like the CUDA fp16
+rows. **What is timed** is the GEMM alone, as for CUDA: inputs sit in
+GPU-visible memory before timing, and the time is GPU time from the command
+buffer's start and end timestamps. Each command buffer holds enough GEMMs
+to last ≥ ~5 ms (256 at N=256), since at small N one GEMM is shorter than the
+command buffer's fixed cost.
+
+**Read across rows, not across sessions.** On this laptop the absolute GPU
+rate moved by up to ~3× between sessions (`MetalMps` f32 at N=4096: 13.5
+TFLOP/s in a first quick pass, 11.1 in this run, 4.5–7.3 later), while the
+register-only FMA peak stayed near 14.7. That fits sustained power limiting
+of memory-heavy work; [the data README](experiments/metal-m4/README.md#two-things-found-on-the-way)
+has the details. The rows below come from one run, interleaved, so they
+compare fairly with each other.
+
+### GFLOP/s by kernel and size
+
+| Level | Kernel | N=256 | N=1024 | N=2048 | N=4096 | N=8192 |
+|--:|---|--:|--:|--:|--:|--:|
+| 0 | `MetalNaive` | 944 | 1,132 | 1,226 | 1,027 | 814 |
+| 1 | `MetalTiled` | 1,327 | 1,605 | 1,615 | 1,598 | 1,860 |
+| 2 | `MetalRegTile` | 1,248 | 5,923 | 6,494 | 6,298 | 6,469 |
+| 3 | `MetalSimd` | 2,131 | 9,549 | 10,531 | 10,205 | 5,560 |
+| 4 | `MetalSimdTg` | 1,364 | 8,846 | 10,717 | 9,104 | 9,373 |
+| 5 | `MetalSimdTgF16` (fp16 in) | 1,492 | 9,450 | **11,617** | 11,380 | 11,211 |
+| ref | `MetalMps` (MPSMatrixMultiplication) | 3,475 | **11,123** | 10,704 | 11,087 | 10,855 |
+| ref | `MetalMpsF16` (fp16 in, fp32 out) | 4,974 | 10,868 | 11,479 | **13,732** | 12,671 |
+
+Measured FMA peak in the same run: **14.2 TFLOP/s f32** (14.9 run alone,
+three times out of three: 40 cores × 128 lanes × 2 at ~1.45 GHz) and 12.0
+f16 (15.5–15.8 alone). fp16 FMA runs at the f32 rate.
+
+- Level by level at N=2048: tiling in threadgroup memory 1.3×, the register
+  tile 4.0× on top (8×4 outputs per thread; 4×4 measured 14–20% slower), and
+  simdgroup matrices another 1.6×, to 74% of the f32 peak (`MetalSimd` at
+  N=2048, 10.5 TFLOP/s). The register tile is the largest single step, as
+  Level 2 is on the RTX 5080.
+- Simdgroup matrices give 1.6× over the best SIMT kernel although on M1–M4
+  they run on the same FP32 ALUs: there is no separate matrix unit (fp16 FMA
+  runs at the f32 rate). Each 8×8 fragment load feeds 8 multiply-adds per
+  element instead of one, so fewer instructions are spent on operands.
+- Staging A and B in threadgroup memory (Level 4) gains nothing over loading
+  fragments straight from device memory (Level 3) up to N=4096 (−11% to +2%,
+  within noise at N=2048); the GPU's
+  caches already serve the reuse between simdgroups. It wins at N=8192
+  (9.4 against 5.6 TFLOP/s), where the operands no longer stay cached.
+- fp16 inputs (Level 5) gain 8–25% over Level 4 from N=2048, from halving
+  the bytes moved, not from faster arithmetic.
+- Against MPS: the best f32-input kernel reaches 100% / 92% / 86% of
+  `MetalMps` at N = 2048 / 4096 / 8192; Level 5 (fp16 inputs) 103–109% of
+  `MetalMps` and 83–101% of `MetalMpsF16`. MPS with fp16 inputs is the
+  fastest row, 13.7 TFLOP/s at N=4096, 97% of the peak measured in the same
+  run.
+- At N=256, MPS is 1.6–3.7× faster than every hand-written level: a 64×64
+  tile gives 16 threadgroups for 40 GPU cores.
+
+---
+
+## Frameworks: NumPy, PyTorch, JAX, Triton
+
+> **Program:** [`benchmarks/python/bench_frameworks.py`](../benchmarks/python/bench_frameworks.py) (`--only`, `--parts` select frameworks and CPU / GPU parts)
+> **Machine:** Apple M4 Max, macOS 26.3.1, Python 3.13.8; NumPy 2.5.4, PyTorch 2.14.1, JAX 0.12.0.1 (CPU), jax 0.4.35 + jax-metal 0.1.1 (GPU)
+> **Date:** 2026-10-24. Data, the edits made to it and why: [experiments/frameworks-m4](experiments/frameworks-m4/README.md)
+
+The library's own GEMM call on square N×N matrices, timed like the C++
+drivers: inputs created on the device before timing, output preallocated
+where the API allows, GFLOP/s = 2N³ / time, median of 5 measurements of
+≥ 0.2 s each. GPU rows use device event time where the framework has it
+(PyTorch MPS / CUDA, Triton), otherwise wall clock up to
+`block_until_ready` (JAX). Every row also reports the maximum relative
+error at N=256 against a float64 product.
+
+**Triton** ([`triton_gemm.py`](../benchmarks/python/triton_gemm.py): one
+program per C tile, grouped program order, autotuned tiles, fp32 accumulate;
+fp32 inputs in IEEE fp32 or TF32) runs only on NVIDIA (and AMD) GPUs and has
+no macOS build, so it, `TorchCuda` and JAX's CUDA rows report SKIPPED here.
+They have not been run yet: `bench_frameworks.py` on the RTX 5080 machine
+measures them next to the CUDA ladder.
+
+### CPU
+
+| Library call | Backend | f32, 1 thread | f32, all cores | f64, 1 thread | f64, all cores |
+|---|---|--:|--:|--:|--:|
+| NumPy `matmul` | Accelerate | 1,738 | 2,982 | 424 | 727 |
+| PyTorch `mm` | Accelerate | 1,732 | 2,844 | 444 | 749 |
+| JAX `jit(matmul)` | XLA:CPU | — ¹ | 2,010 (≈3,200 ²) | — ¹ | 223 |
+| for comparison: `gemm_sme` / `gemm_sme_mt` | this repo | 1,551 | 3,498 | 440 | 915 |
+| for comparison: Accelerate from C++ (`gemm_amx`) | Accelerate | 1,718 | 3,211 | 456 | 827 |
+
+Best over N = 64 … 4096 (per-size tables in the data README); the C++ rows
+are from § [Several SME units](#several-sme-units-gemm_sme_mt) and §
+[Matrix engines, single core](#matrix-engines-single-core).
+¹ XLA:CPU ignores every thread limit tried; it uses ~14 of 16 cores
+regardless. ² Measured in the mislabelled 1-thread run and in a standalone
+check; 2,010 in the all-core run, which ended at load average 26.
+
+- NumPy and PyTorch on the CPU are Accelerate, and measure what `gemm_amx`
+  measures. From Python, a CPU GEMM on a Mac is as fast as from C++.
+- JAX is the exception: in f32 it reaches the two-unit rate when the
+  machine is otherwise idle, but uses every core to do so; in f64 it peaks
+  at 223 GFLOP/s, a quarter of Accelerate.
+
+### Apple GPU
+
+One bracketed session, Metal ladder → PyTorch MPS → JAX on Metal → Metal
+ladder again; the whole session ran at about two thirds of the clean Metal
+run above (MPS f32 at N=4096: 7.3 / 6.6 TFLOP/s before / after, FMA peak 9.7
+/ 8.4). GFLOP/s:
+
+| Call | dtype | max rel. err | N=1024 | N=2048 | N=4096 | N=8192 |
+|---|---|--:|--:|--:|--:|--:|
+| PyTorch `mm`, MPS | f32 | 7.2e-07 | 8,250 | 5,610 | 4,944 | 4,036 |
+| PyTorch `mm`, MPS | fp16 | 3.9e-04 | 5,888 | 6,783 | 6,779 | 4,792 |
+| PyTorch `mm`, MPS | bf16 | 2.9e-03 | 5,348 | 5,985 | 5,595 | 4,658 |
+| JAX `jit(matmul)`, jax-metal | f32 | 7.2e-07 | 12,049 | 4,396 | 4,366 | 3,620 |
+| `MetalMps`, before / after | f32 | — | 7,402 / 6,516 | 5,548 / 5,662 | 7,273 / 6,593 | 4,799 / 4,636 |
+| `MetalSimdTg`, before / after | f32 | — | 5,486 / 5,240 | 5,801 / 6,802 | 5,628 / 4,059 | 2,979 / 3,475 |
+
+- From N=2048 up, PyTorch MPS f32 runs at 68–101% of `MetalMps` in the same
+  session, and JAX on Metal at 60–79%. Both are the MPS / MPSGraph stack
+  behind a framework, plus per-call dispatch.
+- The N=1024 rows (PyTorch 8.3, JAX 12.0 TFLOP/s) are higher than every
+  larger size and than MPS itself in this session; with the session's
+  clock moving, that is not a reliable ranking. Remeasure on a cool machine
+  before drawing conclusions from it.
+- fp16 / bf16 in PyTorch MPS return 16-bit results, unlike the fp32-result
+  Metal F16 rows; the errors are those of 16-bit inputs and output.
 
 ---
 

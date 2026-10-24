@@ -1,0 +1,5 @@
+01:56:27 start metal A load averages: 6.34 12.03 10.30
+01:59:05 start torch mps load averages: 10.46 11.22 10.22
+01:59:22 start jax metal load averages: 7.96 10.60 10.02
+01:59:32 start metal B load averages: 7.43 10.40 9.96
+02:02:19 end load averages: 6.84 9.72 9.82

@@ -398,6 +398,36 @@ else()
     target_link_libraries(hpc_math_cuda PUBLIC hpc_math_core)
 endif()
 
+# ---------------------------------------------------------------------------
+# Metal (Apple GPUs, on by default on Apple platforms)
+#
+# hpc_math_metal is src/metal/gemm_metal.mm, which compiles the shaders in
+# src/metal/gemm.metal at run time: their source is embedded into the binary
+# here, so the build needs no offline Metal toolchain. Elsewhere it is
+# src/metal/gemm_metal_stub.cpp and the Metal tests and benchmarks skip.
+# ---------------------------------------------------------------------------
+option(HPC_ENABLE_METAL "Build the Metal GEMM kernels (Apple platforms only)" ${APPLE})
+
+if(HPC_ENABLE_METAL AND APPLE)
+    enable_language(OBJCXX)
+    set(_hpc_metal_src "${CMAKE_CURRENT_SOURCE_DIR}/src/metal/gemm.metal")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_hpc_metal_src}")
+    file(READ "${_hpc_metal_src}" HPC_METAL_SOURCE)
+    file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/generated/hpc_metal_source.inc"
+         CONTENT "static const char kMetalSource[] = R\"HPCMETAL(@HPC_METAL_SOURCE@)HPCMETAL\";\n"
+         @ONLY)
+    add_library(hpc_math_metal STATIC src/metal/gemm_metal.mm)
+    set_target_properties(hpc_math_metal PROPERTIES OBJCXX_STANDARD 20 OBJCXX_STANDARD_REQUIRED ON)
+    target_compile_options(hpc_math_metal PRIVATE -fobjc-arc -O3)
+    target_include_directories(hpc_math_metal PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+    target_link_libraries(hpc_math_metal PUBLIC hpc_math_core
+        "-framework Foundation" "-framework Metal" "-framework MetalPerformanceShaders")
+    message(STATUS "Metal enabled (shaders compiled at run time from src/metal/gemm.metal)")
+else()
+    add_library(hpc_math_metal STATIC src/metal/gemm_metal_stub.cpp)
+    target_link_libraries(hpc_math_metal PUBLIC hpc_math_core)
+endif()
+
 enable_testing()
 add_subdirectory(tests)
 add_subdirectory(benchmarks)

@@ -1,0 +1,16 @@
+name,framework,device,dtype,N,precision_bits,ms_median,gflops_median,reps,runs,max_rel_err,status
+TorchMps/f32/N=256,torch,mps,f32,256,32,0.0145,2307.5,336,5,7.16e-07,ok
+TorchMps/f32/N=1024,torch,mps,f32,1024,32,0.2603,8250.2,533,5,7.16e-07,ok
+TorchMps/f32/N=2048,torch,mps,f32,2048,32,3.0623,5610.2,74,5,7.16e-07,ok
+TorchMps/f32/N=4096,torch,mps,f32,4096,32,27.8016,4943.6,9,5,7.16e-07,ok
+TorchMps/f32/N=8192,torch,mps,f32,8192,32,272.4507,4035.6,1,5,7.16e-07,ok
+TorchMps/f16/N=256,torch,mps,f16,256,16,0.0184,1824.4,1223,5,3.94e-04,ok
+TorchMps/f16/N=1024,torch,mps,f16,1024,16,0.3647,5888.1,347,5,3.94e-04,ok
+TorchMps/f16/N=2048,torch,mps,f16,2048,16,2.5328,6783.1,71,5,3.94e-04,ok
+TorchMps/f16/N=4096,torch,mps,f16,4096,16,20.2737,6779.2,11,5,3.94e-04,ok
+TorchMps/f16/N=8192,torch,mps,f16,8192,16,229.4616,4791.7,1,5,3.94e-04,ok
+TorchMps/bf16/N=256,torch,mps,bf16,256,16,0.0191,1752.8,921,5,2.88e-03,ok
+TorchMps/bf16/N=1024,torch,mps,bf16,1024,16,0.4015,5348.4,345,5,2.88e-03,ok
+TorchMps/bf16/N=2048,torch,mps,bf16,2048,16,2.8704,5985.3,78,5,2.88e-03,ok
+TorchMps/bf16/N=4096,torch,mps,bf16,4096,16,24.5638,5595.2,9,5,2.88e-03,ok
+TorchMps/bf16/N=8192,torch,mps,bf16,8192,16,236.0326,4658.3,1,5,2.88e-03,ok

@@ -431,6 +431,33 @@ void add_bstride() {
     }
 }
 
+/// gemm_sme_mt sweep: SmeMtT<threads>Mc<rows>/<type>/N=<n>, every thread
+/// count with three A block heights, wall-clock time. Results and the choice
+/// of kSmeThreads / kSmeMtMc: docs/kernels/sme.md, "Several SME units".
+void add_sme_mt_sweep() {
+    using namespace hpc::gemm;
+    constexpr Sizes<1024, 2048, 4096> sizes{};
+    auto one = [&]<unsigned Threads, std::size_t Mc>() {
+        add<kHaveSme>("SmeMtT" + std::to_string(Threads) + "Mc" + std::to_string(Mc), kNoSme,
+                      []<typename T>(const hpc::Matrix<T>& A, const hpc::Matrix<T>& B, hpc::Matrix<T>& C) {
+                          gemm_sme_mt<T, Mc>(A, B, C, Threads);
+                      },
+                      sizes, SmeSvl{}, true);
+    };
+    auto for_mc = [&]<unsigned Threads>() {
+        one.template operator()<Threads, 256>();
+        one.template operator()<Threads, 512>();
+        one.template operator()<Threads, 1024>();
+    };
+    for_mc.template operator()<1>();
+    for_mc.template operator()<2>();
+    for_mc.template operator()<3>();
+    for_mc.template operator()<4>();
+    for_mc.template operator()<6>();
+    for_mc.template operator()<8>();
+    for_mc.template operator()<12>();
+}
+
 void register_all() {
     using namespace hpc::gemm;
 
@@ -458,6 +485,8 @@ void register_all() {
     add<kHaveSme>("SmeTiles", kNoSme, HPC_KERNEL(gemm_sme_tiles), sme, SmeSvl{});
     add<kHaveSme>("SmeBlocked", kNoSme, HPC_KERNEL(gemm_sme_blocked), sme, SmeSvl{});
     add<kHaveSme>("Sme", kNoSme, HPC_KERNEL(gemm_sme), sme, SmeSvl{});
+    // Several SME units (one per P-cluster): wall-clock time, as for Amx.
+    add<kHaveSme>("SmeMt", kNoSme, HPC_KERNEL(gemm_sme_mt), sme, SmeSvl{}, true);
 
     // Accelerate may run on several threads, and Google Benchmark's default
     // CPU time counts only the calling thread, so it is timed by wall clock;
@@ -476,6 +505,7 @@ void register_all() {
     add_bstride<double>();
 
     add_sme_sweeps();
+    add_sme_mt_sweep();
     add_tiles();
     add_blocks();
 }

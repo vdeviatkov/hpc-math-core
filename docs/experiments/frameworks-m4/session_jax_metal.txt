@@ -1,0 +1,18 @@
+== gpu ==
+JaxMetal/f32/N=256                                0.0303 ms     1106.8 GFLOP/s  reps=840  err=7.16e-07
+JaxMetal/f32/N=1024                               0.1782 ms    12048.6 GFLOP/s  reps=635  err=7.16e-07
+JaxMetal/f32/N=2048                               3.9078 ms     4396.3 GFLOP/s  reps=73  err=7.16e-07
+JaxMetal/f32/N=4096                              31.4777 ms     4366.2 GFLOP/s  reps=7  err=7.16e-07
+JaxMetal/f32/N=8192                             303.7397 ms     3619.9 GFLOP/s  reps=1  err=7.16e-07
+JaxMetal/f16: accuracy check failed: UNKNOWN: /Users/vdeviatkov/Documents/hpc-math-core/benchmarks/python/bench_frameworks.py:176:37: error: failed to 
+JaxMetal/f16/N=256                           ERROR: XlaRuntimeError: UNKNOWN: /Users/vdeviatkov/Documents/hpc-math-core/benchmarks/python/bench_framewo
+JaxMetal/f16/N=1024                          ERROR: XlaRuntimeError: UNKNOWN: /Users/vdeviatkov/Documents/hpc-math-core/benchmarks/python/bench_framewo
+JaxMetal/f16/N=2048                          ERROR: XlaRuntimeError: UNKNOWN: /Users/vdeviatkov/Documents/hpc-math-core/benchmarks/python/bench_framewo
+JaxMetal/f16/N=4096                          ERROR: XlaRuntimeError: UNKNOWN: /Users/vdeviatkov/Documents/hpc-math-core/benchmarks/python/bench_framewo
+JaxMetal/f16/N=8192                          ERROR: XlaRuntimeError: UNKNOWN: /Users/vdeviatkov/Documents/hpc-math-core/benchmarks/python/bench_framewo
+JaxMetal/bf16: accuracy check failed: UNKNOWN: /Users/vdeviatkov/Documents/hpc-math-core/benchmarks/python/bench_frameworks.py:176:37: error: failed to
+JaxMetal/bf16/N=256                          ERROR: XlaRuntimeError: UNKNOWN: /Users/vdeviatkov/Documents/hpc-math-core/benchmarks/python/bench_framewo
+JaxMetal/bf16/N=1024                         ERROR: XlaRuntimeError: UNKNOWN: /Users/vdeviatkov/Documents/hpc-math-core/benchmarks/python/bench_framewo
+JaxMetal/bf16/N=2048                         ERROR: XlaRuntimeError: UNKNOWN: /Users/vdeviatkov/Documents/hpc-math-core/benchmarks/python/bench_framewo
+JaxMetal/bf16/N=4096                         ERROR: XlaRuntimeError: UNKNOWN: /Users/vdeviatkov/Documents/hpc-math-core/benchmarks/python/bench_framewo
+JaxMetal/bf16/N=8192                         ERROR: XlaRuntimeError: UNKNOWN: /Users/vdeviatkov/Documents/hpc-math-core/benchmarks/python/bench_framewo

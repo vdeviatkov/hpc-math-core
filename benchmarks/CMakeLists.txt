@@ -5,6 +5,10 @@ target_link_libraries(bench_gemm PRIVATE hpc_math_core benchmark::benchmark)
 add_executable(bench_gemm_cuda bench_gemm_cuda.cpp)
 target_link_libraries(bench_gemm_cuda PRIVATE hpc_math_cuda benchmark::benchmark)
 
+# Metal kernels on Apple GPUs, or the stub (every row SKIPPED).
+add_executable(bench_gemm_metal bench_gemm_metal.cpp)
+target_link_libraries(bench_gemm_metal PRIVATE hpc_math_metal benchmark::benchmark)
+
 # What each low-precision format costs in accuracy (portable C++).
 add_executable(lowp_accuracy experiments/lowp_accuracy.cpp)
 target_link_libraries(lowp_accuracy PRIVATE hpc_math_core)

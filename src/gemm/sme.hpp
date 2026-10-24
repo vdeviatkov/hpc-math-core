@@ -244,14 +244,21 @@
     #include <arm_neon.h>
     #include <arm_sme.h>
 #endif
+#if defined(__APPLE__)
+    #include <pthread.h>
+#endif
 
 #include <algorithm>
+#include <atomic>
+#include <barrier>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <thread>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 namespace hpc::gemm {
 
@@ -267,6 +274,12 @@ template <typename T>
 inline constexpr std::size_t kSmeMc = sizeof(T) == 4 ? 1024 : 512;
 inline constexpr std::size_t kSmeKc = 2048;
 inline constexpr std::size_t kSmeNc = 4096;
+
+// gemm_sme_mt: threads per call and the A block height each thread uses
+// (sweep and reasoning: docs/kernels/sme.md, "Several SME units").
+inline constexpr unsigned kSmeThreads = 8;
+template <typename T>
+inline constexpr std::size_t kSmeMtMc = kSmeMc<T>;
 
 // R and V count square ZA tiles, not scalar rows and vector columns.
 template <typename T>
@@ -284,6 +297,8 @@ void gemm_sme_blocked(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) = delete; 
 template <typename T, int R = 2, int V = kSmeRegCols<T>, std::size_t TileM = kSmeMc<T>,
           std::size_t TileK = kSmeKc, std::size_t TileN = kSmeNc>
 void gemm_sme(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) = delete;  // SME2 not available on this target
+template <typename T, std::size_t TileM = kSmeMtMc<T>>
+void gemm_sme_mt(const Matrix<T>&, const Matrix<T>&, Matrix<T>&, unsigned = kSmeThreads) = delete;  // SME2 not available on this target
 
 #else
 
@@ -686,6 +701,7 @@ void blocked_driver(const Matrix<T>& A, const T* B, std::size_t ldb, Matrix<T>& 
     }
 }
 
+
 }  // namespace sme_detail
 
 /**
@@ -713,6 +729,101 @@ void gemm_sme(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
                   "gemm_sme: T must be float or double");
     assert(B.rows() == A.cols() && B.cols() == C.cols());
     sme_detail::blocked_driver<T, true, R, V, TileM, TileK, TileN>(A, B.data(), B.cols(), C);
+}
+
+/**
+ * @brief C = A · B on several SME units at once: gemm_sme's blocking with
+ *        the B panel packed once and shared, and A blocks handed out to
+ *        `threads` threads on demand.
+ *
+ * An SME unit belongs to a P-cluster, not to a core: the cores of a cluster
+ * share it, and M4 Max has two P-clusters, so one thread reaches at most one
+ * unit's throughput (gemm_sme). macOS has no API to pin a thread to a
+ * cluster, and the scheduler tends to keep a few busy threads on one
+ * cluster (so on one unit) until it is full; with equal static shares, the
+ * unit that got more threads then finishes last. So the work is split
+ * dynamically, as in multi-threaded GotoBLAS:
+ *
+ *   for jc, pc (as gemm_sme)
+ *     every thread packs every team-th B strip  → one shared B panel
+ *     barrier
+ *     each thread takes the next chunk of rows (atomic counter), packs its
+ *     A block and runs macro_kernel on it, until no chunk is left
+ *     barrier                                    (B panel reused next pass)
+ *
+ * A unit with more threads simply takes more chunks. Chunks are TileM rows
+ * or fewer, so that every thread gets about four (at least one micro-tile,
+ * 2·SVL rows, each); each thread has its own A buffer, and chunks write
+ * disjoint rows of C. Workers run at user-interactive QoS, which keeps them
+ * on P-cores. Threads are created per call (tens of µs), so small products
+ * should use gemm_sme. kSmeThreads and kSmeMtMc: docs/kernels/sme.md,
+ * "Several SME units".
+ */
+template <typename T, std::size_t TileM = kSmeMtMc<T>>
+void gemm_sme_mt(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C, unsigned threads = kSmeThreads) {
+    static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>,
+                  "gemm_sme_mt: T must be float or double");
+    constexpr int V = kSmeRegCols<T>;
+    constexpr std::size_t TileK = kSmeKc, TileN = kSmeNc;
+    const std::size_t M = A.rows(), K = A.cols(), N = B.cols();
+    assert(B.rows() == K && C.rows() == M && C.cols() == N);
+    if (K == 0)
+        C.zero();
+    if (M == 0 || N == 0 || K == 0)
+        return;
+
+    const std::size_t s  = sme_detail::kF32<T> ? svcntsw() : svcntsd();
+    const std::size_t mr = 2 * s, nr = V * s;
+    auto round_up        = [](std::size_t x, std::size_t m) { return (x + m - 1) / m * m; };
+    const std::size_t want   = std::max<std::size_t>(threads, 1);
+    const std::size_t chunk  = std::clamp(round_up((M + 4 * want - 1) / (4 * want), mr), mr,
+                                          round_up(TileM, mr));
+    const std::size_t chunks = (M + chunk - 1) / chunk;
+    const std::size_t team   = std::min(want, chunks);
+    const std::size_t kc_max = std::min(TileK, K);
+    const std::size_t passes = ((N + TileN - 1) / TileN) * ((K + TileK - 1) / TileK);
+
+    Matrix<T> b_pack(kc_max, round_up(std::min(TileN, N), nr));
+    std::vector<std::atomic<std::size_t>> next(passes);  // chunk counter per (jc, pc) pass
+    std::barrier sync(static_cast<std::ptrdiff_t>(team));
+
+    auto worker = [&](std::size_t t) {
+#if defined(__APPLE__)
+        // New threads start at default QoS and may run on E-cores; the
+        // caller's thread keeps its own QoS.
+        if (t > 0)
+            pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+#endif
+        Matrix<T> a_pack(chunk, kc_max);
+        std::size_t pass = 0;
+        for (std::size_t jc = 0; jc < N; jc += TileN) {
+            const std::size_t nc = std::min(TileN, N - jc);
+            for (std::size_t pc = 0; pc < K; pc += TileK, ++pass) {
+                const std::size_t kc = std::min(TileK, K - pc);
+                for (std::size_t j0 = t * nr; j0 < nc; j0 += team * nr)
+                    sme_detail::pack_b(B.data() + pc * N + jc + j0, N, kc, std::min(nr, nc - j0), nr,
+                                       b_pack.data() + j0 * kc);
+                sync.arrive_and_wait();
+                for (std::size_t c; (c = next[pass].fetch_add(1, std::memory_order_relaxed)) < chunks;) {
+                    const std::size_t ic = c * chunk, mc = std::min(chunk, M - ic);
+                    sme_detail::pack_a(A.data() + ic * K + pc, K, mc, kc, mr, a_pack.data());
+                    sme_detail::macro_kernel<T, 2, V>(
+                        a_pack.data(), b_pack.data(), static_cast<std::int64_t>(kc),
+                        static_cast<std::int64_t>(nr), C.data() + ic * N + jc, static_cast<std::int64_t>(N),
+                        static_cast<std::int64_t>(mc), static_cast<std::int64_t>(nc),
+                        static_cast<std::int64_t>(kc), pc > 0);
+                }
+                sync.arrive_and_wait();
+            }
+        }
+    };
+    std::vector<std::thread> pool;
+    pool.reserve(team - 1);
+    for (std::size_t t = 1; t < team; ++t)
+        pool.emplace_back(worker, t);
+    worker(0);
+    for (std::thread& th : pool)
+        th.join();
 }
 
 #endif  // HPC_HAS_SME

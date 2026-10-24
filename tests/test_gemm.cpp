@@ -203,6 +203,18 @@ const Kernel kKernels[] = {
     HPC_BOTH("Sme", gemm_sme),
     HPC_BLOCK("SmeOddBlocks", gemm_sme, 2, 2, 5, 7, 13),
     HPC_BLOCK("SmeBlockedOddBlocks", gemm_sme_blocked, 2, 2, 5, 7, 13),
+    // Several threads: the default, a thread count that does not divide the
+    // micro-tile count, and odd A blocks with more threads than some shapes
+    // have micro-tile rows (those use fewer threads).
+    Kernel{"SmeMt",
+           +[](const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C) { gemm_sme_mt(A, B, C); },
+           +[](const Matrix<double>& A, const Matrix<double>& B, Matrix<double>& C) { gemm_sme_mt(A, B, C); }},
+    Kernel{"SmeMt3Threads",
+           +[](const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C) { gemm_sme_mt(A, B, C, 3); },
+           +[](const Matrix<double>& A, const Matrix<double>& B, Matrix<double>& C) { gemm_sme_mt(A, B, C, 3); }},
+    Kernel{"SmeMtOddBlocks8Threads",
+           +[](const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C) { gemm_sme_mt<float, 5>(A, B, C, 8); },
+           +[](const Matrix<double>& A, const Matrix<double>& B, Matrix<double>& C) { gemm_sme_mt<double, 5>(A, B, C, 8); }},
 #endif
 #if HPC_HAS_AMX
     HPC_BOTH("Amx", gemm_amx),
@@ -364,6 +376,15 @@ TEST(GemmSme, AllFloatTileShapes) {
 }
 TEST(GemmSme, AllDoubleTileShapes) {
     expect_sme_rows<double>(std::make_integer_sequence<int, 8>{});
+}
+
+// gemm_sme_mt over several (jc, pc) passes: K and N one past kSmeKc and
+// kSmeNc, so the shared B panel is repacked between passes and the second
+// pc pass accumulates into C, with uneven chunks across 3 threads.
+TEST(GemmSme, MtSeveralPasses) {
+    expect_matches_naive<float>(
+        +[](const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C) { gemm_sme_mt(A, B, C, 3); },
+        Shape{97, kSmeKc + 1, kSmeNc + 1}, "SmeMt passes");
 }
 
 TEST(GemmSme, PackAIsBitExactFloat) { expect_pack_a_bit_exact<float>(); }

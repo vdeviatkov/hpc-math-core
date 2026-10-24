@@ -20,3 +20,8 @@ gtest_discover_tests(hpc_tests DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests(hpc_tests_lowp DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests(hpc_tests_cuda DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests(hpc_tests_lowp_cuda DISCOVERY_MODE PRE_TEST)
+
+# Metal kernels on Apple GPUs, or the stub elsewhere (tests then skip).
+add_executable(hpc_tests_metal test_gemm_metal.cpp)
+target_link_libraries(hpc_tests_metal PRIVATE hpc_math_metal GTest::gtest_main)
+gtest_discover_tests(hpc_tests_metal DISCOVERY_MODE PRE_TEST)

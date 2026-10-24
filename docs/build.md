@@ -47,7 +47,27 @@ ctest --test-dir build --output-on-failure
 ./build/benchmarks/bench_gemm_cuda
 ./build/benchmarks/bench_gemm_lowp        # bf16 / fp16 / INT8 kernels of this CPU
 ./build/benchmarks/bench_gemm_lowp_cuda   # bf16 / fp16 / INT8 / FP8 on the GPU
+./build/benchmarks/bench_gemm_metal       # Apple GPU (SKIPPED elsewhere)
 ```
+
+### Python frameworks (NumPy, PyTorch, JAX, Triton)
+
+[`benchmarks/python/bench_frameworks.py`](../benchmarks/python/bench_frameworks.py)
+times each library's GEMM the way the C++ drivers do (2·N³ / time, median of
+several measurements) on every device the machine has, and writes a CSV.
+It needs no CMake build:
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install -r benchmarks/python/requirements.txt
+.venv/bin/python benchmarks/python/bench_frameworks.py --out bench_frameworks.csv
+.venv/bin/python benchmarks/python/bench_frameworks.py --only torch --parts gpu   # one part
+```
+
+Rows whose framework or device is absent are printed as SKIPPED: Triton and
+the CUDA rows of PyTorch and JAX need an NVIDIA GPU (on Linux, the PyTorch
+CUDA wheels include Triton; install `jax[cuda12]` for JAX). On Apple GPUs,
+JAX needs `jax-metal`, which is pinned to JAX 0.4.35, so it gets its own
+venv (`--only jax --parts gpu`); see `requirements.txt`.
 
 ### Windows (MSVC x64)
 
@@ -79,6 +99,7 @@ ctest --test-dir build --build-config Release --output-on-failure
 | `HPC_ENABLE_SME` | `OFF` | ARM SME2 kernels. Runs a compile-*and-execute* probe for SME2 loads and FP32/FP64 FMOPA at configure time; supersedes `HPC_MARCH` with `-mcpu=apple-m4`. See below. |
 | `HPC_ENABLE_AMX` | `ON` on Apple, `OFF` elsewhere | Apple AMX via Accelerate.framework (`cblas_sgemm`/`cblas_dgemm`). See below. |
 | `HPC_ENABLE_KLEIDIAI` | `ON` when the SME probe passed, else `OFF` | Fetches Arm KleidiAI v1.31.0 (FetchContent) for its SME2 f32 reference GEMM. |
+| `HPC_ENABLE_METAL` | `ON` on Apple, `OFF` elsewhere | Metal GEMM kernels on the Apple GPU (`bench_gemm_metal`, `hpc_tests_metal`). The shaders in `src/metal/gemm.metal` are embedded into the binary at configure time and compiled when first used, so no offline Metal toolchain is needed. Elsewhere a stub is built and the Metal rows skip. |
 | `HPC_ENABLE_LTO` | `OFF` | Link-time optimisation for Release builds. |
 | `CMAKE_CUDA_ARCHITECTURES` | `native` | The GPU in the build machine. CUDA is detected automatically; without nvcc a CPU stub is built. If the GPU is newer than the toolkit can target, the build falls back to the newest PTX that toolkit can emit and warns — see below. |
 
@@ -163,14 +184,15 @@ Which kernel families exist in a build is decided once, at compile time, by the 
 - The family's entries in the test table (`kKernels` in
   `tests/test_gemm.cpp`) are compiled only under its `HPC_HAS_*`, so the test
   list on a machine is exactly the set of kernels that run there.
-- CUDA is the one run-time check, since a GPU belongs to the machine rather
-  than the build: without a device (always so with the stub),
-  `cuda_device_count()` returns 0 and the CUDA tests and benchmarks skip.
+- The GPUs are run-time checks, since a GPU belongs to the machine rather
+  than the build: without a device (always so with the stubs),
+  `cuda_device_count()` returns 0 / `metal_available()` false and the CUDA /
+  Metal tests and benchmarks skip.
 
 | Machine | Runs | Skipped |
 |---|---|---|
-| **Apple M-series** (default build — `HPC_ENABLE_AMX` defaults ON) | Scalar · NEON · Scalar-Pf · NEON-Pf · **AMX** | AVX2 · AVX-512 · SVE · SME · CUDA |
-| **Apple M4 Max, `-DHPC_ENABLE_SME=ON`** (the run recorded in [benchmarks.md](benchmarks.md)) | Scalar · NEON · Scalar-Pf · NEON-Pf · **SME** · **AMX** · **KleidiAI** | AVX2 · AVX-512 · SVE · CUDA |
+| **Apple M-series** (default build — `HPC_ENABLE_AMX` and `HPC_ENABLE_METAL` default ON) | Scalar · NEON · Scalar-Pf · NEON-Pf · **AMX** · **Metal** | AVX2 · AVX-512 · SVE · SME · CUDA |
+| **Apple M4 Max, `-DHPC_ENABLE_SME=ON`** (the run recorded in [benchmarks.md](benchmarks.md)) | Scalar · NEON · Scalar-Pf · NEON-Pf · **SME** (incl. `gemm_sme_mt`) · **AMX** · **KleidiAI** · **Metal** | AVX2 · AVX-512 · SVE · CUDA |
 | Intel Mac (Accelerate present; internal dispatch depends on the CPU) | Scalar · supported x86 SIMD/Pf · **AMX**\* | Unsupported x86 SIMD · NEON · SVE · SME · CUDA |
 | Intel Skylake (Linux/Windows, AVX2, no AVX-512, no GPU) | Scalar · AVX2 · Scalar-Pf · AVX2-Pf | AVX-512 · NEON · SVE · SME · AMX · CUDA |
 | Intel Skylake + NVIDIA GPU | Scalar · AVX2 · Scalar-Pf · AVX2-Pf · **CUDA** | AVX-512 · NEON · SVE · SME · AMX |
@@ -192,9 +214,11 @@ takes a regular expression:
 ./build/benchmarks/bench_gemm --benchmark_filter="^Neon"               # NEON family
 ./build/benchmarks/bench_gemm --benchmark_filter="BlockedPf"           # prefetch distance sweep
 ./build/benchmarks/bench_gemm --benchmark_filter="N=1024$"             # one size, every kernel
-./build/benchmarks/bench_gemm --benchmark_filter="Sme"                 # the four SME kernels
+./build/benchmarks/bench_gemm --benchmark_filter="Sme"                 # the SME kernels (also SmeMt sweep)
+./build/benchmarks/bench_gemm --benchmark_filter="^SmeMt/"             # several SME units
 ./build/benchmarks/bench_gemm --benchmark_filter="BStride"             # SME B-stride experiment
 ./build/benchmarks/bench_gemm_cuda --benchmark_filter="N=4096"         # GPU, every kernel at one size
+./build/benchmarks/bench_gemm_metal --benchmark_filter="-Variant"       # Metal ladder, MPS and peaks, no tile variants
 ```
 
 A full `bench_gemm` run includes the naive kernels at N=4096, which alone

@@ -233,6 +233,21 @@ packing happen outside streaming mode, but inside each timed GEMM call.
 The L2 explanation is an inference from controlled measurements; Apple's
 physical cache indexing and matrix-engine internals are undocumented.
 
+`gemm_sme_mt<T,TileM>(A, B, C, threads = 8)` runs the same jc/pc loops on a
+team of threads, to use the SME unit of each P-cluster. Per pass, every
+thread packs every team-th B strip into one shared panel; after a barrier,
+threads claim row chunks (at most TileM, about four per thread, at least
+one 2·SVL micro-tile) from an atomic counter, pack them into a private A
+buffer and run `macro_kernel`; a second barrier protects the panel. Chunks
+write disjoint rows of C, and pc>0 passes reload them, so there is no
+reduction. Dynamic chunks, not equal bands, because macOS cannot pin a
+thread to a cluster and tends to keep a few threads on one, so equal bands
+finish at the pace of the busier unit. Workers raise themselves to
+user-interactive QoS to stay on P-cores. Threads are created per call, which
+dominates below N≈512. The default of 8 threads comes from a sweep
+([Several SME units](kernels/sme.md#several-sme-units)); cluster placement
+is inferred from throughput, not observed.
+
 ### `src/gemm/amx.hpp`
 
 This is an Accelerate BLAS adapter, not an Apple AMX intrinsic kernel.
@@ -340,6 +355,46 @@ count is zero, capability queries are false, free is harmless, and compute,
 copies, synchronization, allocation and timing throw. This preserves build
 coverage and explicit skip behavior without pretending CPU work is CUDA.
 
+## Metal interface and implementation
+
+### `src/gemm/metal.hpp`
+
+The C++ face of the Metal kernels, free of Objective-C so the tests and
+benchmarks stay plain C++. `MetalGemm` owns A, B and C (plus fp16 copies of
+A and B) in shared-storage buffers, which the CPU and GPU address directly
+on Apple silicon, so uploads are memcpys and dispatch copies nothing.
+`run_ms(kernel, reps)` encodes `reps` dispatches of one kernel into one
+command buffer and returns GPU time per GEMM from `GPUStartTime` /
+`GPUEndTime`; `run_variant_ms` does the same for a tile variant by name.
+`effective()` reports the fallback: Levels 2–5 need M, N multiples of 64 and
+K of 16, otherwise Level 1 runs. K=0 clears C, M=0 or N=0 returns.
+
+### `src/metal/gemm.metal`
+
+Six levels, f32 in and out. Level 0 reads every operand from device memory.
+Level 1 stages 16×16 tiles in threadgroup memory and bounds-checks every
+load, which makes it the any-shape fallback. Level 2 is a template
+(BM, BN, BK, TM, TN; default 64×64×16 with 8×4 outputs per thread): A is
+stored transposed so both operands of the inner product are contiguous.
+Levels 3–5 use `simdgroup_float8x8` multiply-accumulate: Level 3 loads
+fragments straight from device memory, Level 4 stages padded tiles in
+threadgroup memory first, Level 5 is Level 4 on half inputs with float
+accumulators. Fixed-trip loops carry `clang loop unroll(full)`: left rolled,
+the accumulator arrays are indexed dynamically and spill, which measured
+5–10× slower. `fma_peak` runs eight independent 4-wide FMA chains per
+thread to measure the arithmetic peak.
+
+### `src/metal/gemm_metal.mm`, `src/metal/gemm_metal_stub.cpp`
+
+The Objective-C++ host (ARC). One process-lifetime context creates the
+device and queue and compiles the shader source CMake embedded
+(`hpc_metal_source.inc`) with fast math; pipelines are created on first
+use and cached. A table gives each tiled function's threadgroup geometry
+and tile multiples, so tile variants dispatch without code changes. The MPS
+reference wraps the same buffers in `MPSMatrix` descriptors, fp16 inputs
+with an fp32 result for `kMpsF16`. The stub reports no device and throws
+otherwise, as the CUDA stub does.
+
 ## Correctness and benchmark files
 
 | File | Purpose and reasoning |
@@ -347,10 +402,14 @@ coverage and explicit skip behavior without pretending CPU work is CUDA.
 | `tests/test_gemm.cpp` | Hand-checked reference products, then a table of available CPU kernels against that reference. Boundary shapes exercise vector/register/cache tails, rectangular matrices, split K accumulation and empty dimensions. C starts as junk to distinguish overwrite from accumulation. SME additionally checks bit-preserving A packing and padded B strides. |
 | `tests/test_matrix.cpp` | Checks alignment, deep copies, shape-preserving empty copies, safe moved-from objects and overflow rejection before allocation. These are storage invariants all kernels depend on. |
 | `tests/test_gemm_cuda.cpp` | Per-kernel shape tables exercise CUDA bounds, vector and pipelined fallbacks, reduced precision, empty products and rectangular vendor calls. Direct device checks cover zero-K clearing and rejection of invalid launch shapes. Missing GPUs skip explicitly. |
+| `tests/test_gemm_metal.cpp` | Every Metal level, MPS and every tile variant against `gemm_naive`, on tile multiples with M, K, N all different, off-tile shapes (fallback) and empty products. Each GEMM runs twice into the same C, so accumulation instead of overwrite fails. 1e-4 relative tolerance, 1e-2 for fp16 inputs. Skips without Metal. |
 | `tests/test_gemm_lowp.cpp`, `tests/test_gemm_lowp_cuda.cpp` | Low-precision kernels against `gemm_lowp_reference` on the same converted inputs: INT8 exact, FP32 accumulation within 2·K·2⁻²⁴·Σ\|ab\|, fp16 accumulation with 2⁻¹¹. Exhaustive conversion round-trips. The CUDA test runs both kernels and cuBLAS, with shapes that select both Level 8 tiles. |
 | `tests/CMakeLists.txt` | Links CPU tests and CUDA-or-stub tests separately. PRE_TEST discovery delays executing binaries until ctest. A binary built for another ISA still needs compatible execution hardware. |
 | `benchmarks/bench_gemm.cpp` | Fixed-size square template registrations allow inlining and constant-size optimization. Allocation/random initialization are outside timing, but each kernel's zeroing and packing are inside. Uses thread CPU time except Accelerate's wall time. Prefetch distances and padded B experiments are separate registrations. |
 | `benchmarks/bench_gemm_cuda.cpp` | Allocates device problems once, warms up, then reports event durations as manual time. Host transfers and preconversion for levels 7-8/cuBLAS FP16 are excluded; level 5/6 tile conversion remains included. Precision counters distinguish storage/compute paths but do not specify error bounds. |
+| `benchmarks/bench_gemm_metal.cpp` | Inputs resident in GPU-visible memory before timing; one warm-up call compiles the pipeline. Each iteration is one command buffer of `reps` GEMMs (≥ ~5 ms, so the command buffer's fixed cost does not dominate at N=256), reported as manual time with the flop counter scaled by reps. Also tile variants and the FMA peak. |
+| `benchmarks/python/bench_frameworks.py` | NumPy, PyTorch, JAX and Triton GEMMs measured like the C++ drivers: device-resident inputs, preallocated output where the API allows, `reps` calls per measurement (≥ 0.2 s), median of 5. GPU time from device events (PyTorch MPS/CUDA, Triton), else wall clock to `block_until_ready` (JAX). CPU rows in child processes with 1 thread and all cores. Reports max relative error at N=256 against a float64 NumPy product. |
+| `benchmarks/python/triton_gemm.py` | The Triton kernel: one program per C tile, grouped program order for L2 reuse, autotuned tiles and pipeline depth, fp32 accumulation; fp32 inputs in IEEE fp32 or TF32. Untested on the recording machine (no NVIDIA GPU). |
 | `benchmarks/bench_gemm_lowp.cpp`, `benchmarks/bench_gemm_lowp_cuda.cpp` | Low-precision kernels with the FP32 kernel of the same unit (CPU), or `Mma` / `Tma` / `Cublas` per format (GPU, event time). Inputs converted before timing. The GPU benchmark also reports `err`: the worst of 256 sampled elements against a double-precision recomputation. |
 | `benchmarks/CMakeLists.txt` | Registers experiments only for compatible architectures/toolchains, GPU experiments only with CUDA, and SME experiments only after the runtime probe passes. GNU inline-assembly CPU probes are omitted on MSVC. |
 
@@ -380,7 +439,7 @@ does not automatically preserve a cycle or cache interpretation.
 
 | Files | Idea and maintenance contract |
 |---|---|
-| `CMakeLists.txt` | Selects optimization flags by language, probes SME2/fp64 by compiling and executing real instructions, finds Accelerate, pins FetchContent releases and chooses CUDA or stub. hpc_math_core carries header paths/link requirements; hpc_math_cuda supplies compiled launchers. Native flags target the build host; this is not an installed package or cross-compilation workflow. |
+| `CMakeLists.txt` | Selects optimization flags by language, probes SME2/fp64 by compiling and executing real instructions, finds Accelerate, pins FetchContent releases and chooses CUDA or stub. hpc_math_core carries header paths/link requirements; hpc_math_cuda supplies compiled launchers; hpc_math_metal (Apple) embeds `gemm.metal` as a string at configure time and compiles the Objective-C++ host. Native flags target the build host; this is not an installed package or cross-compilation workflow. |
 | `.github/workflows/build.yml` | Hosted Linux x86/ARM and macOS correctness builds with cached dependencies and compiler objects. x86-64-v3 bounds the ISA for cached x86 binaries. These jobs do not establish CUDA/SME correctness or performance. |
 | `.github/workflows/pages.yml` | Builds Jekyll from docs and deploys the resulting article site through GitHub Pages on main. It does not run kernel benchmarks. |
 | `.clang-format`, `.clang-tidy` | Formatting and static-analysis policy; their presence does not mean a lint job runs in CI. |
@@ -400,6 +459,9 @@ does not automatically preserve a cycle or cache interpretation.
 | `docs/experiments/sve-tiles/*` | GCC/QEMU correctness logs at six runtime vector lengths, source hashes, flags and a Linux test main that selects VL before running Google Test. These are validation results, not hardware throughput measurements. |
 | `docs/experiments/sme2-machine/*` | Cache/TLB/FMOPA samples and metadata for the M4 machine model. TLB capacities and cluster sharing are experimental inferences. |
 | `docs/experiments/sme-b-stride/*` | Phase timings and stride/height/width/chase data; metadata includes commands and source hashes for historical reproduction. |
+| `docs/experiments/metal-m4/*` | Metal ladder, MPS and FMA peak in one bracketed GPU session, plus the tile-variant sweep; the README records the clock and power caveats. |
+| `docs/experiments/frameworks-m4/*` | NumPy / PyTorch / JAX CSVs and metadata (versions, BLAS) from `bench_frameworks.py` on the M4 Max. |
+| `docs/experiments/sme-mt/*` | `gemm_sme_mt` thread × A-block sweep and the default against `gemm_sme` and Accelerate. |
 | `docs/experiments/cuda-machine/*` | GPU peaks, clock samples, full GEMM output and Nsight counters. Profiling perturbs timings; profile rates and benchmark rates need not coincide. |
 
 Primary specifications for the architectural contracts:

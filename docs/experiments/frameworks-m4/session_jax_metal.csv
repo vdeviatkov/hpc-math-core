@@ -1,0 +1,6 @@
+name,framework,device,dtype,N,precision_bits,ms_median,gflops_median,reps,runs,max_rel_err,status
+JaxMetal/f32/N=256,jax,METAL,f32,256,32,0.0303,1106.8,840,5,7.16e-07,ok
+JaxMetal/f32/N=1024,jax,METAL,f32,1024,32,0.1782,12048.6,635,5,7.16e-07,ok
+JaxMetal/f32/N=2048,jax,METAL,f32,2048,32,3.9078,4396.3,73,5,7.16e-07,ok
+JaxMetal/f32/N=4096,jax,METAL,f32,4096,32,31.4777,4366.2,7,5,7.16e-07,ok
+JaxMetal/f32/N=8192,jax,METAL,f32,8192,32,303.7397,3619.9,1,5,7.16e-07,ok

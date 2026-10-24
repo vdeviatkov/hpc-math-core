@@ -1,0 +1,17 @@
+== gpu ==
+TorchMps/f32/N=256                                0.0145 ms     2307.5 GFLOP/s  reps=336  err=7.16e-07
+TorchMps/f32/N=1024                               0.2603 ms     8250.2 GFLOP/s  reps=533  err=7.16e-07
+TorchMps/f32/N=2048                               3.0623 ms     5610.2 GFLOP/s  reps=74  err=7.16e-07
+TorchMps/f32/N=4096                              27.8016 ms     4943.6 GFLOP/s  reps=9  err=7.16e-07
+TorchMps/f32/N=8192                             272.4507 ms     4035.6 GFLOP/s  reps=1  err=7.16e-07
+TorchMps/f16/N=256                                0.0184 ms     1824.4 GFLOP/s  reps=1223  err=3.94e-04
+TorchMps/f16/N=1024                               0.3647 ms     5888.1 GFLOP/s  reps=347  err=3.94e-04
+TorchMps/f16/N=2048                               2.5328 ms     6783.1 GFLOP/s  reps=71  err=3.94e-04
+TorchMps/f16/N=4096                              20.2737 ms     6779.2 GFLOP/s  reps=11  err=3.94e-04
+TorchMps/f16/N=8192                             229.4616 ms     4791.7 GFLOP/s  reps=1  err=3.94e-04
+TorchMps/bf16/N=256                               0.0191 ms     1752.8 GFLOP/s  reps=921  err=2.88e-03
+TorchMps/bf16/N=1024                              0.4015 ms     5348.4 GFLOP/s  reps=345  err=2.88e-03
+TorchMps/bf16/N=2048                              2.8704 ms     5985.3 GFLOP/s  reps=78  err=2.88e-03
+TorchMps/bf16/N=4096                             24.5638 ms     5595.2 GFLOP/s  reps=9  err=2.88e-03
+TorchMps/bf16/N=8192                            236.0326 ms     4658.3 GFLOP/s  reps=1  err=2.88e-03
+TorchCuda                                    SKIPPED: no CUDA device

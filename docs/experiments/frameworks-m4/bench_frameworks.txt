@@ -1,0 +1,97 @@
+== cpu1 ==
+NumpyMatmul/f32/N=64/threads=1                    0.0015 ms      354.1 GFLOP/s  reps=10000  err=7.16e-07
+NumpyMatmul/f32/N=256/threads=1                   0.0234 ms     1431.7 GFLOP/s  reps=8080  err=7.16e-07
+NumpyMatmul/f32/N=512/threads=1                   0.1592 ms     1686.5 GFLOP/s  reps=1259  err=7.16e-07
+NumpyMatmul/f32/N=1024/threads=1                  1.2840 ms     1672.6 GFLOP/s  reps=153  err=7.16e-07
+NumpyMatmul/f32/N=2048/threads=1                  9.8872 ms     1737.6 GFLOP/s  reps=20  err=7.16e-07
+NumpyMatmul/f32/N=4096/threads=1                 83.0020 ms     1655.9 GFLOP/s  reps=2  err=7.16e-07
+NumpyMatmul/f64/N=64/threads=1                    0.0027 ms      194.4 GFLOP/s  reps=10000  err=0.00e+00
+NumpyMatmul/f64/N=256/threads=1                   0.0820 ms      409.2 GFLOP/s  reps=2413  err=0.00e+00
+NumpyMatmul/f64/N=512/threads=1                   0.6338 ms      423.5 GFLOP/s  reps=316  err=0.00e+00
+NumpyMatmul/f64/N=1024/threads=1                  5.5088 ms      389.8 GFLOP/s  reps=34  err=0.00e+00
+NumpyMatmul/f64/N=2048/threads=1                 41.8176 ms      410.8 GFLOP/s  reps=4  err=0.00e+00
+NumpyMatmul/f64/N=4096/threads=1                336.9647 ms      407.9 GFLOP/s  reps=1  err=0.00e+00
+TorchMm/f32/N=64/threads=1                        0.0013 ms      396.5 GFLOP/s  reps=10000  err=7.16e-07
+TorchMm/f32/N=256/threads=1                       0.0236 ms     1423.2 GFLOP/s  reps=8094  err=7.16e-07
+TorchMm/f32/N=512/threads=1                       0.1595 ms     1682.7 GFLOP/s  reps=1038  err=7.16e-07
+TorchMm/f32/N=1024/threads=1                      1.2861 ms     1669.7 GFLOP/s  reps=155  err=7.16e-07
+TorchMm/f32/N=2048/threads=1                      9.9196 ms     1731.9 GFLOP/s  reps=20  err=7.16e-07
+TorchMm/f32/N=4096/threads=1                     84.5811 ms     1624.9 GFLOP/s  reps=2  err=7.16e-07
+TorchMm/f64/N=64/threads=1                        0.0025 ms      211.5 GFLOP/s  reps=10000  err=0.00e+00
+TorchMm/f64/N=256/threads=1                       0.0819 ms      409.6 GFLOP/s  reps=2416  err=0.00e+00
+TorchMm/f64/N=512/threads=1                       0.6367 ms      421.6 GFLOP/s  reps=310  err=0.00e+00
+TorchMm/f64/N=1024/threads=1                      4.8380 ms      443.9 GFLOP/s  reps=41  err=0.00e+00
+TorchMm/f64/N=2048/threads=1                     41.9461 ms      409.6 GFLOP/s  reps=4  err=0.00e+00
+TorchMm/f64/N=4096/threads=1                    341.2788 ms      402.7 GFLOP/s  reps=1  err=0.00e+00
+JaxMatmul/f32/N=64/threads=1                      0.0033 ms      158.6 GFLOP/s  reps=5240  err=7.16e-07
+JaxMatmul/f32/N=256/threads=1                     0.0629 ms      533.7 GFLOP/s  reps=2403  err=7.16e-07
+JaxMatmul/f32/N=512/threads=1                     0.1680 ms     1597.9 GFLOP/s  reps=1087  err=7.16e-07
+JaxMatmul/f32/N=1024/threads=1                    0.7014 ms     3061.9 GFLOP/s  reps=274  err=7.16e-07
+JaxMatmul/f32/N=2048/threads=1                    5.3642 ms     3202.7 GFLOP/s  reps=37  err=7.16e-07
+JaxMatmul/f32/N=4096/threads=1                   42.5222 ms     3232.2 GFLOP/s  reps=4  err=7.16e-07
+JaxMatmul/f64/N=64/threads=1                      0.0142 ms       36.8 GFLOP/s  reps=6030  err=0.00e+00
+JaxMatmul/f64/N=256/threads=1                     0.2932 ms      114.4 GFLOP/s  reps=658  err=0.00e+00
+JaxMatmul/f64/N=512/threads=1                     0.5149 ms      521.3 GFLOP/s  reps=319  err=0.00e+00
+JaxMatmul/f64/N=1024/threads=1                    3.2481 ms      661.1 GFLOP/s  reps=66  err=0.00e+00
+JaxMatmul/f64/N=2048/threads=1                   35.3638 ms      485.8 GFLOP/s  reps=6  err=0.00e+00
+JaxMatmul/f64/N=4096/threads=1                  806.7564 ms      170.4 GFLOP/s  reps=1  err=0.00e+00
+== cpuall ==
+NumpyMatmul/f32/N=64/threads=all                  0.0015 ms      346.0 GFLOP/s  reps=10000  err=7.16e-07
+NumpyMatmul/f32/N=256/threads=all                 0.0234 ms     1434.6 GFLOP/s  reps=9716  err=7.16e-07
+NumpyMatmul/f32/N=512/threads=all                 0.1029 ms     2607.9 GFLOP/s  reps=1095  err=7.16e-07
+NumpyMatmul/f32/N=1024/threads=all                0.7202 ms     2982.0 GFLOP/s  reps=290  err=7.16e-07
+NumpyMatmul/f32/N=2048/threads=all                5.9099 ms     2906.9 GFLOP/s  reps=35  err=7.16e-07
+NumpyMatmul/f32/N=4096/threads=all               50.4499 ms     2724.3 GFLOP/s  reps=4  err=7.16e-07
+NumpyMatmul/f64/N=64/threads=all                  0.0032 ms      165.5 GFLOP/s  reps=10000  err=0.00e+00
+NumpyMatmul/f64/N=256/threads=all                 0.0831 ms      403.6 GFLOP/s  reps=2205  err=0.00e+00
+NumpyMatmul/f64/N=512/threads=all                 0.3692 ms      727.2 GFLOP/s  reps=566  err=0.00e+00
+NumpyMatmul/f64/N=1024/threads=all                3.0086 ms      713.8 GFLOP/s  reps=67  err=0.00e+00
+NumpyMatmul/f64/N=2048/threads=all               24.7522 ms      694.1 GFLOP/s  reps=8  err=0.00e+00
+NumpyMatmul/f64/N=4096/threads=all              191.3775 ms      718.2 GFLOP/s  reps=1  err=0.00e+00
+TorchMm/f32/N=64/threads=all                      0.0016 ms      336.7 GFLOP/s  reps=10000  err=7.16e-07
+TorchMm/f32/N=256/threads=all                     0.0262 ms     1278.6 GFLOP/s  reps=6629  err=7.16e-07
+TorchMm/f32/N=512/threads=all                     0.1055 ms     2544.2 GFLOP/s  reps=1829  err=7.16e-07
+TorchMm/f32/N=1024/threads=all                    0.7552 ms     2843.5 GFLOP/s  reps=274  err=7.16e-07
+TorchMm/f32/N=2048/threads=all                    6.4413 ms     2667.1 GFLOP/s  reps=32  err=7.16e-07
+TorchMm/f32/N=4096/threads=all                   53.1898 ms     2583.9 GFLOP/s  reps=3  err=7.16e-07
+TorchMm/f64/N=64/threads=all                      0.0032 ms      165.6 GFLOP/s  reps=10000  err=0.00e+00
+TorchMm/f64/N=256/threads=all                     0.0843 ms      398.0 GFLOP/s  reps=2196  err=0.00e+00
+TorchMm/f64/N=512/threads=all                     0.3687 ms      728.1 GFLOP/s  reps=607  err=0.00e+00
+TorchMm/f64/N=1024/threads=all                    2.8670 ms      749.0 GFLOP/s  reps=69  err=0.00e+00
+TorchMm/f64/N=2048/threads=all                   24.5683 ms      699.3 GFLOP/s  reps=8  err=0.00e+00
+TorchMm/f64/N=4096/threads=all                  189.2967 ms      726.1 GFLOP/s  reps=1  err=0.00e+00
+JaxMatmul/f32/N=64/threads=all                    0.0034 ms      156.4 GFLOP/s  reps=5100  err=7.16e-07
+JaxMatmul/f32/N=256/threads=all                   0.0629 ms      533.8 GFLOP/s  reps=2171  err=7.16e-07
+JaxMatmul/f32/N=512/threads=all                   0.1894 ms     1417.4 GFLOP/s  reps=1053  err=7.16e-07
+JaxMatmul/f32/N=1024/threads=all                  1.1429 ms     1879.0 GFLOP/s  reps=211  err=7.16e-07
+JaxMatmul/f32/N=2048/threads=all                  9.2202 ms     1863.3 GFLOP/s  reps=22  err=7.16e-07
+JaxMatmul/f32/N=4096/threads=all                 68.3890 ms     2009.7 GFLOP/s  reps=3  err=7.16e-07
+JaxMatmul/f64/N=64/threads=all                    0.0242 ms       21.7 GFLOP/s  reps=1022  err=0.00e+00
+JaxMatmul/f64/N=256/threads=all                   0.4005 ms       83.8 GFLOP/s  reps=411  err=0.00e+00
+JaxMatmul/f64/N=512/threads=all                   1.3990 ms      191.9 GFLOP/s  reps=317  err=0.00e+00
+JaxMatmul/f64/N=1024/threads=all                  9.6183 ms      223.3 GFLOP/s  reps=21  err=0.00e+00
+JaxMatmul/f64/N=2048/threads=all                 80.8599 ms      212.5 GFLOP/s  reps=2  err=0.00e+00
+JaxMatmul/f64/N=4096/threads=all                775.6881 ms      177.2 GFLOP/s  reps=1  err=0.00e+00
+== gpu ==
+TorchMps/f32: accuracy check failed: Cannot convert a MPS Tensor to float64 dtype as the MPS framework doesn't support float64. Please use float32 instead.
+TorchMps/f32/N=256                                0.0141 ms     2378.7 GFLOP/s  reps=1035  err=
+TorchMps/f32/N=1024                               0.1817 ms    11818.7 GFLOP/s  reps=183  err=
+TorchMps/f32/N=2048                               3.2336 ms     5312.9 GFLOP/s  reps=127  err=
+TorchMps/f32/N=4096                              27.3959 ms     5016.8 GFLOP/s  reps=7  err=
+TorchMps/f32/N=8192                             213.0045 ms     5161.9 GFLOP/s  reps=1  err=
+TorchMps/f16: accuracy check failed: Cannot convert a MPS Tensor to float64 dtype as the MPS framework doesn't support float64. Please use float32 instead.
+TorchMps/f16/N=256                                0.0155 ms     2168.7 GFLOP/s  reps=966  err=
+TorchMps/f16/N=1024                               0.3517 ms     6106.8 GFLOP/s  reps=378  err=
+TorchMps/f16/N=2048                               2.3651 ms     7264.0 GFLOP/s  reps=78  err=
+TorchMps/f16/N=4096                              19.1588 ms     7173.7 GFLOP/s  reps=11  err=
+TorchMps/f16/N=8192                             175.1215 ms     6278.6 GFLOP/s  reps=1  err=
+TorchMps/bf16: accuracy check failed: Cannot convert a MPS Tensor to float64 dtype as the MPS framework doesn't support float64. Please use float32 instead.
+TorchMps/bf16/N=256                               0.0148 ms     2259.8 GFLOP/s  reps=1194  err=
+TorchMps/bf16/N=1024                              0.3464 ms     6198.7 GFLOP/s  reps=377  err=
+TorchMps/bf16/N=2048                              2.5131 ms     6836.1 GFLOP/s  reps=72  err=
+TorchMps/bf16/N=4096                             19.2736 ms     7130.9 GFLOP/s  reps=11  err=
+TorchMps/bf16/N=8192                            180.6947 ms     6084.9 GFLOP/s  reps=1  err=
+TorchCuda                                    SKIPPED: no CUDA device
+JaxGpu                                       SKIPPED: no JAX GPU backend (CUDA, or jax-metal on Apple)
+TritonGemm                                   SKIPPED: Triton needs an NVIDIA GPU (no CUDA device)
+wrote docs/experiments/frameworks-m4/bench_frameworks.csv and docs/experiments/frameworks-m4/bench_frameworks_metadata.json
