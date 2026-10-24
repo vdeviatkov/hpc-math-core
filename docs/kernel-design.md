@@ -161,15 +161,26 @@ AArch64 is required because these kernels include double-precision FMA.
 
 ### `src/gemm/sve.hpp`
 
-SVE reads the calling thread's vector length at runtime. The blocked tile
-is four rows by two vectors, inside 64x256x512 outer tiles. Predicates mask
-incomplete column vectors, so there is no scalar column cleanup; leftover
-rows use scalar loops. The naive kernel uses a reusable vector buffer for
-its manual column gather. Inactive predicates prevent memory accesses,
-but C++ still requires valid pointer arithmetic: an entirely inactive second
-vector reuses the first vector's address. Callers must keep VL stable for
-the duration of a call. This family has not been measured on physical SVE
-hardware in this project; NEON or SME results do not validate its speed.
+SVE reads the calling thread's vector length at runtime. Blocked entry
+points take register shape R/V and cache sizes as template arguments, with
+unchanged defaults 4x2 and 64x256x512. The C micro-tile is R rows by V scalable
+vectors; partial row tiles use smaller row specializations, and predicates
+handle every column tail. Ordinary and prefetch wrappers share
+`detail::sve_blocked_gemm`; PfDist=0 removes all hints at compile time.
+
+Unlike fixed-width SIMD, SVE's sizeless vectors cannot be array elements.
+`sve_micro<R,V>` therefore expands accumulator and operand parameter packs:
+R*V independent accumulators, V B loads reused across rows, and one A
+broadcast per row and K step. The compile-time expansion leaves only K as a
+runtime loop. Inactive vector addresses are clamped to the valid row end;
+stores use the same predicates as loads. No temporary accumulator buffer
+is deliberately allocated, although oversized shapes can cause compiler
+spills. The naive kernel retains a buffer for its manual column gather.
+
+Callers must keep VL stable during a call. [SVE sweep instructions](kernels/sve.md)
+record actual vector length and tile width with each result. This family has
+no physical SVE performance measurements; NEON, SME and emulator timings do
+not establish an SVE tile optimum.
 
 ### `src/gemm/prefetch.hpp`
 
@@ -180,8 +191,9 @@ The hints cover particular lines, not whole tiles. `pf<Rw,Loc>` maps to
 `__builtin_prefetch`, or x86 `_mm_prefetch` under MSVC; the latter ignores
 the write intent. Locality is a compiler/architecture-dependent hint,
 not a guaranteed cache destination. Distances 2/4/8/16 are benchmarked;
-the recorded runs show little benefit. Repeated outer loops are deliberate:
-they keep the prefetch placement visible without changing the base kernel.
+the recorded runs show little benefit. Fixed-width SIMD and SVE each share
+a driver with their ordinary blocked entry points; only the scalar variant
+keeps a separate traversal.
 
 ## Matrix engines and vendor references
 
@@ -379,6 +391,7 @@ does not automatically preserve a cycle or cache interpretation.
 | `docs/experiments/sme2-gemm/*` | Raw SME ladder, block-sweep and vendor-comparison samples behind part 2; the README records their provenance. |
 | `docs/experiments/zen5-b-stride/*` | Pointer chase and stride / size / height sweeps behind part 3's Zen 5 section; the README lists the cache geometry and method. |
 | `docs/experiments/lowp/*` | Instruction peaks, CPU and GPU GEMM runs, accuracy and Nsight counters behind part 5; the README lists machines, builds and method. |
+| `docs/experiments/sve-tiles/*` | GCC/QEMU correctness logs at six runtime vector lengths, source hashes, flags and a Linux test main that selects VL before running Google Test. These are validation results, not hardware throughput measurements. |
 | `docs/experiments/sme2-machine/*` | Cache/TLB/FMOPA samples and metadata for the M4 machine model. TLB capacities and cluster sharing are experimental inferences. |
 | `docs/experiments/sme-b-stride/*` | Phase timings and stride/height/width/chase data; metadata includes commands and source hashes for historical reproduction. |
 | `docs/experiments/cuda-machine/*` | GPU peaks, clock samples, full GEMM output and Nsight counters. Profiling perturbs timings; profile rates and benchmark rates need not coincide. |

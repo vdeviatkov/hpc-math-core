@@ -149,9 +149,25 @@ void add(const std::string& name, const char* unavailable, Kernel kernel, Sizes<
         fn<T, R, V>(A, B, C);                                                                 \
     }
 
+/// Record both the compile-time tile and its actual width at the current VL.
+template <int R, int V>
+struct SveTileCounters {
+    template <typename T>
+    void operator()(benchmark::State& s, T) const {
+        s.counters["mr"] = R;
+        s.counters["vectors"] = V;
+        s.counters["accumulators"] = R * V;
+#if HPC_HAS_SVE
+        const double vl = sizeof(T) == 4 ? svcntw() : svcntd();
+        s.counters["vl"] = vl;
+        s.counters["nr"] = V * vl;
+#endif
+    }
+};
+
 /// Register-tile sweep: <Isa>Tile<R>x<V>/<type>/N=<n>, the library's blocked
 /// kernel with every listed tile shape (the defaults are 6x2 AVX2, 8x3
-/// AVX-512, 6x4 NEON). Results and the reasoning: docs/kernels/.
+/// AVX-512, 6x4 NEON, 4x2 SVE). Results and the reasoning: docs/kernels/.
 void add_tiles() {
     using namespace hpc::gemm;
     constexpr Sizes<64, 256, 512, 1024, 4096> tiles{};  // the sizes of the main tables
@@ -159,6 +175,8 @@ void add_tiles() {
     add<kHaveAvx2>("Avx2Tile" #R "x" #V, kNoAvx2, HPC_TILE(gemm_avx2_blocked, R, V), tiles)
 #define HPC_AVX512_TILE(R, V)                                                                 \
     add<kHaveAvx512>("Avx512Tile" #R "x" #V, kNoAvx512, HPC_TILE(gemm_avx512_blocked, R, V), tiles)
+#define HPC_SVE_TILE(R, V) \
+    add<kHaveSve>("SveTile" #R "x" #V, kNoSve, HPC_TILE(gemm_sve_blocked, R, V), tiles, SveTileCounters<R, V>{})
 #define HPC_NEON_TILE(R, V)                                                                   \
     add<kHaveNeon>("NeonTile" #R "x" #V, kNoNeon, HPC_TILE(gemm_neon_blocked, R, V), tiles)
     // AVX2: 16 YMM registers; a tile needs R·V accumulators + V for B + 1.
@@ -173,6 +191,12 @@ void add_tiles() {
     HPC_NEON_TILE(4, 2); HPC_NEON_TILE(2, 4); HPC_NEON_TILE(4, 4); HPC_NEON_TILE(8, 2);
     HPC_NEON_TILE(6, 3); HPC_NEON_TILE(8, 3); HPC_NEON_TILE(5, 4); HPC_NEON_TILE(6, 4);
     HPC_NEON_TILE(12, 2); HPC_NEON_TILE(2, 8);
+    // SVE: 32 scalable Z registers; V counts vectors, not element columns.
+    // Include the unchanged 4x2 default, narrow/tall and wide/short shapes.
+    HPC_SVE_TILE(1, 1); HPC_SVE_TILE(4, 2); HPC_SVE_TILE(2, 4); HPC_SVE_TILE(4, 4);
+    HPC_SVE_TILE(6, 3); HPC_SVE_TILE(8, 2); HPC_SVE_TILE(8, 3); HPC_SVE_TILE(6, 4);
+    HPC_SVE_TILE(12, 2); HPC_SVE_TILE(2, 8); HPC_SVE_TILE(16, 1);
+#undef HPC_SVE_TILE
 #undef HPC_AVX2_TILE
 #undef HPC_AVX512_TILE
 #undef HPC_NEON_TILE
@@ -185,12 +209,12 @@ struct Vals {};
 /// Ms × Ks × Ns. `make` is a template lambda <M, K, N>() returning the
 /// kernel lambda for that block.
 template <bool Available, std::size_t... Ms, std::size_t... Ks, std::size_t... Ns, typename Make,
-          std::size_t... Sz>
+          std::size_t... Sz, typename Counters = NoCounters>
 void add_block_grid(const std::string& prefix, const char* unavailable, Vals<Ms...>, Vals<Ks...>,
-                    Vals<Ns...>, Sizes<Sz...> sizes, Make make) {
+                    Vals<Ns...>, Sizes<Sz...> sizes, Make make, Counters counters = {}) {
     auto one = [&]<std::size_t M, std::size_t K, std::size_t N>() {
         add<Available>(prefix + std::to_string(M) + "x" + std::to_string(K) + "x" + std::to_string(N),
-                       unavailable, make.template operator()<M, K, N>(), sizes);
+                       unavailable, make.template operator()<M, K, N>(), sizes, counters);
     };
     auto for_k = [&]<std::size_t M, std::size_t K>() { (one.template operator()<M, K, Ns>(), ...); };
     auto for_m = [&]<std::size_t M>() { (for_k.template operator()<M, Ks>(), ...); };
@@ -207,8 +231,8 @@ void add_block_grid(const std::string& prefix, const char* unavailable, Vals<Ms.
 
 /// Cache-block sweep: <Isa>Block<M>x<K>x<N>/<type>/N=<n>, the library's
 /// blocked kernel at its default register tile with every block in a
-/// 7 × 4 × 4 grid. M values are the default 64 and multiples of the
-/// tile's rows R.
+/// per-ISA grid. SVE uses 5 × 4 × 4 combinations; the other families use
+/// 7 × 4 × 4. Register shape stays fixed while cache blocks vary.
 /// Results and the reasoning: docs/kernels/.
 void add_blocks() {
     using namespace hpc::gemm;
@@ -221,6 +245,8 @@ void add_blocks() {
                                 HPC_BLOCK(gemm_avx512_blocked, 8, 3));
     add_block_grid<kHaveNeon>("NeonBlock", kNoNeon, Vals<48, 64, 96, 192, 384, 768, 1536>{}, ks, ns, sizes,
                               HPC_BLOCK(gemm_neon_blocked, 6, 4));
+    add_block_grid<kHaveSve>("SveBlock", kNoSve, Vals<16, 32, 64, 128, 256>{}, ks, ns, sizes,
+                             HPC_BLOCK(gemm_sve_blocked, 4, 2), SveTileCounters<4, 2>{});
 }
 
 /// Vector length in elements: "vl" for SVE, "svl" for SME's streaming length.
@@ -254,6 +280,18 @@ struct SmeSvl {
         hpc::gemm::fn<T, D>(A, B, C);                                    \
     }
 
+template <int R, int V, std::size_t D>
+void add_sve_prefetch_tile() {
+    add<kHaveSve>("SveTile" + std::to_string(R) + "x" + std::to_string(V) + "Pf" + std::to_string(D),
+        kNoSve,
+        []<typename T>(const hpc::Matrix<T>& A, const hpc::Matrix<T>& B, hpc::Matrix<T>& C) {
+            hpc::gemm::gemm_sve_blocked_prefetch<T, D, R, V>(A, B, C);
+        }, Sizes<256, 512, 1024>{}, [](benchmark::State& s, auto value) {
+            SveTileCounters<R, V>{}(s, value);
+            s.counters["pf_dist"] = D;
+        });
+}
+
 template <std::size_t D>
 void add_prefetch() {
     constexpr Sizes<256, 512, 1024> opt{};
@@ -265,6 +303,9 @@ void add_prefetch() {
                      opt, pf);
     add<kHaveNeon>("NeonBlockedPf" + d, kNoNeon, HPC_PF_KERNEL(gemm_neon_blocked_prefetch), opt, pf);
     add<kHaveSve>("SveBlockedPf" + d, kNoSve, HPC_PF_KERNEL(gemm_sve_blocked_prefetch), opt, pf);
+    add_sve_prefetch_tile<4, 2, D>();
+    add_sve_prefetch_tile<6, 4, D>();
+    add_sve_prefetch_tile<2, 8, D>();
 }
 
 // ---------------------------------------------------------------------------

@@ -18,7 +18,7 @@
  *                      loaded as a vector; svaddv reduces the accumulator.
  *  gemm_sve_reordered  i → k → j: broadcast A(i,k), FMA against B and C rows.
  *  gemm_sve_blocked    tiled i → k → j with a 4-row × 2-vector C register
- *                      tile whose width follows the hardware vector length.
+ *                      tile by default; R and V are template parameters.
  *
  * Not measured: no SVE hardware was available. Apple Silicon has no
  * non-streaming SVE (see sme.hpp).
@@ -28,6 +28,7 @@
  * Where it is 0 the kernels are declared `= delete`.
  */
 
+#include "gemm/blocked_driver.hpp"
 #include "hpc/isa.hpp"
 #include "hpc/matrix.hpp"
 
@@ -40,6 +41,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace hpc::gemm {
@@ -204,16 +206,15 @@ void gemm_sve_reordered(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
 // ============================================================================
 // For Kernel 3: tile sizes (also used by gemm_sve_blocked_prefetch)
 // ============================================================================
-// The j-step is svcntw()/svcntd() × kSveRegCols, read at runtime; only the
-// outer blocking tile sizes are compile-time constants.
+// The j-step is V * svcntw()/svcntd(), read at runtime. Register shape R/V
+// and the outer blocking tile sizes are compile-time parameters.
 
 inline constexpr std::size_t kSveTileM = 64;   // outer i-tile (rows of A / C)
 inline constexpr std::size_t kSveTileK = 256;  // outer k-tile (contraction width)
 inline constexpr std::size_t kSveTileN = 512;  // outer j-tile (cols of B / C)
 
-// Number of C rows accumulated simultaneously in the blocked micro-kernel.
-// 4 rows × 2 vectors; at 256-bit VL that is 4 × 16 f32 (256 B), the same
-// tile as AVX2 blocked.
+// Default register tile, retained without claiming an unmeasured optimum:
+// 4 rows × 2 vectors; at 256-bit VL this is 4 × 16 f32 (256 B).
 inline constexpr std::size_t kSveRegRows = 4;
 // Number of SVE vectors per C row in the micro-kernel.
 // 2 vectors × VL elements = 2*svcntw() f32 or 2*svcntd() f64 per row.
@@ -225,118 +226,164 @@ inline constexpr std::size_t kSveRegCols = 2;
 
 #if HPC_HAS_SVE
 
-/**
- * @brief SVE f32 micro-kernel: C[i..i+3][j..j+2*VL) += A[i..i+3][k_blk..k_end) × B[..][j..)
- *
- * Register tile: 4 rows × 2 SVE vectors = 4 × (2 * svcntw()) f32.
- *
- * 128-bit SVE: 4 × 8 f32 (128 B); 256-bit: 4 × 16 (256 B); 512-bit: 4 × 32 (512 B).
- *
- * pg0/pg1 are all-true except in the j-tail, where they come from
- * svwhilelt_b32. svmla_f32_x leaves inactive lanes undefined; that is safe
- * because the final stores use the same predicates, so those lanes are
- * never written to C.
- *
- * @param a      A(i, k_blk) — row stride lda
- * @param b      B(k_blk, j), with the second vector at b + svcntw()
- * @param c0..c3 C(i+0..3, j)
- * @param pg0/1  Predicates for the two B/C vector blocks (all-true or tail)
- */
-inline void sve_micro_f32_4x2v(const float* __restrict__ a, const float* __restrict__ b,
-                               float* __restrict__ c0, float* __restrict__ c1,
-                               float* __restrict__ c2, float* __restrict__ c3, std::size_t lda,
-                               std::size_t ldb, std::size_t k_len, svbool_t pg0,
-                               svbool_t pg1) noexcept {
-    const std::uint64_t vl = svptest_any(svptrue_b32(), pg1) ? svcntw() : 0;
-    // Reuse the first address for an inactive second vector: even masked
-    // loads/stores must not form a pointer beyond the allocation.
+namespace sve_detail {
 
-    // Load 4×2 SVE-vector C tile.
-    svfloat32_t c00 = svld1_f32(pg0, c0), c01 = svld1_f32(pg1, c0 + vl);
-    svfloat32_t c10 = svld1_f32(pg0, c1), c11 = svld1_f32(pg1, c1 + vl);
-    svfloat32_t c20 = svld1_f32(pg0, c2), c21 = svld1_f32(pg1, c2 + vl);
-    svfloat32_t c30 = svld1_f32(pg0, c3), c31 = svld1_f32(pg1, c3 + vl);
-
-    for (std::size_t k = 0; k < k_len; ++k) {
-        // Load 2 SVE vectors of B row k.
-        const svfloat32_t b0 = svld1_f32(pg0, b + k * ldb);
-        const svfloat32_t b1 = svld1_f32(pg1, b + k * ldb + vl);
-
-        // Broadcast A(i+r, k) to all lanes — single scalar → full vector.
-        const svfloat32_t a0 = svdup_n_f32(a[0 * lda + k]);
-        const svfloat32_t a1 = svdup_n_f32(a[1 * lda + k]);
-        const svfloat32_t a2 = svdup_n_f32(a[2 * lda + k]);
-        const svfloat32_t a3 = svdup_n_f32(a[3 * lda + k]);
-
-        // 8 predicated FMA instructions.
-        c00 = svmla_f32_x(pg0, c00, a0, b0);
-        c01 = svmla_f32_x(pg1, c01, a0, b1);
-        c10 = svmla_f32_x(pg0, c10, a1, b0);
-        c11 = svmla_f32_x(pg1, c11, a1, b1);
-        c20 = svmla_f32_x(pg0, c20, a2, b0);
-        c21 = svmla_f32_x(pg1, c21, a2, b1);
-        c30 = svmla_f32_x(pg0, c30, a3, b0);
-        c31 = svmla_f32_x(pg1, c31, a3, b1);
+// SVE vectors and predicates are sizeless: C++ arrays/aggregate members are
+// forbidden. Parameter packs give every accumulator a separate local instead.
+template <typename T>
+struct Ops;
+template <>
+struct Ops<float> {
+    static std::size_t lanes() { return svcntw(); }
+    static svbool_t predicate(std::uint64_t first, std::uint64_t end) {
+        return svwhilelt_b32(first, end);
     }
+    static svfloat32_t load(svbool_t pg, const float* p) { return svld1_f32(pg, p); }
+    static void store(svbool_t pg, float* p, svfloat32_t x) { svst1_f32(pg, p, x); }
+    static svfloat32_t splat(float x) { return svdup_f32(x); }
+    static svfloat32_t fma(svbool_t pg, svfloat32_t acc, svfloat32_t a, svfloat32_t b) {
+        return svmla_f32_x(pg, acc, a, b);
+    }
+};
+template <>
+struct Ops<double> {
+    static std::size_t lanes() { return svcntd(); }
+    static svbool_t predicate(std::uint64_t first, std::uint64_t end) {
+        return svwhilelt_b64(first, end);
+    }
+    static svfloat64_t load(svbool_t pg, const double* p) { return svld1_f64(pg, p); }
+    static void store(svbool_t pg, double* p, svfloat64_t x) { svst1_f64(pg, p, x); }
+    static svfloat64_t splat(double x) { return svdup_f64(x); }
+    static svfloat64_t fma(svbool_t pg, svfloat64_t acc, svfloat64_t a, svfloat64_t b) {
+        return svmla_f64_x(pg, acc, a, b);
+    }
+};
 
-    // Store 4×2 SVE-vector C tile back.
-    svst1_f32(pg0, c0, c00);
-    svst1_f32(pg1, c0 + vl, c01);
-    svst1_f32(pg0, c1, c10);
-    svst1_f32(pg1, c1 + vl, c11);
-    svst1_f32(pg0, c2, c20);
-    svst1_f32(pg1, c2 + vl, c21);
-    svst1_f32(pg0, c3, c30);
-    svst1_f32(pg1, c3 + vl, c31);
+// Compile-time indexing into a pack; always inlined, with no runtime lookup.
+template <std::size_t I, typename First, typename... Rest>
+[[gnu::always_inline]] inline decltype(auto) at(First& first, Rest&... rest) noexcept {
+    if constexpr (I == 0)
+        return (first);
+    else
+        return at<I - 1>(rest...);
 }
 
-/**
- * @brief SVE f64 micro-kernel: C[i..i+3][j..j+2*VL) += A[i..i+3][k_blk..k_end) × B[..][j..)
- *
- * Register tile: 4 rows × 2 SVE vectors = 4 × (2 * svcntd()) f64.
- * Same structure as f32 but using f64 intrinsics and svcntd() for VL.
- */
-inline void sve_micro_f64_4x2v(const double* __restrict__ a, const double* __restrict__ b,
-                               double* __restrict__ c0, double* __restrict__ c1,
-                               double* __restrict__ c2, double* __restrict__ c3, std::size_t lda,
-                               std::size_t ldb, std::size_t k_len, svbool_t pg0,
-                               svbool_t pg1) noexcept {
-    const std::uint64_t vl = svptest_any(svptrue_b64(), pg1) ? svcntd() : 0;
-
-    svfloat64_t c00 = svld1_f64(pg0, c0), c01 = svld1_f64(pg1, c0 + vl);
-    svfloat64_t c10 = svld1_f64(pg0, c1), c11 = svld1_f64(pg1, c1 + vl);
-    svfloat64_t c20 = svld1_f64(pg0, c2), c21 = svld1_f64(pg1, c2 + vl);
-    svfloat64_t c30 = svld1_f64(pg0, c3), c31 = svld1_f64(pg1, c3 + vl);
-
+template <int V, typename T, std::size_t... I, std::size_t... Rows, std::size_t... Cols,
+          typename... Acc>
+[[gnu::always_inline]] inline void accumulate(const T* a, const T* b, T* c, std::size_t lda,
+                                              std::size_t ldb, std::size_t ldc, std::size_t k_len,
+                                              std::size_t cols, std::size_t vl,
+                                              std::index_sequence<I...>,
+                                              std::index_sequence<Rows...>,
+                                              std::index_sequence<Cols...>, Acc... acc) noexcept {
+    using O       = Ops<T>;
+    const auto pg = [=](std::size_t v) {
+        return O::predicate(v * vl, cols);
+    };
+    // Entirely inactive vectors use a valid row-end pointer, never an address
+    // beyond the allocation. Stores use the same predicates as the loads.
+    const auto offset = [=](std::size_t v) {
+        return std::min(v * vl, cols);
+    };
     for (std::size_t k = 0; k < k_len; ++k) {
-        const svfloat64_t b0 = svld1_f64(pg0, b + k * ldb);
-        const svfloat64_t b1 = svld1_f64(pg1, b + k * ldb + vl);
-
-        const svfloat64_t a0 = svdup_n_f64(a[0 * lda + k]);
-        const svfloat64_t a1 = svdup_n_f64(a[1 * lda + k]);
-        const svfloat64_t a2 = svdup_n_f64(a[2 * lda + k]);
-        const svfloat64_t a3 = svdup_n_f64(a[3 * lda + k]);
-
-        c00 = svmla_f64_x(pg0, c00, a0, b0);
-        c01 = svmla_f64_x(pg1, c01, a0, b1);
-        c10 = svmla_f64_x(pg0, c10, a1, b0);
-        c11 = svmla_f64_x(pg1, c11, a1, b1);
-        c20 = svmla_f64_x(pg0, c20, a2, b0);
-        c21 = svmla_f64_x(pg1, c21, a2, b1);
-        c30 = svmla_f64_x(pg0, c30, a3, b0);
-        c31 = svmla_f64_x(pg1, c31, a3, b1);
+        const auto step = [&](auto... bv) {
+            const auto row = [&]<std::size_t R>() {
+                const auto ar = O::splat(a[R * lda + k]);
+                ((at<R * V + Cols>(acc...) = O::fma(pg(Cols), at<R * V + Cols>(acc...), ar,
+                                                    at<Cols>(bv...))),
+                 ...);
+            };
+            (row.template operator()<Rows>(), ...);
+        };
+        // Load V vectors of B once, then reuse each across all rows.
+        step(O::load(pg(Cols), b + k * ldb + offset(Cols))...);
     }
-
-    svst1_f64(pg0, c0, c00);
-    svst1_f64(pg1, c0 + vl, c01);
-    svst1_f64(pg0, c1, c10);
-    svst1_f64(pg1, c1 + vl, c11);
-    svst1_f64(pg0, c2, c20);
-    svst1_f64(pg1, c2 + vl, c21);
-    svst1_f64(pg0, c3, c30);
-    svst1_f64(pg1, c3 + vl, c31);
+    (O::store(pg(I % V), c + (I / V) * ldc + offset(I % V), acc), ...);
 }
 
+template <int R, int V, typename T, std::size_t... I>
+[[gnu::always_inline]] inline void micro(const T* a, const T* b, T* c, std::size_t lda,
+                                         std::size_t ldb, std::size_t ldc, std::size_t k_len,
+                                         std::size_t cols,
+                                         std::index_sequence<I...> indices) noexcept {
+    using O              = Ops<T>;
+    const std::size_t vl = O::lanes();
+    accumulate<V>(a, b, c, lda, ldb, ldc, k_len, cols, vl, indices, std::make_index_sequence<R>{},
+                  std::make_index_sequence<V>{},
+                  O::load(O::predicate((I % V) * vl, cols),
+                          c + (I / V) * ldc + std::min((I % V) * vl, cols))...);
+}
+
+}  // namespace sve_detail
+
+/// C[R][cols] += A[R][k_len] * B[k_len][cols], R rows by V scalable vectors.
+/// cols must be in 1..V*VL and all R rows must exist. Omit cols for a full tile.
+/// R*V independent accumulators remain live through the K loop; inactive column
+/// lanes are predicated. Very large shapes may spill, just as with other ISAs.
+template <int R, int V, typename T>
+inline void sve_micro(const T* __restrict__ a, const T* __restrict__ b, T* __restrict__ c,
+                      std::size_t lda, std::size_t ldb, std::size_t ldc, std::size_t k_len,
+                      std::size_t cols = V * sve_detail::Ops<T>::lanes()) noexcept {
+    static_assert(R > 0 && V > 0, "SVE register tile dimensions must be positive");
+    static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>);
+    sve_detail::micro<R, V>(a, b, c, lda, ldb, ldc, k_len, cols, std::make_index_sequence<R * V>{});
+}
+
+namespace detail {
+
+// Select a smaller row specialization for a partial register tile. Column
+// tails stay predicated, including entirely inactive vectors in a wide tile.
+template <int R, int V, typename T>
+[[gnu::always_inline]] inline void sve_run_rows(int rows, const T* a, const T* b, T* c,
+                                                std::size_t lda, std::size_t ldb, std::size_t ldc,
+                                                std::size_t k_len, std::size_t cols) noexcept {
+    if (rows == R)
+        sve_micro<R, V>(a, b, c, lda, ldb, ldc, k_len, cols);
+    else if constexpr (R > 1)
+        sve_run_rows<R - 1, V>(rows, a, b, c, lda, ldb, ldc, k_len, cols);
+}
+
+/// Shared traversal; PfDist counts R-row strips. Zero removes all prefetch
+/// hints. Cache tiles and the register tile are independent template parameters.
+template <typename T, int R, int V, std::size_t TileM, std::size_t TileK, std::size_t TileN,
+          std::size_t PfDist = 0>
+void sve_blocked_gemm(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
+    static_assert(R > 0 && V > 0, "SVE register tile dimensions must be positive");
+    static_assert(TileM > 0 && TileK > 0 && TileN > 0,
+                  "SVE cache tile dimensions must be positive");
+    static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>);
+    const std::size_t M = A.rows(), K = A.cols(), N = B.cols();
+    assert(B.rows() == K && C.rows() == M && C.cols() == N);
+    C.zero();
+
+    const std::size_t j_step = V * sve_detail::Ops<T>::lanes();
+    for (std::size_t i_blk = 0; i_blk < M; i_blk += TileM) {
+        const std::size_t i_end = std::min(i_blk + TileM, M);
+        for (std::size_t k_blk = 0; k_blk < K; k_blk += TileK) {
+            const std::size_t k_len = std::min(TileK, K - k_blk);
+            if constexpr (PfDist > 0)
+                if (k_blk + TileK < K)
+                    pf<0, 2>(B.data() + (k_blk + TileK) * N);
+            for (std::size_t j_blk = 0; j_blk < N; j_blk += TileN) {
+                const std::size_t j_end = std::min(j_blk + TileN, N);
+                for (std::size_t i = i_blk; i < i_end; i += R) {
+                    if constexpr (PfDist > 0)
+                        if (i + R * PfDist < i_end) {
+                            pf<0, 2>(A.data() + (i + R * PfDist) * K + k_blk);
+                            pf<1, 3>(C.data() + (i + R * PfDist) * N + j_blk);
+                        }
+                    const int rows = static_cast<int>(std::min<std::size_t>(R, i_end - i));
+                    for (std::size_t j = j_blk; j < j_end; j += j_step)
+                        sve_run_rows<R, V>(rows, A.data() + i * K + k_blk, B.data() + k_blk * N + j,
+                                           C.data() + i * N + j, K, N, N, k_len,
+                                           std::min(j_step, j_end - j));
+                }
+            }
+        }
+    }
+}
+
+}  // namespace detail
 #endif  // HPC_HAS_SVE
 
 // ============================================================================
@@ -347,113 +394,23 @@ inline void sve_micro_f64_4x2v(const double* __restrict__ a, const double* __res
  * @brief SVE GEMM with cache-blocking and VLA register-tiled micro-kernel.
  *
  * Counterpart of gemm_neon_blocked / gemm_avx2_blocked: i-k-j order, 3-level
- * tiling (kSveTileM × kSveTileK × kSveTileN), and a C tile of 4 rows ×
- * kSveRegCols vectors held in registers for a whole k-tile. Its width,
- * kSveRegCols × svcntw()/svcntd(), follows the hardware vector length; the
- * j-tail is handled by predicates inside the micro-kernel.
+ * tiling (TileM × TileK × TileN), and an R-row × V-vector C register tile
+ * held for a whole K block. Width is V*svcntw()/svcntd(); column tails use
+ * predicates and partial row tiles use smaller specializations. Defaults
+ * remain R=4, V=2; no SVE hardware measurements establish a better choice.
  *
  * Tile footprints (f32): A 64 KB, B 512 KB (L2-resident on Neoverse V1's
  * 1 MB L2), C 128 KB streamed.
  */
 #if !HPC_HAS_SVE
-template <typename T>
-void gemm_sve_blocked(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) = delete;  // ARM_FEATURE_SVE not available on this target
+template <typename T, int R = kSveRegRows, int V = kSveRegCols, std::size_t TileM = kSveTileM,
+          std::size_t TileK = kSveTileK, std::size_t TileN = kSveTileN>
+void gemm_sve_blocked(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) = delete;
 #else
-template <typename T>
+template <typename T, int R = kSveRegRows, int V = kSveRegCols, std::size_t TileM = kSveTileM,
+          std::size_t TileK = kSveTileK, std::size_t TileN = kSveTileN>
 void gemm_sve_blocked(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
-    static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>,
-                  "gemm_sve_blocked: T must be float or double");
-
-    const std::size_t M   = A.rows();
-    const std::size_t K   = A.cols();
-    const std::size_t N   = B.cols();
-    const std::size_t lda = K;
-    const std::size_t ldb = N;
-    const std::size_t ldc = N;
-
-    assert(B.rows() == K && C.rows() == M && C.cols() == N);
-    C.zero();
-
-    // Query this thread's VL for this call; callers must not change it mid-call.
-    const std::size_t vl     = (sizeof(T) == 4) ? svcntw() : svcntd();
-    const std::size_t kJStep = kSveRegCols * vl;  // j-elements per micro-kernel call
-
-    for (std::size_t i_blk = 0; i_blk < M; i_blk += kSveTileM) {
-        const std::size_t i_end = std::min(i_blk + kSveTileM, M);
-
-        for (std::size_t k_blk = 0; k_blk < K; k_blk += kSveTileK) {
-            const std::size_t k_end = std::min(k_blk + kSveTileK, K);
-            const std::size_t k_len = k_end - k_blk;
-
-            for (std::size_t j_blk = 0; j_blk < N; j_blk += kSveTileN) {
-                const std::size_t j_end = std::min(j_blk + kSveTileN, N);
-
-                // --- SVE hot path: kSveRegRows rows × kJStep cols per call ---
-                std::size_t i = i_blk;
-                for (; i + kSveRegRows <= i_end; i += kSveRegRows) {
-                    const T* a_ptr = A.data() + i * lda + k_blk;
-                    const T* b_ptr = B.data() + k_blk * ldb + j_blk;
-
-                    std::size_t j = j_blk;
-                    for (; j < j_end; j += kJStep) {
-                        // Compute remaining j elements to build predicates.
-                        const std::size_t rem0 = (j_end > j) ? j_end - j : 0;
-                        const std::size_t rem1 = (rem0 > vl) ? rem0 - vl : 0;
-
-                        T* c0 = C.data() + (i + 0) * ldc + j;
-                        T* c1 = C.data() + (i + 1) * ldc + j;
-                        T* c2 = C.data() + (i + 2) * ldc + j;
-                        T* c3 = C.data() + (i + 3) * ldc + j;
-
-                        if constexpr (sizeof(T) == 4) {
-                            // pg0: first VL elements — full if rem0 >= vl, else tail.
-                            const svbool_t pg0 = (rem0 >= vl) ? svptrue_b32()
-                                                              : svwhilelt_b32((std::uint64_t)0,
-                                                                              (std::uint64_t)rem0);
-                            // pg1: second VL elements — full if rem1 >= vl, else tail.
-                            const svbool_t pg1 = (rem1 >= vl) ? svptrue_b32()
-                                                              : svwhilelt_b32((std::uint64_t)0,
-                                                                              (std::uint64_t)rem1);
-
-                            // Only call the micro-kernel if the first block has work.
-                            if (svptest_any(svptrue_b32(), pg0)) {
-                                sve_micro_f32_4x2v(
-                                    reinterpret_cast<const float*>(a_ptr),
-                                    reinterpret_cast<const float*>(b_ptr + (j - j_blk)),
-                                    reinterpret_cast<float*>(c0), reinterpret_cast<float*>(c1),
-                                    reinterpret_cast<float*>(c2), reinterpret_cast<float*>(c3), lda,
-                                    ldb, k_len, pg0, pg1);
-                            }
-                        } else {
-                            const svbool_t pg0 = (rem0 >= vl) ? svptrue_b64()
-                                                              : svwhilelt_b64((std::uint64_t)0,
-                                                                              (std::uint64_t)rem0);
-                            const svbool_t pg1 = (rem1 >= vl) ? svptrue_b64()
-                                                              : svwhilelt_b64((std::uint64_t)0,
-                                                                              (std::uint64_t)rem1);
-
-                            if (svptest_any(svptrue_b64(), pg0)) {
-                                sve_micro_f64_4x2v(
-                                    reinterpret_cast<const double*>(a_ptr),
-                                    reinterpret_cast<const double*>(b_ptr + (j - j_blk)),
-                                    reinterpret_cast<double*>(c0), reinterpret_cast<double*>(c1),
-                                    reinterpret_cast<double*>(c2), reinterpret_cast<double*>(c3),
-                                    lda, ldb, k_len, pg0, pg1);
-                            }
-                        }
-                    }
-                }
-
-                // Scalar i-tail (M not a multiple of kSveRegRows).
-                for (; i < i_end; ++i)
-                    for (std::size_t k = k_blk; k < k_end; ++k) {
-                        const T a_ik = A(i, k);
-                        for (std::size_t j = j_blk; j < j_end; ++j)
-                            C(i, j) += a_ik * B(k, j);
-                    }
-            }
-        }
-    }
+    detail::sve_blocked_gemm<T, R, V, TileM, TileK, TileN>(A, B, C);
 }
 #endif  // HPC_HAS_SVE
 

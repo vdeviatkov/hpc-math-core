@@ -33,6 +33,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <iterator>
 #include <random>
 #include <string>
 #include <type_traits>
@@ -173,6 +174,27 @@ const Kernel kKernels[] = {
     HPC_BOTH("SveReordered", gemm_sve_reordered),
     HPC_BOTH("SveBlocked", gemm_sve_blocked),
     HPC_BOTH("SveBlockedPrefetch", gemm_sve_blocked_prefetch),
+    HPC_TILE("SveBlocked1x1", gemm_sve_blocked, 1, 1),
+    HPC_TILE("SveBlocked2x4", gemm_sve_blocked, 2, 4),
+    HPC_TILE("SveBlocked4x4", gemm_sve_blocked, 4, 4),
+    HPC_TILE("SveBlocked6x3", gemm_sve_blocked, 6, 3),
+    HPC_TILE("SveBlocked8x2", gemm_sve_blocked, 8, 2),
+    HPC_TILE("SveBlocked8x3", gemm_sve_blocked, 8, 3),
+    HPC_TILE("SveBlocked6x4", gemm_sve_blocked, 6, 4),
+    HPC_TILE("SveBlocked12x2", gemm_sve_blocked, 12, 2),
+    HPC_TILE("SveBlocked2x8", gemm_sve_blocked, 2, 8),
+    HPC_TILE("SveBlocked16x1", gemm_sve_blocked, 16, 1),
+    HPC_BLOCK("SveBlocked_5x7x13", gemm_sve_blocked, 6, 4, 5, 7, 13),
+    Kernel{"SvePrefetch6x4", &gemm_sve_blocked_prefetch<float, 2, 6, 4>,
+           &gemm_sve_blocked_prefetch<double, 2, 6, 4>},
+    Kernel{"SvePrefetchOddBlocks", &gemm_sve_blocked_prefetch<float, 2, 6, 4, 5, 7, 13>,
+           &gemm_sve_blocked_prefetch<double, 2, 6, 4, 5, 7, 13>},
+    Kernel{"SveBlockedPrefetch0", &gemm_sve_blocked_prefetch<float, 0>,
+           &gemm_sve_blocked_prefetch<double, 0>},
+    Kernel{"SveBlockedPrefetch2", &gemm_sve_blocked_prefetch<float, 2>,
+           &gemm_sve_blocked_prefetch<double, 2>},
+    Kernel{"SveBlockedPrefetch16", &gemm_sve_blocked_prefetch<float, 16>,
+           &gemm_sve_blocked_prefetch<double, 16>},
 #endif
 #if HPC_HAS_SME
     HPC_BOTH("Sme1Tile", gemm_sme_1tile),
@@ -237,6 +259,40 @@ INSTANTIATE_TEST_SUITE_P(All, GemmKernel, ::testing::ValuesIn(kKernels),
                          [](const ::testing::TestParamInfo<Kernel>& info) {
                              return std::string(info.param.name);
                          });
+
+// ===========================================================================
+// SVE column tails follow the runtime vector length, not one fixed ISA width.
+// ===========================================================================
+
+#if HPC_HAS_SVE
+template <typename T, int R, int V>
+void expect_sve_vector_edges() {
+    const std::size_t vl = sizeof(T) == 4 ? svcntw() : svcntd();
+    const KernelFn<T> kernels[] = {
+        &gemm_sve_blocked<T, R, V>, &gemm_sve_blocked_prefetch<T, 0, R, V>,
+        &gemm_sve_blocked_prefetch<T, 2, R, V>, &gemm_sve_blocked_prefetch<T, 4, R, V>,
+        &gemm_sve_blocked_prefetch<T, 8, R, V>, &gemm_sve_blocked_prefetch<T, 16, R, V>};
+    for (const std::size_t n : {vl - 1, vl, vl + 1, V * vl - 1, V * vl, V * vl + 1})
+        for (std::size_t kernel = 0; kernel < std::size(kernels); ++kernel) {
+            SCOPED_TRACE(kernel);
+            // One full register tile, a partial row tile and two K blocks.
+            expect_matches_naive(kernels[kernel], {R + 1, kSveTileK + 1, n}, "SVE vector edge");
+            if (::testing::Test::HasFatalFailure())
+                return;
+        }
+}
+
+TEST(GemmSve, BlockedVectorEdgesFloat) {
+    expect_sve_vector_edges<float, 4, 2>();
+    expect_sve_vector_edges<float, 6, 4>();
+    expect_sve_vector_edges<float, 2, 8>();
+}
+TEST(GemmSve, BlockedVectorEdgesDouble) {
+    expect_sve_vector_edges<double, 4, 2>();
+    expect_sve_vector_edges<double, 6, 4>();
+    expect_sve_vector_edges<double, 2, 8>();
+}
+#endif
 
 // ===========================================================================
 // SME internals

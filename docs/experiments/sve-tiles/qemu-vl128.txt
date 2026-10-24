@@ -1,0 +1,3 @@
+Emulated SVE vector length: 128 bits
+[==========] 20 tests from 2 test suites ran. (19716 ms total)
+[  PASSED  ] 20 tests.
