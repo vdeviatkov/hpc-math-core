@@ -227,7 +227,7 @@ template <> struct Q<float> {
 #if defined(__GNUC__)
         // A plain LDR. From intrinsics (vld1_lane, vset_lane) Clang 17 folds
         // the load and the by-element FMA back into LD1R, which neon_micro
-        // must avoid.
+        // measured slower for this tile on M4 with Clang 17.
         S x;
         asm("ldr %s0, %1" : "=w"(x) : "m"(*p));
         return x;
