@@ -300,6 +300,24 @@ for jc in 0 .. N step Nc:                  Nc = 4096 columns of B and C (FP32 si
 
 Code: [`gemm_sme_blocked` and `blocked_driver`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/sme.hpp).
 
+A macro-kernel runs the micro-kernel repeatedly to compute a larger block
+of C. For the default FP32 configuration on M4, with full-sized blocks:
+
+| Level | Computes |
+|---|---|
+| Micro-kernel | A 32 × 32 C tile, accumulating over the current K block (up to 2,048 steps) |
+| Macro-kernel | A 1024 × 4096 C block by visiting those tiles, for one K block |
+| GEMM driver | The entire matrix, including packing and accumulation across K blocks |
+
+The macro-kernel controls **reuse between tiles**. The micro-kernel
+controls **loads and arithmetic within one tile**. Edge blocks can be
+smaller than the dimensions above.
+
+In `sme.hpp`, the micro-kernel's arithmetic is written directly inside
+`macro_kernel()`, rather than in a separate function. The macro-kernel
+enters streaming mode, owns ZA, and processes many C tiles before leaving
+streaming mode.
+
 Each loop level fixes one operand while the levels inside it reuse it:
 
 | Loop | Iterations at N = 4096 | Held fixed | Size | Reused by | Lives in |
@@ -318,7 +336,8 @@ The orders matter:
 - **`ir` inside `jr`**: a B strip is fetched from beyond L2 once and then
   read from L2 by 32 A strips in a row. An A strip is reused once per B
   strip, after the whole A block has passed through, so the A block must
-  stay in L2: at 8 MiB, half of it, it does.
+  remain in L2 for reuse: at 8 MiB, it occupies half the measured L2 capacity.
+  This is a residency target, not a guarantee against eviction.
 - **`ic` inside `pc`** means each B panel is packed once and serves every A
   block. A is the operand repacked more often: each element of A is packed
   `N / Nc` times, each element of B once.
@@ -326,10 +345,65 @@ The orders matter:
   steps); **`Nc`** bounds the B panel. The panel does not fit in L2 and
   does not need to: only the current strip has to.
 
+### Why put the B-strip loop outside the A-strip loop?
+
+The macro-kernel revisits the smaller packed A block while streaming the
+larger B panel strip by strip:
+
+```cpp
+for (jr ...)          // select one B strip
+    for (ir ...)      // reuse it across all A strips
+        micro_kernel();
+```
+
+At the default M4 FP32 sizes:
+
+| Operand or cache | Size |
+|---|---:|
+| Packed A block: 1024 × 2048 floats | 8 MiB |
+| Packed B panel: 2048 × 4096 floats | 32 MiB |
+| One B strip: 2048 × 32 floats | 256 KiB |
+| P-cluster L2 | 16 MiB |
+
+With **`jr` outside `ir`**, one 256 KiB B strip serves 32 A strips
+consecutively. Moving to the next B strip rereads the 8 MiB A block,
+which is intended to remain in L2.
+
+With **`ir` outside `jr`**, each A strip would scan the entire 32 MiB B
+panel. By the next A strip, that scan exceeds the 16 MiB L2 capacity, so
+much of B would have to be fetched again from beyond L2. This is the
+cache-reuse argument for the chosen order, not a measured comparison of
+the two loop orders. The target is to revisit the operand that fits and
+stream the operand that does not; actual residency also depends on
+associativity, conflicts, C traffic and competing work.
+
+The outer driver makes a separate reuse decision:
+
+```cpp
+for (jc ...)
+    for (pc ...) {
+        pack_B_panel();
+        for (ic ...) {
+            pack_A_block();
+            macro_kernel();
+        }
+    }
+```
+
+Putting `ic` inside lets one packed B panel serve every M block,
+amortizing B packing. The panel need not remain in L2 between those
+blocks for the packed copy to be reused.
+
+These two decisions follow from SME's packed layout and working sets.
+The SIMD driver has a different operand-reuse pattern and uses an
+[i-first blocked traversal](simd-gemm.md#cache-blocks-measured-too).
+
 This is GotoBLAS's classic arrangement, A resident and B streamed, one
 cache level further out. Classic GotoBLAS keeps the A block in L2 and
 reuses each B micro-panel from L1. Here B strips are reused from L2,
-because the SME unit is a cluster resource and its operands come from L2.
+consistent with measurements suggesting operand access through the
+P-cluster L2. This is an inference about M4, not an SME architectural
+requirement or a documented internal datapath.
 The evidence in [part 3](sme2-cache-associativity.md) points to L2 set
 conflicts: the kernel collapses at about 600 rows per B strip, some 75
 times the 8 rows one L1 set holds.
