@@ -267,6 +267,68 @@ struct SmeSvl {
     }
 };
 
+// SME shape units are ZA tiles: (R * streaming lanes) x (V * streaming lanes).
+template <int R, int V>
+struct SmeTileCounters {
+    template <typename T>
+    void operator()(benchmark::State& state, T value) const {
+        SmeSvl{}(state, value);
+        state.counters["za_rows"]  = R;
+        state.counters["za_cols"]  = V;
+        state.counters["za_tiles"] = R * V;
+#if HPC_HAS_SME
+        const double lanes   = sizeof(T) == 4 ? svcntsw() : svcntsd();
+        state.counters["mr"] = R * lanes;
+        state.counters["nr"] = V * lanes;
+#endif
+    }
+};
+
+template <typename T, int R, int V, std::size_t... N>
+void add_sme_shape(Sizes<N...>) {
+    auto one = []<std::size_t Size>() {
+        benchmark::RegisterBenchmark(
+            "SmeTile" + std::to_string(R) + "x" + std::to_string(V) + "/" + type_name<T>()
+                + "/N=" + std::to_string(Size),
+            [](benchmark::State& state) {
+                time_gemm<T, Size, kHaveSme>(
+                    state, kNoSme,
+                    []<typename U>(const hpc::Matrix<U>& A, const hpc::Matrix<U>& B,
+                                   hpc::Matrix<U>& C) { hpc::gemm::gemm_sme<U, R, V>(A, B, C); },
+                    SmeTileCounters<R, V>{});
+            })
+            ->Unit(benchmark::kMicrosecond);
+    };
+    (one.template operator()<N>(), ...);
+}
+
+template <typename T, int R, int... Col>
+void add_sme_columns(std::integer_sequence<int, Col...>) {
+    (add_sme_shape<T, R, Col + 1>(kSizes), ...);
+}
+
+template <typename T, int... Row>
+void add_sme_rows(std::integer_sequence<int, Row...>) {
+    // All positive rectangular shapes fitting the architectural ZA budget.
+    (add_sme_columns<T, Row + 1>(std::make_integer_sequence<int, sizeof(T) / (Row + 1)>{}), ...);
+}
+
+void add_sme_sweeps() {
+    using namespace hpc::gemm;
+    add_sme_rows<float>(std::make_integer_sequence<int, 4>{});
+    add_sme_rows<double>(std::make_integer_sequence<int, 8>{});
+    add_block_grid<kHaveSme>(
+        "SmeBlock", kNoSme, Vals<256, 512, 1024>{}, Vals<1024, 2048, 4096>{},
+        Vals<1024, 2048, 4096>{}, Sizes<512, 1024, 4096>{},
+        []<std::size_t M, std::size_t K, std::size_t N>() {
+            return []<typename T>(const hpc::Matrix<T>& A, const hpc::Matrix<T>& B,
+                                  hpc::Matrix<T>& C) {
+                gemm_sme<T, 2, kSmeRegCols<T>, M, K, N>(A, B, C);
+            };
+        },
+        SmeSvl{});
+}
+
 // ---------------------------------------------------------------------------
 // Software prefetch: <Family>BlockedPf<D>, distance D micro-kernel rows
 // ahead, at N = 256, 512, 1024. Only the blocked kernels get a variant: the
@@ -413,6 +475,7 @@ void register_all() {
     add_bstride<float>();
     add_bstride<double>();
 
+    add_sme_sweeps();
     add_tiles();
     add_blocks();
 }

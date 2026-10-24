@@ -308,6 +308,29 @@ A, V vectors of B) fixes:
   different 256 × 16 strip of B, 16 KiB, out of a 256 KiB block that L1
   cannot hold. Every row added to the tile reuses each B load once more.
 
+Why six rows and two vectors, rather than two rows and six vectors?
+Both shapes have 12 accumulators, but their operand registers differ:
+
+| Shape, rows × vectors | B vectors loaded per k step | A scalar broadcasts per k step | Approximate vector-register budget |
+|---|--:|--:|--:|
+| 6 × 2 | 2 | 6 | 12 + 2 + 1 = 15 |
+| 2 × 6 | 6 | 2 | 12 + 6 + 1 = 19 |
+
+The budget assumes all V B vectors stay live while one A broadcast at a
+time feeds its V FMAs. Six rows reuse each full-vector B load six times;
+two rows reuse it only twice. Increasing rows needs more scalar A loads,
+while increasing vectors needs more full-vector B loads and live B
+registers. On the 16-register AVX2 target, 2 × 6 cannot keep this schedule
+entirely in registers: it needs spills, reloads or another schedule. This
+is register-budget arithmetic, not a measured 2 × 6 benchmark result;
+actual code generation still decides performance.
+
+Also, rows × vectors is not rows × scalar columns. One AVX2 vector holds
+eight FP32 elements: 6 × 2 computes a **6 × 16** block of C, while 2 × 6
+computes 2 × 48. The default is already wider than it is tall in scalar
+elements. Transposing the two template numbers changes operand reuse and
+register pressure, rather than merely rotating the same output rectangle.
+
 Measured on the whole multiplication: the library kernel
 `gemm_avx2_blocked<T, R, V>` with each shape (`bench_gemm`'s `Avx2Tile`
 benchmarks, built for 16 YMM registers, x86-64-v3; FP32 GFLOP/s, median
@@ -400,6 +423,36 @@ columns of B, were 64 × 256 × 256 (AVX-512: × 512) from the first version
 of the code, never measured. They are template parameters as well, and
 `bench_gemm` swept 112 blocks per family
 ([docs/kernels/blocks.md](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/kernels/blocks.md)).
+Each dimension has a different job in the SIMD driver's loop order
+(i-block, k-block, j-block, row strip, column tile):
+
+- **TileK × TileN controls the B block.** Every R-row strip of an i-block
+  reads that block, so the target is L2 reuse across row strips.
+- **R × TileK controls the A strip.** The same strip serves successive
+  column-tile calls within a j-block. At the defaults it is small enough
+  for L1, even though the whole B block is not.
+- **TileM controls how many row strips share B.** Increasing it reduces
+  repeated fetches of B from beyond L2. The selected value comes from
+  the measured performance plateau, not from requiring the entire A
+  block and C block to fit alongside B.
+- **TileK also controls partial-C traffic.** C stays in registers for
+  TileK contraction steps; a longer K block means fewer accumulator
+  reloads and stores, but larger operand working sets. Cache capacity,
+  bandwidth and stride conflicts limit the benefit.
+
+For the selected AVX2 FP32 block, **384 × 256 × 256**, with its 6 × 2
+register tile:
+
+| Working set | Size | Intended reuse |
+|---|---:|---|
+| B block: 256 × 256 floats | 256 KiB | L2, across 64 groups of six rows |
+| A strip: 6 × 256 floats | 6 KiB | L1, across the 16 column-tile calls of a j-block |
+| C micro-tile: 6 × 16 floats | 12 vector registers | Registers, throughout the 256-step k loop |
+
+These are reuse targets, not guarantees of cache residency. Associativity,
+row stride, other data and the executing machine matter. The cache model
+narrows the candidates; the sweep selects the final block sizes.
+
 Two rules came out:
 
 - **Tall blocks of A.** Each block of B is fetched again for every block

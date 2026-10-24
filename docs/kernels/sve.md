@@ -22,6 +22,10 @@ is also available for isolated full-tile experiments; its arguments are
 predicated edge tile. The output is accumulated into C. Matrix entry points
 instead overwrite C by zeroing it before the blocked traversal.
 
+The 4×2 / 64×256×512 defaults are starting values retained for compatibility,
+not sizes selected by a hardware performance sweep. See the
+[cross-family sizing rationale](sizing.md).
+
 ## How it works
 
 A register tile owns R*V scalable accumulators. Each K step loads V vectors

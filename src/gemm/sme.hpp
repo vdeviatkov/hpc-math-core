@@ -6,6 +6,10 @@
  *        all ZA tiles, cache blocking, packed B.
  *
  * ============================================================
+ * Shape/cache overrides: gemm_sme<T, R, V, TileM, TileK, TileN>.
+ * R/V count ZA tile rows/columns, not SIMD scalar rows/vector columns.
+ * Defaults below describe M4; rationale and sweeps: docs/kernels/sme.md.
+ *
  *  SME in brief
  * ============================================================
  *
@@ -74,7 +78,7 @@
  *
  *
  * ============================================================
- *  gemm_sme
+ *  gemm_sme (default shape and cache blocks; template overrides below)
  * ============================================================
  *
  * All ZA tiles. With one tile every FMOPA waits for the previous one's
@@ -131,8 +135,10 @@
  *
  * This is classic GotoBLAS — the A block resident in L2, B streamed — one
  * level out: the B strips are reused from L2 rather than L1, because on
- * M4 the SME unit is shared by the P-cluster and reads its operands from
- * L2. The previous sizing (Mc = 128, Kc = 1024) aimed at keeping the whole
+ * M4 our stride/cache measurements point to operand reuse through the
+ * P-cluster L2, rather than the core L1. This is an inference about M4,
+ * not an SME architectural requirement or a documented internal datapath.
+ * The previous sizing (Mc = 128, Kc = 1024) aimed at keeping the whole
  * B panel in L2 instead; the current one is 4–12% faster at N ≥ 2048.
  *
  * Packing runs in the non-streaming driver, because scalar and NEON code is
@@ -245,6 +251,7 @@
 #include <cstdint>
 #include <cstring>
 #include <type_traits>
+#include <utility>
 
 namespace hpc::gemm {
 
@@ -261,15 +268,21 @@ inline constexpr std::size_t kSmeMc = sizeof(T) == 4 ? 1024 : 512;
 inline constexpr std::size_t kSmeKc = 2048;
 inline constexpr std::size_t kSmeNc = 4096;
 
+// R and V count square ZA tiles, not scalar rows and vector columns.
+template <typename T>
+inline constexpr int kSmeRegCols = sizeof(T) == 4 ? 2 : 4;
+
 #if !HPC_HAS_SME
 
 template <typename T>
 void gemm_sme_1tile(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) = delete;  // SME2 not available on this target
-template <typename T>
+template <typename T, int R = 2, int V = kSmeRegCols<T>>
 void gemm_sme_tiles(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) = delete;  // SME2 not available on this target
-template <typename T>
+template <typename T, int R = 2, int V = kSmeRegCols<T>, std::size_t TileM = kSmeMc<T>,
+          std::size_t TileK = kSmeKc, std::size_t TileN = kSmeNc>
 void gemm_sme_blocked(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) = delete;  // SME2 not available on this target
-template <typename T>
+template <typename T, int R = 2, int V = kSmeRegCols<T>, std::size_t TileM = kSmeMc<T>,
+          std::size_t TileK = kSmeKc, std::size_t TileN = kSmeNc>
 void gemm_sme(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) = delete;  // SME2 not available on this target
 
 #else
@@ -348,9 +361,9 @@ template <typename T>
 inline constexpr bool kF32 = sizeof(T) == 4;
 
 /// Micro-tile = 2 × kCols ZA tiles = (2·SVL)×(kCols·SVL) block of C, using
-/// every tile: 2×2 za32 (f32) or 2×4 za64 (f64). Tile index = row·kCols + col.
+/// every tile by default: 2×2 za32 (f32) or 2×4 za64 (f64).
 template <typename T>
-inline constexpr int kCols = kF32<T> ? 2 : 4;
+inline constexpr int kCols = kSmeRegCols<T>;
 
 /// ZA[Tile] += a ⊗ b.
 template <typename T, int Tile, typename V>
@@ -407,32 +420,88 @@ template <typename T, bool Load, bool Full>
     }
 }
 
-// Keep the common full-tile transfers free of edge-address bookkeeping.
-// Both paths remain inlined into the ZA owner, without mode switches.
-template <typename T, bool Load>
-[[gnu::always_inline]] inline void move_c(T* c, std::int64_t ldc, std::int64_t s,
-                                          std::int64_t rows, std::int64_t cols)
-    __arm_streaming __arm_inout("za") {
-    if (rows == 2 * s && cols == kCols<T> * s)
-        move_c_columns<T, Load, true>(c, ldc, s, rows, cols);
-    else
-        move_c_columns<T, Load, false>(c, ldc, s, rows, cols);
+// Each tile number is an instruction immediate. Expand at compile time.
+template <typename T, int V, bool Load, int Tile>
+[[gnu::always_inline]] inline void move_shaped_tile(
+    T* c, std::int64_t ldc, std::int64_t s, std::int64_t rows,
+    std::int64_t cols) __arm_streaming __arm_inout("za") {
+    constexpr int row = Tile / V, col = Tile % V;
+    if (rows <= row * s)
+        return;
+    const auto offset = std::min<std::int64_t>(col * s, cols);
+    const svbool_t pg = kF32<T> ? svwhilelt_b32(col * s, cols) : svwhilelt_b64(col * s, cols);
+    move_tile<T, Tile, Load>(c + row * s * ldc + offset, ldc, std::min(s, rows - row * s), pg);
 }
 
-/// Macro-kernel (streaming): C[mc×nc] (+)= Apack[mc×kc] · B[kc×nc], all ZA
-/// tiles. A is packed (pack_a). Row k of the B strip starting at column jr
+template <typename T, int V, bool Load, std::size_t... I>
+[[gnu::always_inline]] inline void move_shape(
+    T* c, std::int64_t ldc, std::int64_t s, std::int64_t rows, std::int64_t cols,
+    std::index_sequence<I...>) __arm_streaming __arm_inout("za") {
+    (move_shaped_tile<T, V, Load, I>(c, ldc, s, rows, cols), ...);
+}
+
+// Keep the common full-tile transfers free of edge-address bookkeeping.
+// Both paths remain inlined into the ZA owner, without mode switches.
+template <typename T, bool Load, int R = 2, int V = kCols<T>>
+[[gnu::always_inline]] inline void move_c(T* c, std::int64_t ldc, std::int64_t s, std::int64_t rows,
+                                          std::int64_t cols) __arm_streaming __arm_inout("za") {
+    if constexpr (R == 2 && V == kCols<T>) {
+        if (rows == 2 * s && cols == kCols<T> * s)
+            move_c_columns<T, Load, true>(c, ldc, s, rows, cols);
+        else
+            move_c_columns<T, Load, false>(c, ldc, s, rows, cols);
+    } else {
+        move_shape<T, V, Load>(c, ldc, s, rows, cols, std::make_index_sequence<R * V>{});
+    }
+}
+
+template <typename T, int Row, int V, typename A, std::size_t... Col, typename... B>
+[[gnu::always_inline]] inline void outer_row(svbool_t pt, A a, std::index_sequence<Col...>,
+                                             B... b) __arm_streaming __arm_inout("za") {
+    (mopa<T, Row * V + Col>(pt, a, b), ...);
+}
+
+template <typename T, int V, std::size_t... Row, typename... B>
+[[gnu::always_inline]] inline void outer_rows(svbool_t pt, const T* a, std::int64_t s,
+                                              std::index_sequence<Row...>,
+                                              B... b) __arm_streaming __arm_inout("za") {
+    (outer_row<T, Row, V>(pt, svld1(pt, a + Row * s), std::make_index_sequence<V>{}, b...), ...);
+}
+
+// Sizeless vectors travel as a parameter pack: V B loads reused by R rows.
+// Clamp inactive B columns before forming pointers, even with false predicates.
+template <typename T, int R, int V, std::size_t... Col>
+[[gnu::always_inline]] inline void outer_step(
+    svbool_t pt, const T* a, const T* b, std::int64_t s, std::int64_t cols,
+    std::index_sequence<Col...>) __arm_streaming __arm_inout("za") {
+    outer_rows<T, V>(pt, a, s, std::make_index_sequence<R>{},
+                     svld1(kF32<T> ? svwhilelt_b32(std::int64_t(Col) * s, cols)
+                                   : svwhilelt_b64(std::int64_t(Col) * s, cols),
+                           b + std::min<std::int64_t>(Col * s, cols))...);
+}
+
+template <typename T, int R, int V>
+constexpr bool check_shape() {
+    static_assert(R > 0 && V > 0, "SME tile dimensions must be positive");
+    static_assert(R * V <= int(sizeof(T)), "SME shape exceeds available ZA tiles (4 FP32, 8 FP64)");
+    return true;
+}
+
+/// Macro-kernel (streaming): C[mc×nc] (+)= Apack[mc×kc] · B[kc×nc], R×V ZA
+/// tiles (all tiles by default). A is packed (pack_a). Row k of the B strip starting at column jr
 /// is at B + jr·b_step + k·ldb: packed strips (b_step = kc, ldb = nr) for
 /// gemm_sme, or B in place (b_step = 1, ldb = N) for gemm_sme_tiles and
 /// gemm_sme_blocked. B loads are predicated to the strip's real columns, so
 /// reading B in place never runs past the end of a row.
-template <typename T>
+template <typename T, int R = 2, int V = kCols<T>>
 __arm_locally_streaming __arm_new("za")
 void macro_kernel(const T* __restrict Ap, const T* __restrict B, std::int64_t b_step,
                   std::int64_t ldb, T* __restrict C, std::int64_t ldc, std::int64_t mc,
                   std::int64_t nc, std::int64_t kc, bool accumulate) {
-    constexpr int kC      = kCols<T>;
+    static_assert(check_shape<T, R, V>());
+    constexpr int kC      = V;
     const std::int64_t s  = kF32<T> ? svcntsw() : svcntsd();
-    const std::int64_t mr = 2 * s, nr = kC * s;
+    const std::int64_t mr = R * s, nr = kC * s;
     const svbool_t pt     = kF32<T> ? svptrue_b32() : svptrue_b64();
     const svcount_t pn    = kF32<T> ? svptrue_c32() : svptrue_c64();
 
@@ -450,29 +519,34 @@ void macro_kernel(const T* __restrict Ap, const T* __restrict B, std::int64_t b_
             T* c                    = C + ir * ldc + jr;
 
             if (accumulate)
-                move_c<T, true>(c, ldc, s, rows, cols);
+                move_c<T, true, R, V>(c, ldc, s, rows, cols);
             else
                 svzero_za();
 
             for (std::int64_t k = 0; k < kc; ++k) {
-                // SME2 multi-vector loads: one instruction fetches 2 vectors.
-                const auto a  = svld1_x2(pn, a_strip + k * mr);
-                const auto b  = svld1_x2(pb0, b_strip + k * ldb);
-                const auto a0 = svget2(a, 0), a1 = svget2(a, 1);
-                mopa<T, 0>(pt, a0, svget2(b, 0));
-                mopa<T, 1>(pt, a0, svget2(b, 1));
-                mopa<T, kC + 0>(pt, a1, svget2(b, 0));
-                mopa<T, kC + 1>(pt, a1, svget2(b, 1));
-                if constexpr (kC == 4) {  // f64: columns 2–3 use the other 4 za64 tiles
-                    const auto b2 = svld1_x2(pb1, b_strip + k * ldb + (cols > 2 * s ? 2 * s : 0));
-                    mopa<T, 2>(pt, a0, svget2(b2, 0));
-                    mopa<T, 3>(pt, a0, svget2(b2, 1));
-                    mopa<T, 6>(pt, a1, svget2(b2, 0));
-                    mopa<T, 7>(pt, a1, svget2(b2, 1));
+                if constexpr (R == 2 && V == kCols<T>) {
+                    // SME2 multi-vector loads: one instruction fetches 2 vectors.
+                    const auto a  = svld1_x2(pn, a_strip + k * mr);
+                    const auto b  = svld1_x2(pb0, b_strip + k * ldb);
+                    const auto a0 = svget2(a, 0), a1 = svget2(a, 1);
+                    mopa<T, 0>(pt, a0, svget2(b, 0));
+                    mopa<T, 1>(pt, a0, svget2(b, 1));
+                    mopa<T, kC + 0>(pt, a1, svget2(b, 0));
+                    mopa<T, kC + 1>(pt, a1, svget2(b, 1));
+                    if constexpr (kC == 4) {  // f64: columns 2–3 use the other 4 za64 tiles
+                        const auto b2 = svld1_x2(pb1, b_strip + k * ldb + (cols > 2 * s ? 2 * s : 0));
+                        mopa<T, 2>(pt, a0, svget2(b2, 0));
+                        mopa<T, 3>(pt, a0, svget2(b2, 1));
+                        mopa<T, 6>(pt, a1, svget2(b2, 0));
+                        mopa<T, 7>(pt, a1, svget2(b2, 1));
+                    }
+                } else {
+                    outer_step<T, R, V>(pt, a_strip + k * mr, b_strip + k * ldb,
+                                       s, cols, std::make_index_sequence<V>{});
                 }
             }
 
-            move_c<T, false>(c, ldc, s, rows, cols);
+            move_c<T, false, R, V>(c, ldc, s, rows, cols);
         }
     }
 }
@@ -537,12 +611,12 @@ void gemm_sme_1tile(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
 }
 
 /**
- * @brief C = A · B on ARM SME, step 2 of 4: all ZA tiles (gemm_sme's
+ * @brief C = A · B on ARM SME, step 2 of 4: R×V ZA tiles (gemm_sme's
  *        macro_kernel run once over the whole problem), A packed into
- *        2·SVL-row strips, B read in place, no cache blocking. See the file
+ *        R·SVL-row strips, B read in place, no cache blocking. See the file
  *        header.
  */
-template <typename T>
+template <typename T, int R = 2, int V = kSmeRegCols<T>>
 void gemm_sme_tiles(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
     static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>,
                   "gemm_sme_tiles: T must be float or double");
@@ -553,9 +627,10 @@ void gemm_sme_tiles(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
     if (M == 0 || N == 0 || K == 0)
         return;
     const std::size_t s = sme_detail::kF32<T> ? svcntsw() : svcntsd();
-    const Matrix<T> a_pack = sme_detail::pack_all_a(A, 2 * s);
+    static_assert(sme_detail::check_shape<T, R, V>());
+    const Matrix<T> a_pack = sme_detail::pack_all_a(A, R * s);
     const auto n = static_cast<std::int64_t>(N);
-    sme_detail::macro_kernel<T>(a_pack.data(), B.data(), 1, n, C.data(), n,
+    sme_detail::macro_kernel<T, R, V>(a_pack.data(), B.data(), 1, n, C.data(), n,
                                 static_cast<std::int64_t>(M), n, static_cast<std::int64_t>(K),
                                 false);
 }
@@ -566,8 +641,11 @@ namespace sme_detail {
 /// (PackB = true); the only difference is where the macro-kernel reads B.
 /// B is K×N with rows ldb ≥ N elements apart (B(k, j) = B[k·ldb + j]); the
 /// public kernels pass ldb = N, the BStride benchmarks pad it.
-template <typename T, bool PackB>
+template <typename T, bool PackB, int R = 2, int V = kCols<T>,
+          std::size_t TileM = kSmeMc<T>, std::size_t TileK = kSmeKc, std::size_t TileN = kSmeNc>
 void blocked_driver(const Matrix<T>& A, const T* B, std::size_t ldb, Matrix<T>& C) {
+    static_assert(check_shape<T, R, V>());
+    static_assert(TileM > 0 && TileK > 0 && TileN > 0, "SME cache blocks must be positive");
     const std::size_t M = A.rows(), K = A.cols(), N = C.cols();
     assert(C.rows() == M && ldb >= N);
     if (K == 0)
@@ -577,16 +655,16 @@ void blocked_driver(const Matrix<T>& A, const T* B, std::size_t ldb, Matrix<T>& 
 
     // Micro-tile is mr × nr; RDSVL (svcnts*) is legal outside streaming mode.
     const std::size_t s  = kF32<T> ? svcntsw() : svcntsd();
-    const std::size_t mr = 2 * s, nr = kCols<T> * s;
+    const std::size_t mr = R * s, nr = V * s;
     auto round_up        = [](std::size_t x, std::size_t m) { return (x + m - 1) / m * m; };
-    const std::size_t kc_max = std::min(kSmeKc, K);
-    Matrix<T> a_pack(round_up(std::min(kSmeMc<T>, M), mr), kc_max);  // 64-byte aligned scratch
-    Matrix<T> b_pack(PackB ? kc_max : 0, PackB ? round_up(std::min(kSmeNc, N), nr) : 0);
+    const std::size_t kc_max = std::min(TileK, K);
+    Matrix<T> a_pack(round_up(std::min(TileM, M), mr), kc_max);  // 64-byte aligned scratch
+    Matrix<T> b_pack(PackB ? kc_max : 0, PackB ? round_up(std::min(TileN, N), nr) : 0);
 
-    for (std::size_t jc = 0; jc < N; jc += kSmeNc) {
-        const std::size_t nc = std::min(kSmeNc, N - jc);
-        for (std::size_t pc = 0; pc < K; pc += kSmeKc) {
-            const std::size_t kc = std::min(kSmeKc, K - pc);
+    for (std::size_t jc = 0; jc < N; jc += TileN) {
+        const std::size_t nc = std::min(TileN, N - jc);
+        for (std::size_t pc = 0; pc < K; pc += TileK) {
+            const std::size_t kc = std::min(TileK, K - pc);
             // B strip rows: packed, nr apart (b_step = kc); in place, ldb apart.
             const T* b          = B + pc * ldb + jc;
             std::int64_t b_step = 1, b_ld = static_cast<std::int64_t>(ldb);
@@ -596,10 +674,10 @@ void blocked_driver(const Matrix<T>& A, const T* B, std::size_t ldb, Matrix<T>& 
                 b_step = static_cast<std::int64_t>(kc);
                 b_ld   = static_cast<std::int64_t>(nr);
             }
-            for (std::size_t ic = 0; ic < M; ic += kSmeMc<T>) {
-                const std::size_t mc = std::min(kSmeMc<T>, M - ic);
+            for (std::size_t ic = 0; ic < M; ic += TileM) {
+                const std::size_t mc = std::min(TileM, M - ic);
                 pack_a(A.data() + ic * K + pc, K, mc, kc, mr, a_pack.data());
-                macro_kernel<T>(a_pack.data(), b, b_step, b_ld, C.data() + ic * N + jc,
+                macro_kernel<T, R, V>(a_pack.data(), b, b_step, b_ld, C.data() + ic * N + jc,
                                 static_cast<std::int64_t>(N), static_cast<std::int64_t>(mc),
                                 static_cast<std::int64_t>(nc), static_cast<std::int64_t>(kc),
                                 pc > 0);
@@ -611,28 +689,30 @@ void blocked_driver(const Matrix<T>& A, const T* B, std::size_t ldb, Matrix<T>& 
 }  // namespace sme_detail
 
 /**
- * @brief C = A · B on ARM SME, step 3 of 4: gemm_sme without pack_b (all ZA
+ * @brief C = A · B on ARM SME, step 3 of 4: gemm_sme without pack_b (R×V ZA
  *        tiles, cache blocking, B read in place). See the file header,
  *        "Packing", for what that costs at power-of-two N.
  */
-template <typename T>
+template <typename T, int R = 2, int V = kSmeRegCols<T>, std::size_t TileM = kSmeMc<T>,
+          std::size_t TileK = kSmeKc, std::size_t TileN = kSmeNc>
 void gemm_sme_blocked(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
     static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>,
                   "gemm_sme_blocked: T must be float or double");
     assert(B.rows() == A.cols() && B.cols() == C.cols());
-    sme_detail::blocked_driver<T, false>(A, B.data(), B.cols(), C);
+    sme_detail::blocked_driver<T, false, R, V, TileM, TileK, TileN>(A, B.data(), B.cols(), C);
 }
 
 /**
- * @brief C = A · B on ARM SME, step 4 of 4: all ZA tiles, cache blocking,
+ * @brief C = A · B on ARM SME, step 4 of 4: R×V ZA tiles, cache blocking,
  *        A and B packed. See the file header, "gemm_sme".
  */
-template <typename T>
+template <typename T, int R = 2, int V = kSmeRegCols<T>, std::size_t TileM = kSmeMc<T>,
+          std::size_t TileK = kSmeKc, std::size_t TileN = kSmeNc>
 void gemm_sme(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
     static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>,
                   "gemm_sme: T must be float or double");
     assert(B.rows() == A.cols() && B.cols() == C.cols());
-    sme_detail::blocked_driver<T, true>(A, B.data(), B.cols(), C);
+    sme_detail::blocked_driver<T, true, R, V, TileM, TileK, TileN>(A, B.data(), B.cols(), C);
 }
 
 #endif  // HPC_HAS_SME

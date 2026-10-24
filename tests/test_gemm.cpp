@@ -201,6 +201,8 @@ const Kernel kKernels[] = {
     HPC_BOTH("SmeTiles", gemm_sme_tiles),
     HPC_BOTH("SmeBlocked", gemm_sme_blocked),
     HPC_BOTH("Sme", gemm_sme),
+    HPC_BLOCK("SmeOddBlocks", gemm_sme, 2, 2, 5, 7, 13),
+    HPC_BLOCK("SmeBlockedOddBlocks", gemm_sme_blocked, 2, 2, 5, 7, 13),
 #endif
 #if HPC_HAS_AMX
     HPC_BOTH("Amx", gemm_amx),
@@ -323,6 +325,45 @@ void expect_pack_a_bit_exact() {
                 << "mc=" << mc << " kc=" << kc;
         }
     }
+}
+
+template <typename T, int R, int V>
+void expect_sme_shape() {
+    // Odd blocks split all three dimensions, forcing packed padding, C reloads,
+    // and partial ZA tiles for every legal shape at the current streaming VL.
+    const KernelFn<T> kernels[] = {&gemm_sme<T, R, V>, &gemm_sme_blocked<T, R, V>,
+                                   &gemm_sme_tiles<T, R, V>, &gemm_sme<T, R, V, 5, 7, 13>,
+                                   &gemm_sme_blocked<T, R, V, 5, 7, 13>};
+    const std::size_t s         = sizeof(T) == 4 ? svcntsw() : svcntsd();
+    const Shape edges[]         = {
+        {R * s - 1, 15, V * s + 1},
+        {    R * s,  9,     V * s},
+        {R * s + 1, 17, V * s - 1},
+        {        3,  0,         4},
+        {        0,  5,         3},
+        {        4,  5,         0}
+    };
+    for (auto kernel : kernels)
+        for (auto shape : edges)
+            expect_matches_naive(kernel, shape,
+                                 ("SME " + std::to_string(R) + "x" + std::to_string(V)).c_str());
+}
+
+template <typename T, int R, int... Col>
+void expect_sme_columns(std::integer_sequence<int, Col...>) {
+    (expect_sme_shape<T, R, Col + 1>(), ...);
+}
+
+template <typename T, int... Row>
+void expect_sme_rows(std::integer_sequence<int, Row...>) {
+    (expect_sme_columns<T, Row + 1>(std::make_integer_sequence<int, sizeof(T) / (Row + 1)>{}), ...);
+}
+
+TEST(GemmSme, AllFloatTileShapes) {
+    expect_sme_rows<float>(std::make_integer_sequence<int, 4>{});
+}
+TEST(GemmSme, AllDoubleTileShapes) {
+    expect_sme_rows<double>(std::make_integer_sequence<int, 8>{});
 }
 
 TEST(GemmSme, PackAIsBitExactFloat) { expect_pack_a_bit_exact<float>(); }

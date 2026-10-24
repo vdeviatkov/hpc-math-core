@@ -1,0 +1,3 @@
+Running main() from /Users/vdeviatkov/Documents/hpc-math-core/build/_deps/googletest-src/googletest/src/gtest_main.cc
+[==========] 12 tests from 3 test suites ran. (133 ms total)
+[  PASSED  ] 12 tests.

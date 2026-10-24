@@ -1,0 +1,39 @@
+{
+  "date_local": "2026-10-23",
+  "timezone": "America/Los_Angeles",
+  "machine": "Apple M4 Max",
+  "compiler": "Apple Clang 17.0.0 (clang-1700.4.4.1)",
+  "flags": "-O3 -mcpu=apple-m4 -ffast-math -funroll-loops -fno-omit-frame-pointer",
+  "streaming_vector_length_bits": 512,
+  "physical_hardware": true,
+  "base_commit": "0b5efdcc69e07b0e108b349e039a9346f1161b7d",
+  "baseline_sme_header_sha256": "958833f690756b10c97430e6507a5ccb34f236ef04ed3ae695d344f235853b81",
+  "source_sha256": {
+    "src/gemm/sme.hpp": "1e397eb362712936fe3318be36a9e34b9b66a1362c9317f1ed1851b6e44928db",
+    "benchmarks/bench_gemm.cpp": "57bb8ee6849fec1b25a2ab2202e3a551891bf998efae3f3caf251bb553ec8b72",
+    "tests/test_gemm.cpp": "b97d9687db61fb4e5ecff6e736049f07a027b320da7456a148ef782cc195320b",
+    "src/gemm/sme_lowp.hpp": "cea01bf54ad358c61e8e57d1a0765b2e43ab1015fbdc8d407846a03dc96523c2"
+  },
+  "regular_tests_passed": 32,
+  "low_precision_tests_passed": 12,
+  "legal_shapes": {
+    "f32": 8,
+    "f64": 20
+  },
+  "shape_benchmark_rows": 140,
+  "cache_benchmark_rows": 162,
+  "full_sweep_repetitions": 3,
+  "full_sweep_min_time_seconds": 0.02,
+  "candidate_repetitions": 7,
+  "candidate_min_time_seconds": 0.1,
+  "before_after_alternated_rounds": 3,
+  "before_after_min_time_seconds": 0.1,
+  "default_parameters_changed": false,
+  "compile_checks": [
+    "SME-enabled tests and benchmark",
+    "non-SME benchmark syntax",
+    "oversized shape rejected",
+    "zero rows/columns/cache block rejected"
+  ],
+  "note": "Final source formatting and documentation comments do not alter measured code; raw JSON retains per-run context."
+}

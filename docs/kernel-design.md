@@ -207,8 +207,8 @@ column-contiguous strips using NEON 4x4 or 2x2 transposes plus scalar edges;
 
 - `gemm_sme_1tile` packs all A into SVL-row strips and streams B in place,
   using only ZA tile 0. One dependency chain exposes FMOPA latency.
-- `gemm_sme_tiles` packs A into 2*SVL-row strips and uses all ZA tiles:
-  2x2 for float, 2x4 for double. Independent accumulators hide latency,
+- `gemm_sme_tiles<T,R,V>` packs A into R*SVL-row strips and uses R×V ZA tiles:
+  default 2x2 for float, 2x4 for double. Independent accumulators hide latency,
   and each loaded vector feeds multiple outer products.
 - `gemm_sme_blocked` keeps that micro-kernel and adds jc/pc/ic blocking.
   B remains in the caller's layout, exposing power-of-two stride conflicts.
@@ -216,7 +216,13 @@ column-contiguous strips using NEON 4x4 or 2x2 transposes plus scalar edges;
   control the stride regardless of the input N and amortize copying over
   all ic blocks.
 
-Mc=1024 float / 512 double, Kc=2048 and Nc=4096 aim for an 8 MiB packed A
+`gemm_sme` and `gemm_sme_blocked` expose R/V and M/K/N cache sizes as
+template parameters; every legal rectangular ZA shape has a benchmark
+registration and correctness tests. Default shapes retain paired SME2 loads;
+other shapes use expanded single-vector loads. See [SME tuning](kernels/sme.md)
+and [the sizing rationale for all CPU families](kernels/sizing.md).
+
+Default Mc=1024 float / 512 double, Kc=2048 and Nc=4096 aim for an 8 MiB packed A
 block in M4 Max's shared 16 MiB L2. The streaming macro-kernel visits B
 strips then A strips; C stays in ZA through kc, and is reloaded only when
 pc>0. Predicated C transfers and row bounds handle edges; full tiles use a

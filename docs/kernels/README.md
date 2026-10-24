@@ -1,4 +1,6 @@
-# Register tiles of the SIMD kernels
+# Register tiles of the SIMD and SME kernels
+
+[Why each default was chosen, including evidence and untuned sizes](sizing.md).
 
 `gemm_avx2_blocked`, `gemm_avx512_blocked` and `gemm_neon_blocked` share
 one driver ([`blocked_driver.hpp`](../../src/gemm/blocked_driver.hpp)) and
@@ -13,6 +15,7 @@ vector-length-agnostic driver in `sve.hpp`:
 | AVX2 | [avx2.md](avx2.md) | 6 × 2 (6 × 16 FP32) | AMD Zen 5 | 171.7 / 82.8 | 94% / 91% |
 | AVX-512 | [avx512.md](avx512.md) | 8 × 3 (8 × 48 FP32) | AMD Zen 5 | 327.9 / 162.0 | 91% / 90% |
 | NEON | [neon.md](neon.md) | 6 × 4 (6 × 16 FP32) | Apple M4 Max | 123.8 / 62.2 | 86% / 87% |
+| SME2 | [sme.md](sme.md) | 2×2 FP32 / 2×4 FP64 ZA tiles | Apple M4 Max | See SME measurements | — |
 | SVE | [sve.md](sve.md) | 4 × 2 (width follows VL) | hardware measurements pending | — | — |
 
 The cache blocks around the register tile are template parameters too
