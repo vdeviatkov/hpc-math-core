@@ -32,6 +32,7 @@
  */
 
 #include "gemm/blocked_driver.hpp"
+#include "gemm/vector_micro.hpp"
 #include "gemm/packed_driver.hpp"
 #include "hpc/isa.hpp"
 #include "hpc/matrix.hpp"
@@ -249,62 +250,25 @@ template <> struct Zmm<float> {
     using V = __m512;
     static V load(const float* p) { return _mm512_loadu_ps(p); }
     static void store(float* p, V v) { _mm512_storeu_ps(p, v); }
-    static V splat(float x) { return _mm512_set1_ps(x); }
+    static V load_a(const float* p) { return _mm512_set1_ps(*p); }
     static V fma(V x, V y, V acc) { return _mm512_fmadd_ps(x, y, acc); }
 };
 template <> struct Zmm<double> {
     using V = __m512d;
     static V load(const double* p) { return _mm512_loadu_pd(p); }
     static void store(double* p, V v) { _mm512_storeu_pd(p, v); }
-    static V splat(double x) { return _mm512_set1_pd(x); }
+    static V load_a(const double* p) { return _mm512_set1_pd(*p); }
     static V fma(V x, V y, V acc) { return _mm512_fmadd_pd(x, y, acc); }
 };
 
 template <int R, int V, typename T>
 inline void avx512_micro(const T* __restrict__ a, const T* __restrict__ b, T* __restrict__ c,
                          std::size_t lda, std::size_t ldb, std::size_t ldc, std::size_t k_len) noexcept {
-    // The loops below must unroll completely so acc[][] stays in registers.
-    static_assert(R >= 1 && R <= 16 && V >= 1 && V <= 16, "tile dimensions up to 16 (the unroll factor)");
-    using Ops               = Zmm<T>;
-    using Vec               = typename Ops::V;
-    constexpr std::size_t W = sizeof(Vec) / sizeof(T);  // lanes per vector
-
-    Vec acc[R][V];
-#pragma GCC unroll 16
-    for (int r = 0; r < R; ++r)
-#pragma GCC unroll 16
-        for (int v = 0; v < V; ++v)
-            acc[r][v] = Ops::load(c + r * ldc + v * W);
-    for (std::size_t k = 0; k < k_len; ++k) {
-        Vec bv[V];
-#pragma GCC unroll 16
-        for (int v = 0; v < V; ++v)
-            bv[v] = Ops::load(b + k * ldb + v * W);
-#pragma GCC unroll 16
-        for (int r = 0; r < R; ++r) {
-            const Vec ar = Ops::splat(a[r * lda + k]);
-#pragma GCC unroll 16
-            for (int v = 0; v < V; ++v)
-                acc[r][v] = Ops::fma(ar, bv[v], acc[r][v]);
-        }
-    }
-#pragma GCC unroll 16
-    for (int r = 0; r < R; ++r)
-#pragma GCC unroll 16
-        for (int v = 0; v < V; ++v)
-            Ops::store(c + r * ldc + v * W, acc[r][v]);
+    vector_micro<Zmm<T>, R, V>(a, b, c, lda, ldb, ldc, k_len);
 }
 
 /// The micro-kernel as blocked_gemm (blocked_driver.hpp) calls it.
-struct Avx512Micro {
-    template <typename T>
-    static constexpr std::size_t kLanes = 64 / sizeof(T);
-    template <int R, int V, typename T>
-    static void run(const T* a, const T* b, T* c, std::size_t lda, std::size_t ldb, std::size_t ldc,
-                    std::size_t k_len) noexcept {
-        avx512_micro<R, V>(a, b, c, lda, ldb, ldc, k_len);
-    }
-};
+using Avx512Micro = VectorMicro<Zmm>;
 
 #endif  // HPC_HAS_AVX512
 

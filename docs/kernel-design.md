@@ -136,6 +136,22 @@ gains up to 60% at N ≥ 1024 ([experiments/packed-b](experiments/packed-b/READM
 so the blocked kernels stay as they are and the packed ones are separate
 entry points, `gemm_<isa>_packed<T, R, V, Mc, Kc, Nc, PackA = false>`.
 
+### `src/gemm/vector_micro.hpp`
+
+The AVX2, AVX-512 and NEON micro-kernels are one template,
+`vector_micro<Ops, R, V>`: load the R × V-vector tile of C, then per k
+load V vectors of B, load A once per row and do R·V FMAs, then store the
+tile. Each ISA supplies only an `Ops` struct per element type (`Ymm<T>`,
+`Zmm<T>`, `Q<T>`) with `load`, `store`, `load_a` and `fma`; `load_a` is
+where they differ (a broadcast from memory, a broadcast of a scalar, a
+plain `LDR` for an FMLA by element). `avx2_micro<R, V>`, `avx512_micro<R, V>`
+and `neon_micro<R, V>` remain as one-line wrappers, and `Avx2Micro`,
+`Avx512Micro` and `NeonMicro` are `VectorMicro<Ymm>` and so on, the
+`Micro` the drivers take. The library kernels compile to the same machine
+code as the three separate kernels did (Clang, M4 and Zen 5 targets). SVE
+is not part of it: its vectors are sizeless, so its accumulators cannot be
+an array, and every operation takes a predicate (`sve.hpp`).
+
 ### `src/gemm/avx2.hpp`
 
 256-bit vectors contain 8 floats or 4 doubles. The blocked kernel uses
@@ -175,7 +191,7 @@ types. Each A element is loaded with a plain `LDR` into lane 0 of a D
 register and multiplied by element; the `vdupq` + `vfmaq` form compiles to
 `LD1R` (load and replicate), which held tiles with many rows 23-30% back on
 M4. For float, Clang turns every intrinsic spelling back into `LD1R`, so
-`Q<float>::load_lane0` is a one-instruction inline `asm` on GCC/Clang.
+`Q<float>::load_a` is a one-instruction inline `asm` on GCC/Clang.
 AArch64 is required because these kernels include double-precision FMA.
 
 ### `src/gemm/sve.hpp`

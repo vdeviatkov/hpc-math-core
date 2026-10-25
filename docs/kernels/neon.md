@@ -33,7 +33,7 @@ register and multiplies by element (`FMLA v.4s, v.4s, v.s[0]`); a k step
 of the 6 × 4 tile is 2 `LDP` of B, 6 `LDR` of A and 24 `FMLA`. For FP64,
 `vld1_f64` + `vfmaq_lane_f64` produce that directly. For FP32, Clang folds
 every intrinsic form (`vld1_lane_f32`, `vset_lane_f32`) back into `LD1R`,
-so `Q<float>::load_lane0` is a one-instruction inline-assembly `ldr`.
+so `Q<float>::load_a` is a one-instruction inline-assembly `ldr`.
 
 Same binary layout, the library kernel with each A load, alternated three
 times on the same afternoon (median GFLOP/s, [data](../experiments/tile-sweeps/m4_ld1r_ab/)):

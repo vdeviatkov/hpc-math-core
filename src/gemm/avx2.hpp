@@ -22,6 +22,7 @@
  */
 
 #include "gemm/blocked_driver.hpp"
+#include "gemm/vector_micro.hpp"
 #include "gemm/packed_driver.hpp"
 #include "hpc/isa.hpp"
 #include "hpc/matrix.hpp"
@@ -226,14 +227,14 @@ template <> struct Ymm<float> {
     using V = __m256;
     static V load(const float* p) { return _mm256_loadu_ps(p); }
     static void store(float* p, V v) { _mm256_storeu_ps(p, v); }
-    static V broadcast(const float* p) { return _mm256_broadcast_ss(p); }
+    static V load_a(const float* p) { return _mm256_broadcast_ss(p); }
     static V fma(V x, V y, V acc) { return _mm256_fmadd_ps(x, y, acc); }
 };
 template <> struct Ymm<double> {
     using V = __m256d;
     static V load(const double* p) { return _mm256_loadu_pd(p); }
     static void store(double* p, V v) { _mm256_storeu_pd(p, v); }
-    static V broadcast(const double* p) { return _mm256_broadcast_sd(p); }
+    static V load_a(const double* p) { return _mm256_broadcast_sd(p); }
     static V fma(V x, V y, V acc) { return _mm256_fmadd_pd(x, y, acc); }
 };
 
@@ -261,48 +262,11 @@ template <> struct Ymm<double> {
 template <int R, int V, typename T>
 inline void avx2_micro(const T* __restrict__ a, const T* __restrict__ b, T* __restrict__ c,
                        std::size_t lda, std::size_t ldb, std::size_t ldc, std::size_t k_len) noexcept {
-    // The loops below must unroll completely so acc[][] stays in registers.
-    static_assert(R >= 1 && R <= 16 && V >= 1 && V <= 16, "tile dimensions up to 16 (the unroll factor)");
-    using Ops               = Ymm<T>;
-    using Vec               = typename Ops::V;
-    constexpr std::size_t W = sizeof(Vec) / sizeof(T);  // lanes per vector
-
-    Vec acc[R][V];
-#pragma GCC unroll 16
-    for (int r = 0; r < R; ++r)
-#pragma GCC unroll 16
-        for (int v = 0; v < V; ++v)
-            acc[r][v] = Ops::load(c + r * ldc + v * W);
-    for (std::size_t k = 0; k < k_len; ++k) {
-        Vec bv[V];
-#pragma GCC unroll 16
-        for (int v = 0; v < V; ++v)
-            bv[v] = Ops::load(b + k * ldb + v * W);
-#pragma GCC unroll 16
-        for (int r = 0; r < R; ++r) {
-            const Vec ar = Ops::broadcast(a + r * lda + k);
-#pragma GCC unroll 16
-            for (int v = 0; v < V; ++v)
-                acc[r][v] = Ops::fma(ar, bv[v], acc[r][v]);
-        }
-    }
-#pragma GCC unroll 16
-    for (int r = 0; r < R; ++r)
-#pragma GCC unroll 16
-        for (int v = 0; v < V; ++v)
-            Ops::store(c + r * ldc + v * W, acc[r][v]);
+    vector_micro<Ymm<T>, R, V>(a, b, c, lda, ldb, ldc, k_len);
 }
 
 /// The micro-kernel as blocked_gemm (blocked_driver.hpp) calls it.
-struct Avx2Micro {
-    template <typename T>
-    static constexpr std::size_t kLanes = 32 / sizeof(T);
-    template <int R, int V, typename T>
-    static void run(const T* a, const T* b, T* c, std::size_t lda, std::size_t ldb, std::size_t ldc,
-                    std::size_t k_len) noexcept {
-        avx2_micro<R, V>(a, b, c, lda, ldb, ldc, k_len);
-    }
-};
+using Avx2Micro = VectorMicro<Ymm>;
 
 #endif  // HPC_HAS_AVX2
 
