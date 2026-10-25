@@ -34,6 +34,11 @@ the caches and the TLB.
   core for N ≥ 1024 and beats Arm's KleidiAI micro-kernel called on the
   whole matrix at N = 4096 (1,504 vs 1,019 GFLOP/s): KleidiAI leaves cache
   blocking to its caller.
+- With both SME units (`gemm_sme_mt`), **3.56 TFLOP/s FP32 and 931
+  GFLOP/s FP64 at N = 4096**, 113% / 118% of Accelerate on all cores. It
+  takes 8 threads, not 2: macOS cannot pin threads to clusters, and only
+  more threads than one cluster has cores guarantee that both units get
+  work.
 
 ## The idea in three pictures
 
@@ -539,6 +544,67 @@ the two copies 7% of the call. At small N the copy shows: below N = 1024
 the unpacked kernels are faster (989 vs 835 GFLOP/s at N = 256), because
 the whole problem fits in L2 anyway.
 
+## Step 5: both SME units — 3.5 TFLOP/s
+
+Code: [`gemm_sme_mt`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/sme.hpp).
+
+Everything above runs on one thread, so it uses one SME unit. The M4 Max
+has two: one per P-cluster, each cluster six P-cores
+(`sysctl hw.perflevel0.cpusperl2` = 6). Every core of a cluster sends its
+SME instructions to the same unit. `gemm_sme_mt` spreads `gemm_sme`'s
+blocking over several threads, as multi-threaded GotoBLAS does:
+
+- for each B panel, every thread packs a share of its strips into one
+  shared buffer;
+- after a barrier, threads take chunks of rows of A from an atomic
+  counter, pack them into their own A buffer and run the same macro-kernel;
+- a second barrier keeps the panel intact until the last chunk is done.
+
+**Two threads would be enough, if they landed on different clusters.** One
+thread already drives a unit at 1,529 GFLOP/s; a second thread on the
+same cluster only shares that unit. But macOS cannot pin a thread to a
+cluster: Apple Silicon does not support the thread-affinity API, and
+placement is up to the scheduler, which in these runs kept short-lived
+threads on one cluster. Measured, GFLOP/s, wall clock, median of 3
+([data](https://github.com/vdeviatkov/hpc-math-core/tree/main/docs/experiments/sme-mt)):
+
+| Threads | FP32 N = 1024 | 2048 | 4096 | FP64 N = 1024 | 2048 | 4096 |
+|--:|--:|--:|--:|--:|--:|--:|
+| 1 | 1,425 | 1,530 | 1,529 | 417 | 418 | 415 |
+| 2 | 1,565 | 1,781 | 2,778 | 455 | 710 | 852 |
+| 6 | 1,778 | 2,660 | 3,492 | 620 | 865 | 916 |
+| **8** | **2,682** | **3,085** | **3,558** | **764** | **905** | **931** |
+| 12 | 2,545 | 2,974 | 3,597 | 755 | 882 | 923 |
+| Accelerate, all cores | 3,204 | 3,180 | 3,154 | 825 | 785 | 789 |
+
+- At N = 1024 a call lasts about a millisecond and two threads run no
+  faster than one: both stay on one cluster. At N = 4096 a call lasts
+  tens of milliseconds, the scheduler has time to move one, and two
+  threads reach 1.8×.
+- **Eight threads force both units.** Six threads still fit on one
+  cluster; with more than six, at least one must run on the other. The
+  jump from 6 to 8 threads at N = 1024 (1.8 → 2.7 TFLOP/s) is that
+  spill. Seven, the smallest count that forces it, was not measured; 8 is
+  best or within 1.1% of the best of the counts measured, so it is the
+  default. Twelve, one per P-core, gain nothing.
+- **Dynamic chunks make the extra threads harmless.** A first version
+  gave each thread an equal band of rows; the unit that hosted more
+  threads finished last, and 3 threads were slower than 2 at N = 4096
+  (2.4 against 2.7 TFLOP/s). With chunks taken from a counter, a unit
+  with more threads simply takes more chunks.
+- **The price is cores.** Eight P-cores are occupied to keep two units
+  busy, most of them waiting their turn on a shared unit. The threads are
+  also created on every call, which, with placement, keeps N = 1024 at
+  84% of Accelerate; below N ≈ 512 the single-threaded `gemm_sme` is
+  faster (276 against 26 GFLOP/s at N = 64).
+
+From N = 2048 up, `gemm_sme_mt` matches or beats Accelerate with all
+cores: at N = 4096, 3.56 TFLOP/s FP32 (113%, 91% of the two units'
+3.93 TFLOP/s) and 931 GFLOP/s FP64 (118%, 93% of 1.00 TFLOP/s). A
+persistent thread pool, which would remove the per-call start-up and
+might let two long-lived threads settle on different clusters, is the
+obvious next experiment; it has not been tried.
+
 ## Engineering details that decide the result
 
 - **Declare ZA usage on every helper.** A streaming helper function without
@@ -632,6 +698,14 @@ step tables above (where FP64 reaches 436 GFLOP/s at N = 4000). The libraries ar
 |---|--:|--:|--:|--:|--:|--:|
 | Apple Accelerate, FP32, all cores | 1,685 | 2,651 | 3,178 | 3,127 | 3,115 | 81% |
 | Apple Accelerate, FP64, all cores | 458 | 782 | 804 | 782 | 787 | 80% |
+| `gemm_sme_mt`, FP32, 8 threads ² | 370 | 1,480 | 2,670 | 3,071 | **3,496** | 89% |
+| `gemm_sme_mt`, FP64, 8 threads ² | 270 | 618 | 758 | 894 | **914** | 91% |
+
+² From the 5-repetition run of the default
+([`default.json`](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/experiments/sme-mt/default.json));
+Step 5 quotes the thread sweep, a different run (3,558 / 931 at N = 4096).
+The Accelerate rows of this table are older; against Accelerate in the same
+run, `gemm_sme_mt` is 111% (FP32) and 117% (FP64) at N = 4096.
 
 ¹ Part 1's kernel with its current 6 × 4 tile and cache block, measured on
 2026-10-22, ten days after the SME rows; NEON's peak assumes the 4.49 GHz
@@ -673,6 +747,12 @@ core clock measured in the M4 runs of 2026-10-21. The SME rows ran at
    packed to make performance independent of the caller's layout. Together
    the copies cost 7–10% and remove a 3× cliff.
 
+5. **Count the units, then make sure the threads reach them.** Two SME
+   units need two threads in principle, but without pinning the scheduler
+   decides; on M4 Max only more threads than one cluster's six cores
+   guarantee both units, and work taken from a shared counter keeps the
+   uneven placement from costing time.
+
 **Next:** [part 3](sme2-cache-associativity.md) takes that cliff apart: why
 a 16 KiB row stride cuts the throughput to a third, which cache the
 conflicts are in, and what padding and packing each cost.
@@ -687,6 +767,7 @@ ctest --test-dir build
 
 ./build/benchmarks/bench_gemm --benchmark_filter='Sme|KleidiAI'   # the kernels
 VECLIB_MAXIMUM_THREADS=1 ./build/benchmarks/bench_gemm --benchmark_filter=Amx
+./build/benchmarks/bench_gemm --benchmark_filter='^SmeMtT'          # thread-count sweep (wall clock)
 ./build/benchmarks/sme_fmopa                                       # FMOPA latency and throughput
 ./build/benchmarks/cache_chase sizes                               # cache latencies
 ./build/benchmarks/cache_chase tlb                                 # TLB sizes

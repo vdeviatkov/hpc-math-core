@@ -50,25 +50,6 @@ ctest --test-dir build --output-on-failure
 ./build/benchmarks/bench_gemm_metal       # Apple GPU (SKIPPED elsewhere)
 ```
 
-### Python frameworks (NumPy, PyTorch, JAX, Triton)
-
-[`benchmarks/python/bench_frameworks.py`](../benchmarks/python/bench_frameworks.py)
-times each library's GEMM the way the C++ drivers do (2·N³ / time, median of
-several measurements) on every device the machine has, and writes a CSV.
-It needs no CMake build:
-
-```bash
-python3 -m venv .venv && .venv/bin/pip install -r benchmarks/python/requirements.txt
-.venv/bin/python benchmarks/python/bench_frameworks.py --out bench_frameworks.csv
-.venv/bin/python benchmarks/python/bench_frameworks.py --only torch --parts gpu   # one part
-```
-
-Rows whose framework or device is absent are printed as SKIPPED: Triton and
-the CUDA rows of PyTorch and JAX need an NVIDIA GPU (on Linux, the PyTorch
-CUDA wheels include Triton; install `jax[cuda12]` for JAX). On Apple GPUs,
-JAX needs `jax-metal`, which is pinned to JAX 0.4.35, so it gets its own
-venv (`--only jax --parts gpu`); see `requirements.txt`.
-
 ### Windows (MSVC x64)
 
 ```powershell

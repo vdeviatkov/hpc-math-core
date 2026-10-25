@@ -1,0 +1,4 @@
+# uptime before and after each M4 run (2026-10-24)
+m4_neon_packblock_loaded.csv  before: 13:43 load averages: 8.64 6.67 6.63   after: 14:15 load averages: 23.29 9.90 7.48
+m4_neon_slice.csv             before: 16:53 load averages: 1.78 5.03 6.93   after: 16:55 load averages: 1.64 3.84 6.19
+m4_cmp.csv                    before: 16:57 load averages: 2.61 3.34 5.66   after: 17:02 load averages: 4.78 3.37 4.92

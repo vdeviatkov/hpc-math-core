@@ -97,7 +97,9 @@ Their naive kernels build vectors from strided B-column elements and reduce
 vector accumulators to a scalar dot product. Reordered kernels broadcast A
 and vectorize the contiguous j loop. Blocked kernels keep a small rectangular
 C tile in registers for a whole k-block, amortizing C traffic and reusing
-both A broadcasts and B loads. None packs B. Full SIMD loads are unaligned
+both A broadcasts and B loads; they read B in place. The AVX2, AVX-512
+and NEON families also have a packed kernel, `gemm_<isa>_packed`, with
+the same micro-kernel and B copied into contiguous strips (below). Full SIMD loads are unaligned
 where needed, because the Matrix base alignment does not align every row.
 
 ### `src/gemm/blocked_driver.hpp`
@@ -116,6 +118,23 @@ loop. `PfDist > 0` adds the prefetch hints of `prefetch.hpp`. Every loop in
 a micro-kernel is unrolled with `#pragma GCC unroll 16`, so R and V are
 limited to 16 (a `static_assert`); a partially unrolled loop would move the
 accumulators to memory.
+
+### `src/gemm/packed_driver.hpp`
+
+`detail::packed_gemm<Micro, R, V, Mc, Kc, Nc, PackA>` runs the blocked
+kernels' micro-kernels in GotoBLAS order: for each Kc × Nc block of B
+(Nc rounded down to whole strips), copy it once into strips NR = V·W
+columns wide (kc rows of NR contiguous elements, zero-padded), then for
+each Mc-row block of A, for each strip, for each R-row tile, call
+`Micro::run` with `ldb = NR`. A is read in place unless `PackA`, which
+copies the Mc × Kc block of A into a row-major buffer with `lda = kc`.
+Edges go through `row_strip` with the strip's true width, so the padding is
+never computed or stored. B's row-major layout already suits the FP32
+micro-kernel; the copy only removes the cache-set conflicts of a
+power-of-two row stride. Packing costs 2–13% at N ≤ 256 on Zen 5 and
+gains up to 60% at N ≥ 1024 ([experiments/packed-b](experiments/packed-b/README.md)),
+so the blocked kernels stay as they are and the packed ones are separate
+entry points, `gemm_<isa>_packed<T, R, V, Mc, Kc, Nc, PackA = false>`.
 
 ### `src/gemm/avx2.hpp`
 
@@ -408,8 +427,6 @@ otherwise, as the CUDA stub does.
 | `benchmarks/bench_gemm.cpp` | Fixed-size square template registrations allow inlining and constant-size optimization. Allocation/random initialization are outside timing, but each kernel's zeroing and packing are inside. Uses thread CPU time except Accelerate's wall time. Prefetch distances and padded B experiments are separate registrations. |
 | `benchmarks/bench_gemm_cuda.cpp` | Allocates device problems once, warms up, then reports event durations as manual time. Host transfers and preconversion for levels 7-8/cuBLAS FP16 are excluded; level 5/6 tile conversion remains included. Precision counters distinguish storage/compute paths but do not specify error bounds. |
 | `benchmarks/bench_gemm_metal.cpp` | Inputs resident in GPU-visible memory before timing; one warm-up call compiles the pipeline. Each iteration is one command buffer of `reps` GEMMs (≥ ~5 ms, so the command buffer's fixed cost does not dominate at N=256), reported as manual time with the flop counter scaled by reps. Also tile variants and the FMA peak. |
-| `benchmarks/python/bench_frameworks.py` | NumPy, PyTorch, JAX and Triton GEMMs measured like the C++ drivers: device-resident inputs, preallocated output where the API allows, `reps` calls per measurement (≥ 0.2 s), median of 5. GPU time from device events (PyTorch MPS/CUDA, Triton), else wall clock to `block_until_ready` (JAX). CPU rows in child processes with 1 thread and all cores. Reports max relative error at N=256 against a float64 NumPy product. |
-| `benchmarks/python/triton_gemm.py` | The Triton kernel: one program per C tile, grouped program order for L2 reuse, autotuned tiles and pipeline depth, fp32 accumulation; fp32 inputs in IEEE fp32 or TF32. Untested on the recording machine (no NVIDIA GPU). |
 | `benchmarks/bench_gemm_lowp.cpp`, `benchmarks/bench_gemm_lowp_cuda.cpp` | Low-precision kernels with the FP32 kernel of the same unit (CPU), or `Mma` / `Tma` / `Cublas` per format (GPU, event time). Inputs converted before timing. The GPU benchmark also reports `err`: the worst of 256 sampled elements against a double-precision recomputation. |
 | `benchmarks/CMakeLists.txt` | Registers experiments only for compatible architectures/toolchains, GPU experiments only with CUDA, and SME experiments only after the runtime probe passes. GNU inline-assembly CPU probes are omitted on MSVC. |
 
@@ -460,7 +477,7 @@ does not automatically preserve a cycle or cache interpretation.
 | `docs/experiments/sme2-machine/*` | Cache/TLB/FMOPA samples and metadata for the M4 machine model. TLB capacities and cluster sharing are experimental inferences. |
 | `docs/experiments/sme-b-stride/*` | Phase timings and stride/height/width/chase data; metadata includes commands and source hashes for historical reproduction. |
 | `docs/experiments/metal-m4/*` | Metal ladder, MPS and FMA peak in one bracketed GPU session, plus the tile-variant sweep; the README records the clock and power caveats. |
-| `docs/experiments/frameworks-m4/*` | NumPy / PyTorch / JAX CSVs and metadata (versions, BLAS) from `bench_frameworks.py` on the M4 Max. |
+| `docs/experiments/frameworks-m4/*` | NumPy / PyTorch / JAX CSVs and metadata (versions, BLAS) on the M4 Max. |
 | `docs/experiments/sme-mt/*` | `gemm_sme_mt` thread × A-block sweep and the default against `gemm_sme` and Accelerate. |
 | `docs/experiments/cuda-machine/*` | GPU peaks, clock samples, full GEMM output and Nsight counters. Profiling perturbs timings; profile rates and benchmark rates need not coincide. |
 

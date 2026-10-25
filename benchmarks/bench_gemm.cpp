@@ -458,6 +458,48 @@ void add_sme_mt_sweep() {
     for_mc.template operator()<12>();
 }
 
+// ---------------------------------------------------------------------------
+// Packed B: <Isa>PackedCmp (B packed, GotoBLAS order), <Isa>PackedACmp (A
+// packed too) and the in-place <Isa>BlockedCmp, at power-of-two N and a
+// non-power-of-two control next to each; <Isa>PackBlock<M>x<K>x<N> sweeps the packed
+// cache block. Results: docs/experiments/packed-b/, docs/kernels/blocks.md.
+// ---------------------------------------------------------------------------
+
+void add_packed() {
+    using namespace hpc::gemm;
+    constexpr Sizes<1000, 1024, 2000, 2048, 4000, 4096> sizes{};
+    add<kHaveAvx2>("Avx2BlockedCmp", kNoAvx2, HPC_KERNEL(gemm_avx2_blocked), sizes);
+    add<kHaveAvx2>("Avx2PackedCmp", kNoAvx2, HPC_KERNEL(gemm_avx2_packed), sizes);
+    add<kHaveAvx2>("Avx2PackedACmp", kNoAvx2,
+                   []<typename T>(const hpc::Matrix<T>& A, const hpc::Matrix<T>& B, hpc::Matrix<T>& C) {
+                       gemm_avx2_packed<T, 6, 2, kAvx2PackMc, kAvx2PackKc, kAvx2PackNc, true>(A, B, C);
+                   },
+                   sizes);
+    add<kHaveAvx512>("Avx512BlockedCmp", kNoAvx512, HPC_KERNEL(gemm_avx512_blocked), sizes);
+    add<kHaveAvx512>("Avx512PackedCmp", kNoAvx512, HPC_KERNEL(gemm_avx512_packed), sizes);
+    add<kHaveAvx512>("Avx512PackedACmp", kNoAvx512,
+                     []<typename T>(const hpc::Matrix<T>& A, const hpc::Matrix<T>& B, hpc::Matrix<T>& C) {
+                         gemm_avx512_packed<T, 8, 3, kAvx512PackMc, kAvx512PackKc, kAvx512PackNc, true>(A, B, C);
+                     },
+                     sizes);
+    add<kHaveNeon>("NeonBlockedCmp", kNoNeon, HPC_KERNEL(gemm_neon_blocked), sizes);
+    add<kHaveNeon>("NeonPackedCmp", kNoNeon, HPC_KERNEL(gemm_neon_packed), sizes);
+    add<kHaveNeon>("NeonPackedACmp", kNoNeon,
+                   []<typename T>(const hpc::Matrix<T>& A, const hpc::Matrix<T>& B, hpc::Matrix<T>& C) {
+                       gemm_neon_packed<T, 6, 4, kNeonPackMc, kNeonPackKc, kNeonPackNc, true>(A, B, C);
+                   },
+                   sizes);
+
+    constexpr Sizes<1024, 2000, 4096> grid{};
+    constexpr Vals<64, 128, 256, 512> ms{};
+    constexpr Vals<128, 256, 512> ks{};
+    constexpr Vals<512, 1024, 2048> ns{};
+    add_block_grid<kHaveAvx2>("Avx2PackBlock", kNoAvx2, ms, ks, ns, grid, HPC_BLOCK(gemm_avx2_packed, 6, 2));
+    add_block_grid<kHaveAvx512>("Avx512PackBlock", kNoAvx512, ms, ks, ns, grid, HPC_BLOCK(gemm_avx512_packed, 8, 3));
+    add_block_grid<kHaveNeon>("NeonPackBlock", kNoNeon, Vals<64, 128, 256, 512, 1024>{}, Vals<256, 512, 1024>{},
+                              ns, grid, HPC_BLOCK(gemm_neon_packed, 6, 4));
+}
+
 void register_all() {
     using namespace hpc::gemm;
 
@@ -475,6 +517,9 @@ void register_all() {
     add<kHaveNeon>("NeonNaive", kNoNeon, HPC_KERNEL(gemm_neon_naive), kSizes);
     add<kHaveNeon>("NeonReordered", kNoNeon, HPC_KERNEL(gemm_neon_reordered), kSizes);
     add<kHaveNeon>("NeonBlocked", kNoNeon, HPC_KERNEL(gemm_neon_blocked), kSizes);
+    add<kHaveAvx2>("Avx2Packed", kNoAvx2, HPC_KERNEL(gemm_avx2_packed), kSizes);
+    add<kHaveAvx512>("Avx512Packed", kNoAvx512, HPC_KERNEL(gemm_avx512_packed), kSizes);
+    add<kHaveNeon>("NeonPacked", kNoNeon, HPC_KERNEL(gemm_neon_packed), kSizes);
     add<kHaveSve>("SveNaive", kNoSve, HPC_KERNEL(gemm_sve_naive), kSizes, SveVl{});
     add<kHaveSve>("SveReordered", kNoSve, HPC_KERNEL(gemm_sve_reordered), kSizes, SveVl{});
     add<kHaveSve>("SveBlocked", kNoSve, HPC_KERNEL(gemm_sve_blocked), kSizes, SveVl{});
@@ -508,6 +553,7 @@ void register_all() {
     add_sme_mt_sweep();
     add_tiles();
     add_blocks();
+    add_packed();
 }
 
 }  // namespace

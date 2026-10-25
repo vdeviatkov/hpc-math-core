@@ -34,13 +34,11 @@ Additional checks on the Apple host:
 - The native CPU suite passed 28 tests; SVE cases are absent on this host.
 - All 696 SVE blocked/tile/cache/prefetch benchmark rows reported SKIPPED
   on the non-SVE host, with zero measured iterations.
-- `git diff --check` passed.
 
 ## Reproduce the emulator check
 
-The cross-compiler and emulator used here were extracted from Ubuntu 24.04
-packages into `/tmp/hpc-sve-tiles-validation` on cuda.0, leaving its project
-checkout and system packages untouched. `validation.json` records compiler
+The cross-compiler and emulator came from Ubuntu 24.04 packages.
+`validation.json` records compiler
 flags, emulator version, test filter and hashes of the tested source files.
 `sve_test_main.cpp` is the VL-setting test entry point; use it instead of
 Google Test's usual main.

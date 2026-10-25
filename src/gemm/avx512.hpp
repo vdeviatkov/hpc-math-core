@@ -32,6 +32,7 @@
  */
 
 #include "gemm/blocked_driver.hpp"
+#include "gemm/packed_driver.hpp"
 #include "hpc/isa.hpp"
 #include "hpc/matrix.hpp"
 
@@ -340,6 +341,39 @@ void gemm_avx512_blocked(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
     static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>,
                   "gemm_avx512_blocked: T must be float or double");
     detail::blocked_gemm<Avx512Micro, R, V, TileM, TileK, TileN>(A, B, C);
+}
+#endif  // HPC_HAS_AVX512
+
+// ============================================================================
+// Kernel 4: gemm_avx512_packed  —  GotoBLAS order, B packed into strips
+// ============================================================================
+
+// Packed cache block (elements), the best of a 4 × 3 × 3 sweep on Zen 5
+// over both types (within 1% of each type's best; docs/kernels/blocks.md).
+// A strip of B, 512 × 48 floats (96 KiB), is larger than the 48 KiB L1,
+// yet Kc = 512 measured best: contiguous, its rows stream from L2.
+inline constexpr std::size_t kAvx512PackMc = 128;
+inline constexpr std::size_t kAvx512PackKc = 512;
+inline constexpr std::size_t kAvx512PackNc = 512;
+
+/**
+ * @brief gemm_avx512_blocked's micro-kernel with B packed (packed_driver.hpp).
+ *
+ * Each Kc × Nc block of B is copied once into contiguous V-vector (48 f32 / 24 f64
+ * column) strips, which removes the cache-set conflicts of B's row stride at
+ * power-of-two N; PackA = true copies the A block too. Packing is timed.
+ */
+#if !HPC_HAS_AVX512
+template <typename T, int R = 8, int V = 3, std::size_t Mc = kAvx512PackMc,
+          std::size_t Kc = kAvx512PackKc, std::size_t Nc = kAvx512PackNc, bool PackA = false>
+void gemm_avx512_packed(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) = delete;  // AVX512F not available on this target
+#else
+template <typename T, int R = 8, int V = 3, std::size_t Mc = kAvx512PackMc,
+          std::size_t Kc = kAvx512PackKc, std::size_t Nc = kAvx512PackNc, bool PackA = false>
+void gemm_avx512_packed(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
+    static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>,
+                  "gemm_avx512_packed: T must be float or double");
+    detail::packed_gemm<Avx512Micro, R, V, Mc, Kc, Nc, PackA>(A, B, C);
 }
 #endif  // HPC_HAS_AVX512
 

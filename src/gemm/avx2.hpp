@@ -22,6 +22,7 @@
  */
 
 #include "gemm/blocked_driver.hpp"
+#include "gemm/packed_driver.hpp"
 #include "hpc/isa.hpp"
 #include "hpc/matrix.hpp"
 
@@ -335,6 +336,38 @@ void gemm_avx2_blocked(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
     static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>,
                   "gemm_avx2_blocked: T must be float or double");
     detail::blocked_gemm<Avx2Micro, R, V, TileM, TileK, TileN>(A, B, C);
+}
+#endif  // HPC_HAS_AVX2
+
+// ============================================================================
+// Kernel 4: gemm_avx2_packed  —  GotoBLAS order, B packed into strips
+// ============================================================================
+
+// Packed cache block (elements), the best of a 4 × 3 × 3 sweep on Zen 5
+// over both types (within 1% of each type's best; docs/kernels/blocks.md).
+// One B strip, 256 × 16 floats, is 16 KiB and stays in L1.
+inline constexpr std::size_t kAvx2PackMc = 256;
+inline constexpr std::size_t kAvx2PackKc = 256;
+inline constexpr std::size_t kAvx2PackNc = 512;
+
+/**
+ * @brief gemm_avx2_blocked's micro-kernel with B packed (packed_driver.hpp).
+ *
+ * Each Kc × Nc block of B is copied once into contiguous V-vector (16 f32 / 8 f64
+ * column) strips, which removes the cache-set conflicts of B's row stride at
+ * power-of-two N; PackA = true copies the A block too. Packing is timed.
+ */
+#if !HPC_HAS_AVX2
+template <typename T, int R = 6, int V = 2, std::size_t Mc = kAvx2PackMc,
+          std::size_t Kc = kAvx2PackKc, std::size_t Nc = kAvx2PackNc, bool PackA = false>
+void gemm_avx2_packed(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) = delete;  // AVX2 not available on this target
+#else
+template <typename T, int R = 6, int V = 2, std::size_t Mc = kAvx2PackMc,
+          std::size_t Kc = kAvx2PackKc, std::size_t Nc = kAvx2PackNc, bool PackA = false>
+void gemm_avx2_packed(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
+    static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>,
+                  "gemm_avx2_packed: T must be float or double");
+    detail::packed_gemm<Avx2Micro, R, V, Mc, Kc, Nc, PackA>(A, B, C);
 }
 #endif  // HPC_HAS_AVX2
 

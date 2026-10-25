@@ -14,11 +14,12 @@ Cache background: [docs/cache-behavior.md](../../docs/cache-behavior.md).
 | [`naive.hpp`](naive.hpp) | `gemm_naive` (i-j-k, the reference every test compares against) | always |
 | [`reordered.hpp`](reordered.hpp) | `gemm_reordered` (i-k-j) | always |
 | [`blocked.hpp`](blocked.hpp) | `gemm_blocked` (cache-tiled i-k-j) | always |
-| [`avx2.hpp`](avx2.hpp) | `gemm_avx2_{naive,reordered,blocked}` | `__AVX2__` + FMA |
-| [`avx512.hpp`](avx512.hpp) | `gemm_avx512_{naive,reordered,blocked}` | `__AVX512F__` |
-| [`neon.hpp`](neon.hpp) | `gemm_neon_{naive,reordered,blocked}` | AArch64 NEON |
+| [`avx2.hpp`](avx2.hpp) | `gemm_avx2_{naive,reordered,blocked,packed}` | `__AVX2__` + FMA |
+| [`avx512.hpp`](avx512.hpp) | `gemm_avx512_{naive,reordered,blocked,packed}` | `__AVX512F__` |
+| [`neon.hpp`](neon.hpp) | `gemm_neon_{naive,reordered,blocked,packed}` | AArch64 NEON |
 | [`sve.hpp`](sve.hpp) | `gemm_sve_{naive,reordered,blocked}`; blocked register/cache tiles are template parameters ([sweeps](../../docs/kernels/sve.md)) | `__ARM_FEATURE_SVE` |
 | [`blocked_driver.hpp`](blocked_driver.hpp) | `detail::blocked_gemm<Micro, R, V, …>`: the cache-blocked, register-tiled driver of the AVX2, AVX-512 and NEON blocked kernels and their prefetch variants; any R × V tile, edges by smaller tiles of the same micro-kernel | always (the micro-kernels need their ISA) |
+| [`packed_driver.hpp`](packed_driver.hpp) | `detail::packed_gemm<Micro, R, V, Mc, Kc, Nc, PackA>`: the same micro-kernels in GotoBLAS order with each B block packed once into contiguous strips (optionally A too); the driver of `gemm_{avx2,avx512,neon}_packed` | always (the micro-kernels need their ISA) |
 | [`prefetch.hpp`](prefetch.hpp) | `gemm_{,avx2_,avx512_,neon_,sve_}blocked_prefetch` | per family |
 | [`sme.hpp`](sme.hpp) | `gemm_sme_1tile`, `gemm_sme_tiles`, `gemm_sme_blocked`, `gemm_sme`; configurable ZA shape/cache blocks ([guide](../../docs/kernels/sme.md)); `gemm_sme_mt`, the same blocking on several threads to use every P-cluster's SME unit ([sweep](../../docs/kernels/sme.md#several-sme-units)) | SME2, `HPC_ENABLE_SME=ON` |
 | [`amx.hpp`](amx.hpp) | `gemm_amx` (Accelerate BLAS, Apple's route to its AMX unit) | Apple, `HPC_ENABLE_AMX` (default on) |
@@ -48,7 +49,7 @@ of level 2, and an added technique need not improve every shape.
 | Register tiling | A small C tile stays in registers for a whole k-tile instead of being reloaded every k. | the micro-kernels of `*_blocked` |
 | Software prefetch | Hints for streams the hardware prefetcher might miss; close to neutral on both measured CPUs. | `prefetch.hpp` |
 | Outer products into a 2-D accumulator | One SME `FMOPA` adds an SVL×SVL outer product into ZA instead of one vector FMA. | `sme.hpp` |
-| Packing (GotoBLAS) | Copies blocks of A and B into contiguous strips in the order the micro-kernel reads them. | `sme.hpp` |
+| Packing (GotoBLAS) | Copies blocks of A and B into contiguous strips in the order the micro-kernel reads them; for the FP32 SIMD kernels, B alone, which removes the cache-set conflicts of a power-of-two row stride. | `sme.hpp`, `packed_driver.hpp`, `*_packed` |
 | Several matrix units | One SME unit per P-cluster: threads share one packed B panel and take A chunks from an atomic counter, so the work balances whichever cluster each thread lands on. | `sme.hpp`, `gemm_sme_mt` |
 | GPU simdgroup matrices | A 32-thread simdgroup multiplies 8×8 fragments (`simdgroup_multiply_accumulate`); on M1–M4 they run on the FP32 ALUs, with no separate matrix unit. | `gemm.metal`, Levels 3–5 |
 | GPU shared-memory and register tiling, double buffering, Tensor Cores | The GPU counterparts, one per CUDA level. | `cuda.hpp`, `gemm_kernels.cu` |

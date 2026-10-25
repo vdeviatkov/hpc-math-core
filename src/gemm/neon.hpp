@@ -31,6 +31,7 @@
  */
 
 #include "gemm/blocked_driver.hpp"
+#include "gemm/packed_driver.hpp"
 #include "hpc/isa.hpp"
 #include "hpc/matrix.hpp"
 
@@ -342,6 +343,39 @@ void gemm_neon_blocked(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
     static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>,
                   "gemm_neon_blocked: T must be float or double");
     detail::blocked_gemm<NeonMicro, R, V, TileM, TileK, TileN>(A, B, C);
+}
+#endif  // HPC_HAS_NEON
+
+// ============================================================================
+// Kernel 4: gemm_neon_packed  —  GotoBLAS order, B packed into strips
+// ============================================================================
+
+// Packed cache block (elements). On M4 every Mc from 256 to 1024 with
+// Kc = 512 and Nc = 512 or 1024 is within 3% (docs/kernels/blocks.md);
+// this one is best or tied in most cells: an A block of 256 × 512 (512 KiB
+// f32), one B strip of 512 × 16 floats (32 KiB) in the 128 KiB L1.
+inline constexpr std::size_t kNeonPackMc = 256;
+inline constexpr std::size_t kNeonPackKc = 512;
+inline constexpr std::size_t kNeonPackNc = 512;
+
+/**
+ * @brief gemm_neon_blocked's micro-kernel with B packed (packed_driver.hpp).
+ *
+ * Each Kc × Nc block of B is copied once into contiguous V-vector (16 f32 / 8 f64
+ * column) strips, which removes the cache-set conflicts of B's row stride at
+ * power-of-two N; PackA = true copies the A block too. Packing is timed.
+ */
+#if !HPC_HAS_NEON
+template <typename T, int R = 6, int V = 4, std::size_t Mc = kNeonPackMc,
+          std::size_t Kc = kNeonPackKc, std::size_t Nc = kNeonPackNc, bool PackA = false>
+void gemm_neon_packed(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) = delete;  // ARM_NEON not available on this target
+#else
+template <typename T, int R = 6, int V = 4, std::size_t Mc = kNeonPackMc,
+          std::size_t Kc = kNeonPackKc, std::size_t Nc = kNeonPackNc, bool PackA = false>
+void gemm_neon_packed(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
+    static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>,
+                  "gemm_neon_packed: T must be float or double");
+    detail::packed_gemm<NeonMicro, R, V, Mc, Kc, Nc, PackA>(A, B, C);
 }
 #endif  // HPC_HAS_NEON
 

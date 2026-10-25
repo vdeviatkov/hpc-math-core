@@ -1,11 +1,10 @@
 # NumPy, PyTorch and JAX on the Apple M4 Max
 
-Raw data behind [benchmarks.md § Frameworks](../../benchmarks.md#frameworks-numpy-pytorch-jax-triton).
+Recorded data from a NumPy / PyTorch / JAX GEMM comparison.
 Apple M4 Max (12 P-cores in two clusters, 4 E-cores, 40-core GPU), macOS
-26.3.1, Python 3.13.8, 2026-10-24, AC power. Program:
-[`benchmarks/python/bench_frameworks.py`](../../../benchmarks/python/bench_frameworks.py)
-(method in its docstring). Triton and every CUDA row report SKIPPED here:
-no NVIDIA GPU.
+26.3.1, Python 3.13.8, 2026-10-24, AC power. The benchmark script
+(`bench_frameworks.py`) is not part of this repository. Triton and every
+CUDA row report SKIPPED here: no NVIDIA GPU.
 
 | File | Command | Contents |
 |---|---|---|

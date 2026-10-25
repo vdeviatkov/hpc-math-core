@@ -2,7 +2,7 @@
 
 [![CI — Build & Test](https://github.com/vdeviatkov/hpc-math-core/actions/workflows/build.yml/badge.svg)](https://github.com/vdeviatkov/hpc-math-core/actions/workflows/build.yml)
 
-Progressive GEMM optimization and benchmarking across scalar C++, SIMD, ARM SME, Apple AMX, CUDA Tensor Cores and Apple GPUs (Metal), in FP32/FP64 and in bf16, fp16, INT8 and FP8, with NumPy, PyTorch, JAX and Triton measured the same way.
+Progressive GEMM optimization and benchmarking across scalar C++, SIMD, ARM SME, Apple AMX, CUDA Tensor Cores and Apple GPUs (Metal), in FP32/FP64 and in bf16, fp16, INT8 and FP8.
 
 Starting from readable scalar code, each step adds one layer of hardware exploitation — cache-friendly loop order, cache blocking, explicit SIMD (AVX2 · AVX-512 · NEON · SVE), software prefetch, CUDA (shared-memory tiling through Tensor Cores and TMA), and matrix-engine hardware (ARM SME2, Apple AMX). Low-precision versions of the fastest kernels show what each narrower format changes. Google Benchmark registers every kernel family; available kernels are checked against a reference by Google Test. SVE still lacks hardware validation.
 
@@ -79,7 +79,6 @@ Each family steps through the same techniques, one kernel per step.
 | Low precision, CPU | `gemm_avx512_{bf16,i8}`, `gemm_neon_{bf16,i8,f16,f16_acc}`, `gemm_sme_widening<…>` | the FP32 kernels with widening dot-product / outer-product instructions and k-group packing |
 | Low precision, CUDA | `gemm_cuda_{bf16,fp16,fp16_acc16,i8,fp8}` | one `mma.sync` kernel template for five formats, as a cp.async kernel and as Level 8 |
 | References | `gemm_amx` (Accelerate), `gemm_kleidiai`, `gemm_cuda_cublas*`, MPS | vendor libraries the hand-written kernels are measured against |
-| Python frameworks | NumPy, PyTorch (CPU, MPS, CUDA), JAX (CPU, Metal, CUDA), Triton | each library's GEMM, timed like the C++ drivers ([`bench_frameworks.py`](benchmarks/python/bench_frameworks.py)); Triton and the CUDA rows await the RTX 5080 machine |
 
 A family is compiled only where its ISA exists; elsewhere its kernels are
 declared `= delete`, and the benchmarks list them as `SKIPPED`. Every family
@@ -104,10 +103,6 @@ ctest --test-dir build --output-on-failure
 ./build/benchmarks/bench_gemm_lowp      # bf16 / fp16 / INT8 on this CPU
 ./build/benchmarks/bench_gemm_lowp_cuda # five formats on the GPU
 ./build/benchmarks/bench_gemm_metal     # Apple GPU: Metal ladder and MPS
-
-# NumPy / PyTorch / JAX / Triton (no CMake build needed)
-python3 -m venv .venv && .venv/bin/pip install -r benchmarks/python/requirements.txt
-.venv/bin/python benchmarks/python/bench_frameworks.py
 ```
 
 On an RTX 50-series GPU, `-DCMAKE_CUDA_ARCHITECTURES=120a` enables the
@@ -128,7 +123,6 @@ src/cuda/                     CUDA kernels (Levels 0-7; low precision and Level 
 src/metal/                    Metal kernels (gemm.metal, compiled at run time) and their Objective-C++ host, stub elsewhere
 tests/                        Correctness tests: every kernel against a reference
 benchmarks/                   bench_gemm, bench_gemm_lowp (CPU); bench_gemm_cuda, bench_gemm_lowp_cuda (GPU)
-benchmarks/python/            NumPy / PyTorch / JAX / Triton GEMM benchmark and the Triton kernel
 benchmarks/experiments/       Microbenchmarks behind the articles: instruction peaks, caches, strides, block sizes
 docs/articles/                The five articles and their charts (published with GitHub Pages)
 docs/experiments/             Raw data and method for every measured table in the articles
@@ -145,7 +139,7 @@ docs/                         Benchmark results, build guide, kernel design guid
 | [src/gemm/README.md](src/gemm/README.md) | Map of the kernels: files, techniques, registers and intrinsics per family. Each kernel's design is in its own header. |
 | [docs/kernel-design.md](docs/kernel-design.md) | File-by-file design: algorithms, layouts, edges, precision, benchmark methodology and supporting files |
 | [docs/kernels/](docs/kernels/README.md) | Register-tile and cache-block sweeps of the AVX2, AVX-512 and NEON kernels on Zen 5 and M4, with the reasons for each default |
-| [docs/benchmarks.md](docs/benchmarks.md) | All measurements and their analysis: Apple M4 Max (CPU and GPU), AMD Zen 5, RTX 5080, and the Python frameworks |
+| [docs/benchmarks.md](docs/benchmarks.md) | All measurements and their analysis: Apple M4 Max (CPU and GPU), AMD Zen 5 and RTX 5080 |
 | [docs/build.md](docs/build.md) | Build on Linux, macOS and Windows, CMake options, SME/AMX flags, what runs where, CI |
 | [docs/cache-behavior.md](docs/cache-behavior.md) | Background: cache lines, reuse distance, working sets, memory-bound limits, GPU memory hierarchy |
 

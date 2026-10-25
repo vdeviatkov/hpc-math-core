@@ -146,6 +146,13 @@ const Kernel kKernels[] = {
     HPC_TILE("Avx2Blocked4x3", gemm_avx2_blocked, 4, 3),
     HPC_TILE("Avx2Blocked7x2", gemm_avx2_blocked, 7, 2),
     HPC_BLOCK("Avx2Blocked_20x7x37", gemm_avx2_blocked, 6, 2, 20, 7, 37),
+    HPC_BOTH("Avx2Packed", gemm_avx2_packed),
+    Kernel{"Avx2PackedA", &gemm_avx2_packed<float, 6, 2, kAvx2PackMc, kAvx2PackKc, kAvx2PackNc, true>,
+           &gemm_avx2_packed<double, 6, 2, kAvx2PackMc, kAvx2PackKc, kAvx2PackNc, true>},
+    HPC_TILE("Avx2Packed4x2", gemm_avx2_packed, 4, 2),
+    HPC_BLOCK("Avx2Packed_5x7x50", gemm_avx2_packed, 6, 2, 5, 7, 50),
+    Kernel{"Avx2PackedA_5x7x50", &gemm_avx2_packed<float, 6, 2, 5, 7, 50, true>,
+           &gemm_avx2_packed<double, 6, 2, 5, 7, 50, true>},
 #endif
 #if HPC_HAS_AVX512
     HPC_BOTH("Avx512Naive", gemm_avx512_naive),
@@ -157,6 +164,13 @@ const Kernel kKernels[] = {
     HPC_TILE("Avx512Blocked6x3", gemm_avx512_blocked, 6, 3),
     HPC_TILE("Avx512Blocked12x2", gemm_avx512_blocked, 12, 2),
     HPC_BLOCK("Avx512Blocked_20x7x37", gemm_avx512_blocked, 8, 3, 20, 7, 37),
+    HPC_BOTH("Avx512Packed", gemm_avx512_packed),
+    Kernel{"Avx512PackedA", &gemm_avx512_packed<float, 8, 3, kAvx512PackMc, kAvx512PackKc, kAvx512PackNc, true>,
+           &gemm_avx512_packed<double, 8, 3, kAvx512PackMc, kAvx512PackKc, kAvx512PackNc, true>},
+    HPC_TILE("Avx512Packed4x2", gemm_avx512_packed, 4, 2),
+    HPC_BLOCK("Avx512Packed_5x7x50", gemm_avx512_packed, 8, 3, 5, 7, 50),
+    Kernel{"Avx512PackedA_5x7x50", &gemm_avx512_packed<float, 8, 3, 5, 7, 50, true>,
+           &gemm_avx512_packed<double, 8, 3, 5, 7, 50, true>},
 #endif
 #if HPC_HAS_NEON
     HPC_BOTH("NeonNaive", gemm_neon_naive),
@@ -168,6 +182,13 @@ const Kernel kKernels[] = {
     HPC_TILE("NeonBlocked6x3", gemm_neon_blocked, 6, 3),
     HPC_TILE("NeonBlocked3x5", gemm_neon_blocked, 3, 5),
     HPC_BLOCK("NeonBlocked_20x7x37", gemm_neon_blocked, 6, 4, 20, 7, 37),
+    HPC_BOTH("NeonPacked", gemm_neon_packed),
+    Kernel{"NeonPackedA", &gemm_neon_packed<float, 6, 4, kNeonPackMc, kNeonPackKc, kNeonPackNc, true>,
+           &gemm_neon_packed<double, 6, 4, kNeonPackMc, kNeonPackKc, kNeonPackNc, true>},
+    HPC_TILE("NeonPacked4x2", gemm_neon_packed, 4, 2),
+    HPC_BLOCK("NeonPacked_5x7x50", gemm_neon_packed, 6, 4, 5, 7, 50),
+    Kernel{"NeonPackedA_5x7x50", &gemm_neon_packed<float, 6, 4, 5, 7, 50, true>,
+           &gemm_neon_packed<double, 6, 4, 5, 7, 50, true>},
 #endif
 #if HPC_HAS_SVE
     HPC_BOTH("SveNaive", gemm_sve_naive),

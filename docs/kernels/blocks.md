@@ -224,7 +224,83 @@ against the same kernels with the old blocks in their last runs:
 What remains at large N is mostly B's row stride
 ([Part 3](../articles/sme2-cache-associativity.md)): AVX2 FP32 and FP64
 still drop at the 4 KiB stride (N = 1024 FP32, 512 FP64). Packing B into
-contiguous strips, as the SME2 kernel does, is the next step.
+contiguous strips, as the SME2 kernel does, is the next step: below.
+
+## Packed B
+
+`gemm_<isa>_packed<T, R, V, Mc, Kc, Nc, PackA = false>`
+([`packed_driver.hpp`](../../src/gemm/packed_driver.hpp)) runs the same
+micro-kernel and register tile in GotoBLAS order:
+
+```text
+for each block of Nc columns of B                (jc; rounded down to whole strips)
+  for each block of Kc steps of k                 (pc)
+    pack B(pc.., jc..) into strips V·W columns wide, kc rows each, contiguous
+    for each block of Mc rows of A                (ic)
+      for each strip                              (jr)
+        for each tile of R rows                   (ir)
+          micro-kernel: C(R × V·W) += A(R × kc) · strip(kc × V·W), ldb = V·W
+```
+
+The B block is copied once and serves all of A, so B is read from memory
+once per pc pass instead of once per block of A; within a strip, row k
+and row k + 1 are V·W elements apart instead of N, so a power-of-two N no
+longer folds the strip onto a few cache sets. The order of the inner two
+loops is swapped against the blocked driver: one strip is reused by every
+R-row tile of the A block.
+
+### Blocks
+
+Swept like the blocked kernels, Mc ∈ {64, 128, 256, 512} (NEON: up to
+1024) × Kc ∈ {128, 256, 512} (NEON: 256, 512, 1024) × Nc ∈ {512, 1024,
+2048}, N = 1024, 2000, 4096
+([data](../experiments/packed-b/README.md)):
+
+| Family | Default Mc × Kc × Nc | Notes |
+|---|---|---|
+| AVX2 | 256 × 256 × 512 | the B strip, 256 × 16 floats, is 16 KiB: in L1 |
+| AVX-512 | 128 × 512 × 512 | a 512 × 48-float strip is 96 KiB, twice the L1, yet Kc = 512 beats 256 by ~2%: contiguous rows stream from L2 |
+| NEON | 256 × 512 × 512 | Mc 256–1024, Nc 512–1024 all within 3% on a quiet M4 |
+
+The Zen 5 grids are flat near the top: the best ten blocks of each family
+and type lie within 2.5% (geometric mean over N). One outlier: NEON FP64 with 1024 × 512 × 2048
+(a 4 MiB A block and an 8 MiB B block, 12 of the 16 MiB L2) collapsed to
+17 GFLOP/s at N = 4096 in the one-run M4 grid, which ran under load.
+
+### Packed against in place
+
+Medians, GFLOP/s (Zen 5: 3 runs; M4: 5 runs, interleaved):
+
+| | N = 1000 | 1024 | 2000 | 2048 | 4000 | 4096 |
+|---|--:|--:|--:|--:|--:|--:|
+| AVX-512 FP32, in place | 250.6 | 311.5 | 308.2 | 301.6 | 309.8 | 294.2 |
+| AVX-512 FP32, packed | **288.7** | 315.7 | 320.9 | 318.2 | 322.5 | **318.7** |
+| AVX-512 FP64, in place | 152.2 | 149.8 | 150.5 | 144.7 | 149.9 | 142.4 |
+| AVX-512 FP64, packed | 155.6 | 154.5 | 155.0 | 154.3 | 154.2 | **152.2** |
+| AVX2 FP32, in place | 168.4 | 126.3 | 163.9 | 105.2 | 163.0 | 104.2 |
+| AVX2 FP32, packed | 167.5 | **166.1** | 168.7 | **166.5** | 169.4 | **166.9** |
+| AVX2 FP64, in place | 83.9 | 54.7 | 81.0 | 53.4 | 81.5 | 53.6 |
+| AVX2 FP64, packed | 83.2 | **81.8** | 82.9 | **82.0** | 82.6 | **81.3** |
+| NEON FP32, in place | 120.8 | 121.5 | 118.7 | 117.6 | 114.1 | 101.6 |
+| NEON FP32, packed | 121.9 | 123.2 | 118.6 | 121.1 | 120.7 | **120.4** |
+| NEON FP64, in place | 59.0 | 59.1 | 54.8 | 51.6 | 54.1 | 50.5 |
+| NEON FP64, packed | 59.2 | 59.8 | 59.1 | **58.8** | 58.7 | **58.5** |
+
+- **AVX2** loses a quarter to a third of its speed at every 4 KiB-multiple
+  stride in place; packed, it is flat at 166–169 FP32 and 81–83 FP64 from N = 1000
+  to 4096: **+32% to +60%**.
+- **AVX-512** gains 3–8% at N ≥ 2000, and 15% at N = 1000, where the
+  in-place kernel is unusually slow (rows 4,000 B apart).
+- **NEON** gains 16–19% at N = 4096, and in FP64 8–16% from N = 2000.
+- **Small N pays for the copy:** packed / in place is 0.87–0.95 at N = 64
+  and 0.94–0.98 at 256; at 512 it is break-even (or +32% for AVX2 FP64,
+  whose rows are already 4 KiB apart). Packing is inside the timed call.
+- **Packing A too** (`PackA = true`) is 0.95–1.00× of packing B alone on
+  both machines: once B is contiguous, A's row stride does not limit these
+  kernels.
+
+The blocked kernels stay the defaults of the main tables, which include
+N = 64 … 512; the packed ones are separate entry points for large N.
 
 ## Reproduce
 
@@ -236,6 +312,11 @@ taskset -c 2 ./build/benchmarks/bench_gemm \
     --benchmark_filter='^Avx512Block(64x256x512|512x256x512|512x256x256)/' \
     --benchmark_repetitions=3 --benchmark_enable_random_interleaving=true \
     --benchmark_report_aggregates_only=true                                   # stage 2
+# packed B: block grid, then packed vs in place (Zen 5 pinned as above)
+./build/benchmarks/bench_gemm --benchmark_filter='^Avx512PackBlock'       # Avx2PackBlock, NeonPackBlock likewise
+./build/benchmarks/bench_gemm --benchmark_filter='Cmp/' \
+    --benchmark_repetitions=3 --benchmark_enable_random_interleaving=true \
+    --benchmark_report_aggregates_only=true
 ```
 
 (`Avx2Block`, `NeonBlock` likewise.) A block outside the grid:

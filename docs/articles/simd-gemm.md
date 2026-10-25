@@ -48,6 +48,11 @@ independent accumulators the inner loop keeps in registers.
   the same way, the best keep each block of B within half of Zen 5's L2
   and make the blocks of A 6–8 times taller: at N = 4096 +10–12% for AVX2
   and NEON, +28% (FP32) and +51% (FP64) for AVX-512.
+- Copying each block of B into contiguous strips (GotoBLAS packing),
+  with the same micro-kernels, removes the remaining drop at power-of-two
+  sizes: at N = 4096 **+60% (AVX2 FP32), +8% (AVX-512 FP32) and +18%
+  (NEON FP32)**, flat from N = 1000 to 4096. Below N = 512 the copy costs
+  2–13%.
 
 ## The problem
 
@@ -544,7 +549,95 @@ blocks) 14–17% against the same rows padded by one
 of L1 (64 sets × 12 ways); L2 conflicts, which cost the M4's SME2 kernel
 two thirds, appear to be absorbed by Zen 5's L3. The cure is to pad B's
 rows or copy each strip of B into a contiguous buffer before the
-micro-kernel uses it, as part 2 does for the SME2 kernel.
+micro-kernel uses it, as part 2 does for the SME2 kernel. The next step
+does the copy.
+
+## Step 5: pack B
+
+Code: [`gemm_avx2_packed`, `gemm_avx512_packed`, `gemm_neon_packed`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/packed_driver.hpp).
+
+Every SIMD kernel in this series, including the 16- and 8-bit ones of
+[part 5](lowp-gemm.md), has the same inner step: load a few vectors of a
+row of B, broadcast one element of A per row of the tile, and multiply-add
+into R × V accumulators. The low-precision kernels must pack B, because
+their dot-product instructions need G consecutive k of one column in each
+32-bit lane, and row-major B does not store them that way. The FP32
+kernels do not have to: a row of B is already V contiguous vectors, the
+layout the FMA wants. Here packing B is purely about the caches.
+
+The packed kernels keep the micro-kernel and the register tile, and
+change two things:
+
+1. **B's layout.** Each Kc × Nc block of B is copied into strips one tile
+   wide (V·W columns: 48 floats for AVX-512, 16 for AVX2 and NEON), kc rows
+   each, stored contiguously. Inside a strip, row k + 1 follows row k
+   directly instead of N elements later, so no N folds the strip onto a few
+   cache sets.
+2. **The loop order (GotoBLAS).** The B block is copied once and then
+   serves every row block of A; inside, one strip is reused by every R-row
+   tile of the A block before the next strip is touched.
+
+```text
+for jc: block of Nc columns
+  for pc: block of Kc steps of k
+    pack B(pc.., jc..) into strips          ← once, shared by all of A
+    for ic: block of Mc rows of A           (A read in place)
+      for jr: one strip                     ← kc × V·W, contiguous
+        for ir: R rows → micro-kernel(A rows, strip, ldb = V·W)
+```
+
+The blocks were swept as in Step 4 (Mc × Kc × Nc, 36 combinations on
+Zen 5 and 45 on the M4). The defaults are 256 × 256 × 512 for AVX2,
+128 × 512 × 512 for AVX-512 and 256 × 512 × 512 for NEON. The best ten
+blocks of each Zen 5 grid lie within 2.5%. One result was unexpected: on
+AVX-512, Kc = 512 beats 256 by ~2%, although a 512 × 48-float strip
+(96 KiB) is twice the L1. Once the rows are contiguous, streaming the strip
+from L2 is fast enough.
+
+Packed against in place, GFLOP/s (Zen 5: 3 runs, M4: 5 runs, medians):
+
+| FP32 | N = 1000 | 1024 | 2000 | 2048 | 4000 | 4096 |
+|---|--:|--:|--:|--:|--:|--:|
+| Zen 5, AVX-512, in place | 250.6 | 311.5 | 308.2 | 301.6 | 309.8 | 294.2 |
+| Zen 5, AVX-512, packed | **288.7** | 315.7 | 320.9 | 318.2 | 322.5 | **318.7** |
+| Zen 5, AVX2, in place | 168.4 | 126.3 | 163.9 | 105.2 | 163.0 | 104.2 |
+| Zen 5, AVX2, packed | 167.5 | **166.1** | 168.7 | **166.5** | 169.4 | **166.9** |
+| M4, NEON, in place | 120.8 | 121.5 | 118.7 | 117.6 | 114.1 | 101.6 |
+| M4, NEON, packed | 121.9 | 123.2 | 118.6 | 121.1 | 120.7 | **120.4** |
+
+| FP64 | N = 1000 | 1024 | 2000 | 2048 | 4000 | 4096 |
+|---|--:|--:|--:|--:|--:|--:|
+| Zen 5, AVX-512, in place | 152.2 | 149.8 | 150.5 | 144.7 | 149.9 | 142.4 |
+| Zen 5, AVX-512, packed | 155.6 | 154.5 | 155.0 | 154.3 | 154.2 | **152.2** |
+| Zen 5, AVX2, in place | 83.9 | 54.7 | 81.0 | 53.4 | 81.5 | 53.6 |
+| Zen 5, AVX2, packed | 83.2 | **81.8** | 82.9 | **82.0** | 82.6 | **81.3** |
+| M4, NEON, in place | 59.0 | 59.1 | 54.8 | 51.6 | 54.1 | 50.5 |
+| M4, NEON, packed | 59.2 | 59.8 | 59.1 | **58.8** | 58.7 | **58.5** |
+
+- **The 4 KiB cliff is gone.** In place, AVX2 loses a quarter to a third
+  of its speed whenever B's rows are a multiple of 4 KiB apart. Packed, it
+  runs at 166–169 GFLOP/s FP32 and 81–83 FP64 at every size from 1000 to
+  4096, **+32% to +60%**, and at N = 4096 within 3% of its best small-N
+  figure.
+- **AVX-512 gains 3–8%** at N ≥ 2000, and 15% at N = 1000, where the
+  in-place kernel is unusually slow (rows 4,000 B apart, just short of
+  4 KiB). At N = 4096 it now runs at 318.7 GFLOP/s, 88% of the measured
+  peak, against 81% in place.
+- **NEON gains 16–19% at N = 4096**, and in FP64 8–16% from N = 2000. On
+  the M4 the FP64 gain at N = 2000 and 4000 is as large as at the powers of
+  two, so the stride is not the only thing the copy fixes there; what else
+  it fixes was not isolated.
+- **Small matrices pay for the copy.** At N = 64 the packed kernels run at
+  0.87–0.95× of the in-place ones, at N = 256 at 0.94–0.98×; N = 512 is
+  break-even. The copy and its buffer are inside the timed call. So the
+  packed kernels are separate entry points, and the blocked kernels remain
+  the defaults of the tables above.
+- **Packing A too does not help.** Copying the Mc × Kc block of A as well,
+  so that a tile's rows are kc elements apart instead of K, runs at
+  0.95–1.00× of packing B alone on both machines.
+
+Data and method: [experiments/packed-b](https://github.com/vdeviatkov/hpc-math-core/tree/main/docs/experiments/packed-b),
+[kernels/blocks.md](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/kernels/blocks.md#packed-b).
 
 ## What does not help
 
@@ -570,7 +663,10 @@ squares around every vector and tile width (1–5, 7, 8, 13, 15–17, 31–33,
 empty matrices. Row counts such as 17, 33, 63, 129 and 257 exercise the
 remainder strips, which run the same micro-kernel with fewer rows. The
 tests also run each family with several non-default tiles (for example
-AVX-512 8 × 2, 6 × 3 and 12 × 2; NEON 1 × 1, 6 × 3 and 3 × 5). An element passes if
+AVX-512 8 × 2, 6 × 3 and 12 × 2; NEON 1 × 1, 6 × 3 and 3 × 5). The packed
+kernels of Step 5 run the same shapes at their defaults, with A packed
+too, with a 4 × 2 tile, and with 5 × 7 × 50 blocks, which cut every strip
+and block short. An element passes if
 `|C − C_ref| ≤ tol · (1 + |C_ref|)`, tol = 1e-4 in FP32 and 1e-10 in FP64:
 the kernels sum in a different order than the reference, and the tests use
 the same `-ffast-math` build as the benchmarks. All pass on both machines,
@@ -605,7 +701,10 @@ before and after the tile changes.
    paper; the compiler's choice to re-load B in every FMA held it at 60%.
    A larger tile fixed it: 92% of peak with 8 × 2, 91% with today's 8 × 3
    and blocks.
-4. **The register tile is an outer product.** Every fast kernel in this
+4. **Pack B when N is large.** Row-major B already suits the FP32
+   micro-kernel; the copy is for the caches, and it is worth up to 60% at
+   power-of-two N and a few percent below N = 512.
+5. **The register tile is an outer product.** Every fast kernel in this
    series keeps a block of C in registers (or, on a matrix unit, in
    accumulator tiles) and adds outer products of a column of A and a row of
    B into it.
@@ -626,12 +725,13 @@ ctest --test-dir build
 ./build/benchmarks/bench_gemm --benchmark_filter='^(Naive|Reordered|Blocked|Neon|Avx2|Avx512)'
 ./build/benchmarks/bench_gemm --benchmark_filter='Tile'   # every register-tile shape
 ./build/benchmarks/bench_gemm --benchmark_filter='Block[0-9]'   # every cache block
+./build/benchmarks/bench_gemm --benchmark_filter='Cmp/'        # packed B against in place
 ```
 
 The kernels are in
 [`src/gemm/`](https://github.com/vdeviatkov/hpc-math-core/tree/main/src/gemm)
 (`naive.hpp`, `reordered.hpp`, `blocked.hpp`, `neon.hpp`, `avx2.hpp`,
-`avx512.hpp`). Raw data and method:
+`avx512.hpp`, `packed_driver.hpp`). Raw data and method:
 [experiments/cpu-simd](https://github.com/vdeviatkov/hpc-math-core/tree/main/docs/experiments/cpu-simd),
 [tile-sweeps](https://github.com/vdeviatkov/hpc-math-core/tree/main/docs/experiments/tile-sweeps)
 and [block-sweeps](https://github.com/vdeviatkov/hpc-math-core/tree/main/docs/experiments/block-sweeps).
