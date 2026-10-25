@@ -51,7 +51,7 @@ independent accumulators the inner loop keeps in registers.
 - Copying each block of B into contiguous strips (GotoBLAS packing),
   with the same micro-kernels, removes the remaining drop at power-of-two
   sizes: at N = 4096 **+60% (AVX2 FP32), +8% (AVX-512 FP32) and +18%
-  (NEON FP32)**, flat from N = 1000 to 4096. Below N = 512 the copy costs
+  (NEON FP32)**, flat from N = 1024 to 4096. Below N = 512 the copy costs
   2–13%.
 
 ## The problem
@@ -711,7 +711,8 @@ before and after the tile changes.
 
 **Next:** [part 2](sme2-gemm.md) runs the same multiplication on Apple's
 SME2 matrix unit, where one instruction is a 16 × 16 outer product, and
-packs B to remove the stride problem above.
+where the same packing of B matters far more: unpacked, a power-of-two
+stride costs it two thirds of its speed ([part 3](sme2-cache-associativity.md)).
 
 ## Reproduce
 

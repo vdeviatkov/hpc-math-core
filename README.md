@@ -14,7 +14,7 @@ A five-part series built on this code; every number in it comes from the kernels
 
 | Part | Article | Hardware | Key result |
 |--:|---|---|---|
-| 1 | [Matrix multiplication with SIMD on Apple M4 and AMD Zen 5](https://vdeviatkov.github.io/hpc-math-core/articles/simd-gemm.html) ([md](docs/articles/simd-gemm.md)) | M4 P-core (NEON), Zen 5 core (AVX2, AVX-512) | The textbook loop at 0.4 GFLOP/s to 328 GFLOP/s FP32 on one Zen 5 core, 91% of peak: loop order, cache blocks and register tiles, each chosen by measurement, and a compiler trap that held AVX-512 at 60% |
+| 1 | [Matrix multiplication with SIMD on Apple M4 and AMD Zen 5](https://vdeviatkov.github.io/hpc-math-core/articles/simd-gemm.html) ([md](docs/articles/simd-gemm.md)) | M4 P-core (NEON), Zen 5 core (AVX2, AVX-512) | The textbook loop at 0.4 GFLOP/s to 328 GFLOP/s FP32 on one Zen 5 core, 91% of peak: loop order, cache blocks, register tiles and packed B, each chosen by measurement, and a compiler trap that held AVX-512 at 60% |
 | 2 | [Matrix multiplication on Apple M4's SME2 unit](https://vdeviatkov.github.io/hpc-math-core/articles/sme2-gemm.html) ([md](docs/articles/sme2-gemm.md)) | M4 SME2 matrix unit | Outer products, all four accumulator tiles, blocking and packing: 472 → 1,532 GFLOP/s on one unit (78% of peak), 85–94% of Apple's Accelerate |
 | 3 | [A power-of-two stride cuts SME2 GEMM throughput by two thirds on Apple M4](https://vdeviatkov.github.io/hpc-math-core/articles/sme2-cache-associativity.html) ([md](docs/articles/sme2-cache-associativity.md)) | M4 SME2, Zen 5 | B rows 16 KiB apart cost the M4 kernel two thirds of its speed through L2 set conflicts; padding or packing B fixes it. On Zen 5 the same effect costs 14–17% |
 | 4 | [Matrix multiplication on an RTX 5080](https://vdeviatkov.github.io/hpc-math-core/articles/cuda-gemm.html) ([md](docs/articles/cuda-gemm.md)) | RTX 5080 (FMA cores, Tensor Cores) | Nine CUDA kernels, one technique apart, from 3.7 to 120 TFLOP/s; the last, fed by TMA with warp specialisation, matches cuBLAS |
@@ -45,7 +45,7 @@ Best kernel per family, single-threaded unless noted. The percentage after each 
 ¹ Vendor BLAS with its default threading (all cores) — not a single-core comparison.
 ² GPU time of the GEMM alone, data already on the GPU (as the CPU rows measure the multiplication alone); best over N ≤ 16384.
 ³ fp16 inputs, fp32 accumulate; 100 % of cuBLAS FP16 on the same GPU at N = 16384 (Level 7, `gemm_cuda_wmma_pipelined`: 100.7 TFLOP/s at N = 8192, 85 %; 83 % at N = 16384).
-⁴ Best over every register-tile shape and cache block measured ([docs/kernels](docs/kernels/README.md)). The defaults reach 124 / 62 (NEON 6×4), 172 / 83 (AVX2 6×2) and 328 / 162 (AVX-512 8×3); the AVX-512 f32 best is the 14×2 tile at N = 256, the AVX2 f64 best the 6×2 tile with the earlier 64-row block. At N = 4096 the defaults run at 102 / 51, 106 / 54 and 295 / 145.
+⁴ Best over every register-tile shape and cache block measured ([docs/kernels](docs/kernels/README.md)). The defaults reach 124 / 62 (NEON 6×4), 172 / 83 (AVX2 6×2) and 328 / 162 (AVX-512 8×3); the AVX-512 f32 best is the 14×2 tile at N = 256, the AVX2 f64 best the 6×2 tile with the earlier 64-row block. At N = 4096 the defaults run at 102 / 51, 106 / 54 and 295 / 145; the packed-B kernels (`gemm_<isa>_packed`) hold 120 / 59, 167 / 81 and 319 / 152 there, within 3% of their best from N = 1024 to 4096, power of two or not, but run at 0.87–0.95× of the blocked kernels at N = 64, where the copy is not amortised ([packed-b](docs/experiments/packed-b/README.md)).
 ⁵ Vector units × lanes × 2 flops per FMA × the clock measured during that row's runs (the M4 P-core clock moves with background load: 3.96–4.13 GHz for the scalar row, 4.49 GHz for NEON; the GPU's with power). For the Tensor Cores, 512 flops per SM per cycle is the rate the `mma.sync` microbenchmark implies. The microbenchmarks reach 98–100% of these figures (GPU FP64: 85%, below what the FP64 GEMM kernels themselves reach) ([cpu-simd](docs/experiments/cpu-simd/README.md), [CUDA](docs/articles/cuda-gemm.md)).
 ⁶ Apple publishes no figures for its matrix unit. These are measured: `FMOPA` issues once per cycle with four accumulator tiles, 512 FP32 or 128 FP64 flops each ([part 2](docs/articles/sme2-gemm.md)); `gemm_amx` runs on both P-clusters' units.
 ⁷ Wall-clock time, 8 threads; 111% of Accelerate with all cores in f32 and 117% in f64 at N=4096, 83% / 92% at N=1024 ([§ Several SME units](docs/benchmarks.md#several-sme-units-gemm_sme_mt)).
@@ -71,7 +71,7 @@ Each family steps through the same techniques, one kernel per step.
 | Family | Kernels | Steps |
 |---|---|---|
 | Scalar | `gemm_naive` → `gemm_reordered` → `gemm_blocked` | i-j-k → cache-friendly i-k-j → cache tiling (tile 64) |
-| SIMD: AVX2, AVX-512, NEON, SVE | `gemm_<isa>_naive` → `_reordered` → `_blocked` | the same three steps with intrinsics, plus a register-tiled micro-kernel; SVE is vector-length agnostic with predicated tails |
+| SIMD: AVX2, AVX-512, NEON, SVE | `gemm_<isa>_naive` → `_reordered` → `_blocked` → `_packed` | the same three steps with intrinsics, plus a register-tiled micro-kernel; then GotoBLAS loop order with B packed into contiguous strips (AVX2, AVX-512, NEON); SVE is vector-length agnostic with predicated tails |
 | Software prefetch | `gemm_<isa>_blocked_prefetch` | `__builtin_prefetch` for A, B and C, distance swept over {2, 4, 8, 16} |
 | ARM SME2 | `gemm_sme_1tile` → `gemm_sme_tiles` → `gemm_sme_blocked` → `gemm_sme` → `gemm_sme_mt` | `FMOPA` outer products into one ZA tile → all ZA tiles → GotoBLAS cache blocking → packed B → both P-clusters' SME units (shared B panel, dynamic A chunks) |
 | CUDA | `gemm_cuda_*`, Levels 0–8 | shared-memory tiling → register tiling → `cp.async` double buffering → 128-bit loads + swizzle → Tensor Cores via WMMA → raw `ldmatrix`/`mma.sync` → pipelined WMMA with 128×128 tiles → TMA + warp-specialised `mma.sync` |
@@ -138,7 +138,7 @@ docs/                         Benchmark results, build guide, kernel design guid
 |---|---|
 | [src/gemm/README.md](src/gemm/README.md) | Map of the kernels: files, techniques, registers and intrinsics per family. Each kernel's design is in its own header. |
 | [docs/kernel-design.md](docs/kernel-design.md) | File-by-file design: algorithms, layouts, edges, precision, benchmark methodology and supporting files |
-| [docs/kernels/](docs/kernels/README.md) | Register-tile and cache-block sweeps of the AVX2, AVX-512 and NEON kernels on Zen 5 and M4, with the reasons for each default |
+| [docs/kernels/](docs/kernels/README.md) | Register-tile, cache-block and packed-B block sweeps of the AVX2, AVX-512 and NEON kernels on Zen 5 and M4, with the reasons for each default |
 | [docs/benchmarks.md](docs/benchmarks.md) | All measurements and their analysis: Apple M4 Max (CPU and GPU), AMD Zen 5 and RTX 5080 |
 | [docs/build.md](docs/build.md) | Build on Linux, macOS and Windows, CMake options, SME/AMX flags, what runs where, CI |
 | [docs/cache-behavior.md](docs/cache-behavior.md) | Background: cache lines, reuse distance, working sets, memory-bound limits, GPU memory hierarchy |

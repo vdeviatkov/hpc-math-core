@@ -12,6 +12,9 @@
  * "GFLOP/s" is 2·N³ / time for every format, INT8 included (one
  * multiply-add = 2 operations), so the rows compare directly.
  *
+ * Avx512{Dpbf16,Vnni}Tile<R>x<V>[Kc<bytes>] rows (add_tiles) run the AVX-512
+ * kernels with other register tiles and k blocks.
+ *
  * Only the families compiled for this target are registered (see the
  * HPC_HAS_* checks): SME2 on Apple M4, NEON with BF16 / I8MM / FP16 on
  * Armv8.6+, AVX-512 BF16 / VNNI on x86.
@@ -111,10 +114,32 @@ void register_all() {
 #endif
 }
 
+/// Register-tile sweep of the AVX-512 kernels:
+/// Avx512{Dpbf16,Vnni}Tile<R>x<V>[Kc<bytes>]/<format>/N=<n>. The default is
+/// 8x2 with Kc = 1024 bytes; a strip of B is Kc · 16·V bytes, so the wider
+/// tiles also run at Kc = 512 to keep it inside Zen 5's 48 KiB L1.
+void add_tiles() {
+#if HPC_HAS_AVX512_LOWP
+#define HPC_AVX512_LOWP_TILE(R, V, KC, SUFFIX)                                                     \
+    add<bf16>("Avx512Dpbf16Tile" #R "x" #V SUFFIX, "bf16", gemm_avx512_bf16<R, V, KC>);             \
+    add<std::int8_t>("Avx512VnniTile" #R "x" #V SUFFIX, "int8", gemm_avx512_i8<R, V, KC>)
+    // 32 ZMM registers: R·V accumulators + V for B + 1 broadcast.
+    HPC_AVX512_LOWP_TILE(8, 2, 1024, ""); HPC_AVX512_LOWP_TILE(6, 2, 1024, "");
+    HPC_AVX512_LOWP_TILE(4, 3, 1024, ""); HPC_AVX512_LOWP_TILE(16, 1, 1024, "");
+    HPC_AVX512_LOWP_TILE(12, 2, 1024, ""); HPC_AVX512_LOWP_TILE(14, 2, 1024, "");
+    HPC_AVX512_LOWP_TILE(6, 3, 1024, ""); HPC_AVX512_LOWP_TILE(8, 3, 1024, "");
+    HPC_AVX512_LOWP_TILE(4, 4, 1024, ""); HPC_AVX512_LOWP_TILE(6, 4, 1024, "");
+    HPC_AVX512_LOWP_TILE(8, 3, 512, "Kc512"); HPC_AVX512_LOWP_TILE(4, 4, 512, "Kc512");
+    HPC_AVX512_LOWP_TILE(6, 4, 512, "Kc512");
+#undef HPC_AVX512_LOWP_TILE
+#endif
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     register_all();
+    add_tiles();
     benchmark::Initialize(&argc, argv);
     if (benchmark::ReportUnrecognizedArguments(argc, argv))
         return 1;

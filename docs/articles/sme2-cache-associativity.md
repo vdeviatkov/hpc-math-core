@@ -35,6 +35,8 @@ cliff to its cause and measures both fixes.
   4096 against the same rows padded by 64 B, against 68% here. Every
   multiple of 4 KiB folds a strip's rows onto 12 lines of L1; the L2
   limits behind the M4's cliff are there too, but a fast L3 backs them.
+  Packing B in GotoBLAS order ([part 1, Step 5](simd-gemm.md#step-5-pack-b))
+  removes it there too.
 
 ## The kernel and the B operand
 
@@ -393,7 +395,10 @@ is packed once per 64-row block of A (the loop order and block of the
 time), so packing still reads the strided B N / 64 times. Packed, the GEMM runs at
 238, 231 and 202 GFLOP/s at the three power-of-two strides and 269, 269
 and 234 when padded. A GotoBLAS loop order, as in part 2, packs each block
-of B once; it was not measured on Zen 5.
+of B once; [part 1's Step 5](simd-gemm.md#step-5-pack-b) now does this on
+Zen 5, with the current tiles and blocks. At N = 4096 AVX-512 runs at 319
+GFLOP/s packed against 294 in place (+8%), and AVX2, whose 4 KiB strides
+cost it most, at 167 against 104 (+60%).
 
 ## Limitations
 

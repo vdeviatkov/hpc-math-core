@@ -158,6 +158,22 @@ TEST(LowpAvx512, Bf16MatchesReference) { expect_matches_reference<bf16>(gemm_avx
 TEST(LowpAvx512, Int8MatchesReference) {
     expect_matches_reference<std::int8_t>(gemm_avx512_i8, "avx512 int8");
 }
+// Other register tiles and k blocks: R not dividing Mc = 128 (6, 12), wide
+// strips (V = 3, 4), one vector (V = 1), and k blocks small enough that the
+// shapes above span many of them (KcBytes = 4: one k group per block).
+template <int R, int V, std::size_t KcBytes>
+void expect_avx512_tile_matches_reference() {
+    const std::string tile = std::to_string(R) + "x" + std::to_string(V) + " kc" + std::to_string(KcBytes);
+    expect_matches_reference<bf16>(gemm_avx512_bf16<R, V, KcBytes>, ("avx512 bf16 " + tile).c_str());
+    expect_matches_reference<std::int8_t>(gemm_avx512_i8<R, V, KcBytes>, ("avx512 int8 " + tile).c_str());
+}
+TEST(LowpAvx512, OtherTilesMatchReference) {
+    expect_avx512_tile_matches_reference<8, 3, 1024>();
+    expect_avx512_tile_matches_reference<6, 4, 512>();
+    expect_avx512_tile_matches_reference<12, 2, 1024>();
+    expect_avx512_tile_matches_reference<16, 1, 64>();
+    expect_avx512_tile_matches_reference<1, 1, 4>();
+}
 #endif
 
 #if HPC_HAS_NEON_LOWP
