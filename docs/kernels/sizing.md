@@ -59,7 +59,7 @@ register/cache-shape sweep establishing all their sizes as optimal:
 | SME widening FP16 / BF16 / INT8 | 2×2 ZA32 tiles; Mc=1024, Kc=4096 for 16-bit / 8192 INT8, Nc=4096 | All four 32-bit tiles; K groups of 2 or 4 inputs per accumulated element. Sizes inherit FP32's 8 MiB A-block budget in bytes. No separate shape/block optimum has been demonstrated. |
 
 See [low-precision measurements](../experiments/lowp/README.md) and the
-headers `neon_lowp.hpp`, `avx512_lowp.hpp`, and `sme_lowp.hpp`. The new SME
+headers `simd_lowp.hpp` (with the structs in `neon.hpp` and `avx512.hpp`) and `sme_lowp.hpp`. The new SME
 shape/cache API covers FP32 and FP64 in `sme.hpp`; widening kernels retain
 their existing fixed layout. They could use the same experiment pattern,
 but must express K in input elements and preserve k-group padding and

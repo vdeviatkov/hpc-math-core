@@ -72,10 +72,10 @@ Low precision at the same sizes as above: N = 256 and 4096 on the CPU, N = 1024 
 
 | Family | Hardware | Register tile, C rows × cols | Blocks, M × K × N | Peak, GOP/s | N = 256, GOP/s (% of peak) | N = 4096, GOP/s (% of peak) |
 |---|---|---|---|--:|--:|--:|
-| AVX-512, bf16 → fp32 (`gemm_avx512_bf16`) | AMD Zen 5, GCC | 8 × 32 | 128 × 512 × 512 | 713 | 619 (87%) | 574 (81%) |
-| AVX-512, INT8 → INT32 (`gemm_avx512_i8`) | AMD Zen 5, GCC | 8 × 32 | 128 × 1024 × 512 | 1,435 | 824 (57%) | 1,038 (72%) |
-| ARM NEON, bf16 → fp32 (`gemm_neon_bf16`) | Apple M4 Max | 8 × 8 | 256 × 1024 × 512 | 71 | 66 (93%) | 65 (92%) |
-| ARM NEON, INT8 → INT32 (`gemm_neon_i8`) | Apple M4 Max | 8 × 8 | 256 × 2048 × 512 | 511 | 449 (88%) | 491 (96%) |
+| AVX-512, bf16 → fp32 (`gemm_simd_lowp<ZmmDot>`) | AMD Zen 5, GCC | 8 × 32 | 128 × 512 × 512 | 713 | 619 (87%) | 574 (81%) |
+| AVX-512, INT8 → INT32 (`gemm_simd_lowp<ZmmDot>`) | AMD Zen 5, GCC | 8 × 32 | 128 × 1024 × 512 | 1,435 | 824 (57%) | 1,038 (72%) |
+| ARM NEON, bf16 → fp32 (`gemm_simd_lowp<QMmla>`) | Apple M4 Max | 8 × 8 | 256 × 1024 × 512 | 71 | 66 (93%) | 65 (92%) |
+| ARM NEON, INT8 → INT32 (`gemm_simd_lowp<QMmla>`) | Apple M4 Max | 8 × 8 | 256 × 2048 × 512 | 511 | 449 (88%) | 491 (96%) |
 | ARM SME2, widening, bf16 → fp32 (`gemm_sme_widening`) | Apple M4 Max | 32 × 32, 4 ZA tiles | 1024 × 4096 × 4096 | 2,018 | 967 (48%) | 1,774 (88%) |
 | ARM SME2, widening, INT8 → INT32 (`gemm_sme_widening`) | Apple M4 Max | 32 × 32, 4 ZA tiles | 1024 × 8192 × 4096 | 4,029 | 1,579 (39%) | 3,413 (85%) |
 
@@ -88,7 +88,7 @@ Low precision at the same sizes as above: N = 256 and 4096 on the CPU, N = 1024 
 | CUDA, Tensor Cores, INT8 → INT32 (`gemm_cuda_lowp_tma_device`, Level 8) | NVIDIA RTX 5080 | 497 | 192.1 (39%) | 408.2 (82%) |
 | cuBLAS, INT8 → INT32 (reference) | NVIDIA RTX 5080 | 497 | 161.9 (33%) | 419.0 (84%) |
 
-The percentage is again measured ÷ peak. Peaks here are the instructions' measured throughput (`VDPBF16PS` / `VPDPBUSD`, `BFMMLA` / `SMMLA`, widening `FMOPA` / `SMOPA`, `mma.sync`), from part 5's [peak table](docs/articles/lowp-gemm.md). Best sizes, where higher: `gemm_avx512_bf16` / `_i8` 638 / 1,139 at N = 1024, `gemm_sme_widening` INT8 3,525 at N = 2048, Level 8 120.5 / 419 at N = 16384.
+The percentage is again measured ÷ peak. Peaks here are the instructions' measured throughput (`VDPBF16PS` / `VPDPBUSD`, `BFMMLA` / `SMMLA`, widening `FMOPA` / `SMOPA`, `mma.sync`), from part 5's [peak table](docs/articles/lowp-gemm.md). Best sizes, where higher: `gemm_simd_lowp<ZmmDot>` bf16 / INT8 638 / 1,139 at N = 1024, `gemm_sme_widening` INT8 3,525 at N = 2048, Level 8 120.5 / 419 at N = 16384.
 
 ---
 

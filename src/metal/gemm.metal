@@ -26,6 +26,17 @@ struct Dims {
     uint M, K, N;
 };
 
+// Sizes fixed by Metal itself, not tuning knobs:
+//
+// kVec   widest Metal vector type (float4, half4; there is no float8). Tile
+//        loads and stores move kVec elements at a time, so every tile edge
+//        they walk along (BK, BN, TN) must be a multiple of kVec.
+// kFrag  edge of a simdgroup matrix. simdgroup_matrix<T, 8, 8> is the only
+//        shape Metal provides, so simdgroup tiles (SM, SN, BK) and the K
+//        step are multiples of kFrag.
+constant constexpr uint kVec  = 4;
+constant constexpr uint kFrag = 8;
+
 // ---------------------------------------------------------------------------
 // Level 0: one thread per output, every operand read from device memory.
 // ---------------------------------------------------------------------------
@@ -89,18 +100,17 @@ kernel void gemm_reg_tile(device const float* A [[buffer(0)]], device const floa
 
     float acc[TM][TN] = {};
     for (uint k0 = 0; k0 < d.K; k0 += BK) {
-        for (uint i = tid; i < BM * BK / 4; i += kThreads) {
-            const uint r  = i / (BK / 4);
-            const uint kq = (i % (BK / 4)) * 4;
+        for (uint i = tid; i < BM * BK / kVec; i += kThreads) {
+            const uint r  = i / (BK / kVec);
+            const uint kq = (i % (BK / kVec)) * kVec;
             const float4 v = *reinterpret_cast<device const float4*>(A + (m0 + r) * d.K + k0 + kq);
-            As[kq + 0][r] = v.x;
-            As[kq + 1][r] = v.y;
-            As[kq + 2][r] = v.z;
-            As[kq + 3][r] = v.w;
+            HPC_UNROLL
+            for (uint c = 0; c < kVec; ++c)
+                As[kq + c][r] = v[c];
         }
-        for (uint i = tid; i < BK * BN / 4; i += kThreads) {
-            const uint k = i / (BN / 4);
-            const uint c = (i % (BN / 4)) * 4;
+        for (uint i = tid; i < BK * BN / kVec; i += kThreads) {
+            const uint k = i / (BN / kVec);
+            const uint c = (i % (BN / kVec)) * kVec;
             *reinterpret_cast<threadgroup float4*>(&Bs[k][c]) =
                 *reinterpret_cast<device const float4*>(B + (k0 + k) * d.N + n0 + c);
         }
@@ -125,7 +135,7 @@ kernel void gemm_reg_tile(device const float* A [[buffer(0)]], device const floa
     HPC_UNROLL
     for (uint i = 0; i < TM; ++i)
         HPC_UNROLL
-        for (uint j = 0; j < TN; j += 4)
+        for (uint j = 0; j < TN; j += kVec)
             *reinterpret_cast<device float4*>(C + (m0 + ty * TM + i) * d.N + n0 + tx * TN + j) =
                 float4(acc[i][j], acc[i][j + 1], acc[i][j + 2], acc[i][j + 3]);
 }
@@ -151,7 +161,7 @@ kernel void gemm_simd(device const float* A [[buffer(0)]], device const float* B
                       device float* C [[buffer(2)]], constant Dims& d [[buffer(3)]],
                       uint sg [[simdgroup_index_in_threadgroup]],
                       uint2 tg [[threadgroup_position_in_grid]]) {
-    constexpr uint FM = SM / 8, FN = SN / 8;
+    constexpr uint FM = SM / kFrag, FN = SN / kFrag;
     const uint m0 = tg.y * (WM * SM) + (sg / WN) * SM;
     const uint n0 = tg.x * (WN * SN) + (sg % WN) * SN;
 
@@ -160,16 +170,16 @@ kernel void gemm_simd(device const float* A [[buffer(0)]], device const float* B
     for (uint i = 0; i < FM; ++i)
         HPC_UNROLL
         for (uint j = 0; j < FN; ++j)
-            acc[i][j] = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+            acc[i][j] = make_filled_simdgroup_matrix<float, kFrag, kFrag>(0.0f);
 
-    for (uint k = 0; k < d.K; k += 8) {
+    for (uint k = 0; k < d.K; k += kFrag) {
         simdgroup_float8x8 a[FM], b[FN];
         HPC_UNROLL
         for (uint i = 0; i < FM; ++i)
-            simdgroup_load(a[i], A + (m0 + i * 8) * d.K + k, d.K);
+            simdgroup_load(a[i], A + (m0 + i * kFrag) * d.K + k, d.K);
         HPC_UNROLL
         for (uint j = 0; j < FN; ++j)
-            simdgroup_load(b[j], B + k * d.N + n0 + j * 8, d.N);
+            simdgroup_load(b[j], B + k * d.N + n0 + j * kFrag, d.N);
         HPC_UNROLL
         for (uint i = 0; i < FM; ++i)
             HPC_UNROLL
@@ -180,7 +190,7 @@ kernel void gemm_simd(device const float* A [[buffer(0)]], device const float* B
     for (uint i = 0; i < FM; ++i)
         HPC_UNROLL
         for (uint j = 0; j < FN; ++j)
-            simdgroup_store(acc[i][j], C + (m0 + i * 8) * d.N + n0 + j * 8, d.N);
+            simdgroup_store(acc[i][j], C + (m0 + i * kFrag) * d.N + n0 + j * kFrag, d.N);
 }
 
 template [[host_name("gemm_simd")]] kernel void gemm_simd<2, 2, 32, 32>(
@@ -205,9 +215,9 @@ kernel void gemm_simd_tg(device const T* A [[buffer(0)]], device const T* B [[bu
                          uint tid [[thread_index_in_threadgroup]],
                          uint sg [[simdgroup_index_in_threadgroup]],
                          uint2 tg [[threadgroup_position_in_grid]]) {
-    using vec4 = vec<T, 4>;
+    using vec4 = vec<T, kVec>;
     constexpr uint BM = WM * SM, BN = WN * SN;
-    constexpr uint FM = SM / 8, FN = SN / 8;
+    constexpr uint FM = SM / kFrag, FN = SN / kFrag;
     constexpr uint kThreads = WM * WN * 32;
     constexpr uint kPad = 16 / sizeof(T);
     threadgroup T As[BM][BK + kPad];
@@ -223,29 +233,29 @@ kernel void gemm_simd_tg(device const T* A [[buffer(0)]], device const T* B [[bu
     for (uint i = 0; i < FM; ++i)
         HPC_UNROLL
         for (uint j = 0; j < FN; ++j)
-            acc[i][j] = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+            acc[i][j] = make_filled_simdgroup_matrix<float, kFrag, kFrag>(0.0f);
 
     for (uint k0 = 0; k0 < d.K; k0 += BK) {
-        for (uint i = tid; i < BM * BK / 4; i += kThreads) {
-            const uint r = i / (BK / 4), c = (i % (BK / 4)) * 4;
+        for (uint i = tid; i < BM * BK / kVec; i += kThreads) {
+            const uint r = i / (BK / kVec), c = (i % (BK / kVec)) * kVec;
             *reinterpret_cast<threadgroup vec4*>(&As[r][c]) =
                 *reinterpret_cast<device const vec4*>(A + (m0 + r) * d.K + k0 + c);
         }
-        for (uint i = tid; i < BK * BN / 4; i += kThreads) {
-            const uint r = i / (BN / 4), c = (i % (BN / 4)) * 4;
+        for (uint i = tid; i < BK * BN / kVec; i += kThreads) {
+            const uint r = i / (BN / kVec), c = (i % (BN / kVec)) * kVec;
             *reinterpret_cast<threadgroup vec4*>(&Bs[r][c]) =
                 *reinterpret_cast<device const vec4*>(B + (k0 + r) * d.N + n0 + c);
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
         HPC_UNROLL
-        for (uint kk = 0; kk < BK; kk += 8) {
-            simdgroup_matrix<T, 8, 8> a[FM], b[FN];
+        for (uint kk = 0; kk < BK; kk += kFrag) {
+            simdgroup_matrix<T, kFrag, kFrag> a[FM], b[FN];
             HPC_UNROLL
             for (uint i = 0; i < FM; ++i)
-                simdgroup_load(a[i], &As[sm + i * 8][kk], BK + kPad);
+                simdgroup_load(a[i], &As[sm + i * kFrag][kk], BK + kPad);
             HPC_UNROLL
             for (uint j = 0; j < FN; ++j)
-                simdgroup_load(b[j], &Bs[kk][sn + j * 8], BN + kPad);
+                simdgroup_load(b[j], &Bs[kk][sn + j * kFrag], BN + kPad);
             HPC_UNROLL
             for (uint i = 0; i < FM; ++i)
                 HPC_UNROLL
@@ -258,7 +268,7 @@ kernel void gemm_simd_tg(device const T* A [[buffer(0)]], device const T* B [[bu
     for (uint i = 0; i < FM; ++i)
         HPC_UNROLL
         for (uint j = 0; j < FN; ++j)
-            simdgroup_store(acc[i][j], C + (m0 + sm + i * 8) * d.N + n0 + sn + j * 8, d.N);
+            simdgroup_store(acc[i][j], C + (m0 + sm + i * kFrag) * d.N + n0 + sn + j * kFrag, d.N);
 }
 
 #define HPC_SIMD_TG(name, T, WM, WN, SM, SN, BK)                                               \
@@ -276,15 +286,15 @@ HPC_SIMD_TG("gemm_simd_tg_f16_2x2_64x32_k16", half, 2, 2, 64, 32, 16)
 #undef HPC_SIMD_TG
 
 // ---------------------------------------------------------------------------
-// FMA peak: every thread runs kChains independent FMA chains of 4-wide
+// FMA peak: every thread runs kChains independent FMA chains of kVec-wide
 // vectors, so the ALUs never wait on a result. Throughput = threads ×
-// iters × kChains × 4 lanes × 2 flops / GPU time. Seeded from `seed` and
+// iters × kChains × kVec lanes × 2 flops / GPU time. Seeded from `seed` and
 // written out so the compiler cannot fold or drop the loop.
 // ---------------------------------------------------------------------------
 template <typename T>
 kernel void fma_peak(device T* out [[buffer(0)]], constant uint& iters [[buffer(1)]],
                      constant float& seed [[buffer(2)]], uint gid [[thread_position_in_grid]]) {
-    using vec4             = vec<T, 4>;
+    using vec4             = vec<T, kVec>;
     constexpr uint kChains = 8;
     vec4 x[kChains];
     HPC_UNROLL

@@ -216,7 +216,7 @@ Medians of 3 repetitions, one thread:
 
 ### Zen 5, AVX-512
 
-Code: [`gemm_avx512_bf16`, `gemm_avx512_i8`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/avx512_lowp.hpp).
+Code: [`gemm_simd_lowp`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/simd_lowp.hpp) with [`ZmmDot<In>`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/avx512.hpp).
 
 The micro-kernel is an 8 × 2-register tile (8 rows × 32 columns of C,
 16 accumulators) with `VDPBF16PS` or `VPDPBUSD` in place of the FMA. Per
@@ -239,7 +239,7 @@ dot-product units, set the pace. Written as a one-instruction `asm`, the
 loop is 30 instructions and runs 16–26% faster (three alternated runs of
 each version; `VDPBF16PS` compiles without the copies):
 
-| `gemm_avx512_i8`, GOP/s | N = 256 | 1,024 | 2,048 | 4,096 |
+| `gemm_simd_lowp<ZmmDot>` INT8, GOP/s | N = 256 | 1,024 | 2,048 | 4,096 |
 |---|--:|--:|--:|--:|
 | intrinsic (and A packed) | 709 | 901 | 930 | 885 |
 | one-instruction `asm` | **826** | **1,138** | **1,138** | **1,037** |
@@ -262,7 +262,7 @@ N = 4,000 it is not slower.
 
 ### Apple M4, NEON
 
-Code: [`gemm_neon_bf16`, `gemm_neon_i8`, `gemm_neon_f16`, `gemm_neon_f16_acc`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/neon_lowp.hpp).
+Code: [`gemm_simd_lowp`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/simd_lowp.hpp) with [`QMmla<In>`, `QFmlal<In>`, `QFmlaF16<In>`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/neon.hpp).
 
 `BFMMLA` and `SMMLA` are not vector FMAs but tiny matrix multiplications:
 each takes a 2 × G block of A and a G × 2 block of B, one 128-bit register

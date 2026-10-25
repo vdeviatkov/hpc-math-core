@@ -312,7 +312,7 @@ void gemm_simd_blocked(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
 // Why pack B at all for FP32: row-major B already has the layout the
 // micro-kernel wants (row k of a strip is V contiguous vectors), so packing
 // is not needed for the instruction, as it is for the dot-product kernels
-// (avx512_lowp.hpp). It is for the caches: in place, row k and row k+1 of
+// (simd_lowp.hpp). It is for the caches: in place, row k and row k+1 of
 // a strip are N elements apart, and at N·sizeof(T) a multiple of 4 KiB all
 // kc rows fall in the same L1 set (and few L2 sets), so the strip is evicted
 // long before its reuse (docs/articles/sme2-cache-associativity.md). Packed,
