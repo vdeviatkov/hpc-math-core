@@ -2,7 +2,8 @@
 
 /**
  * @file sve.hpp
- * @brief ARM SVE counterparts of the three AVX2/NEON kernels.
+ * @brief ARM SVE counterparts of the reordered and blocked SIMD kernels
+ *        (simd.hpp).
  *
  * Unlike NEON (128-bit), AVX2 (256-bit) and AVX-512 (512-bit), SVE's vector
  * length is implementation-defined (128–2048 bits) and read at runtime with
@@ -14,8 +15,6 @@
  * active only for lanes with j + lane < N, so the last partial vector is
  * handled by the same loop body — there is no scalar tail loop.
  *
- *  gemm_sve_naive      i → j → k. B column j is gathered into a buffer and
- *                      loaded as a vector; svaddv reduces the accumulator.
  *  gemm_sve_reordered  i → k → j: broadcast A(i,k), FMA against B and C rows.
  *  gemm_sve_blocked    tiled i → k → j with a 4-row × 2-vector C register
  *                      tile by default; R and V are template parameters.
@@ -47,95 +46,13 @@
 namespace hpc::gemm {
 
 // ============================================================================
-// Kernel 1: gemm_sve_naive  —  i → j → k,  SVE on the k-loop
-// ============================================================================
-
-/**
- * @brief SVE GEMM with naive i-j-k loop order.
- *
- * Counterpart of gemm_neon_naive / gemm_avx2_naive with a runtime k-step of
- * svcntw()/svcntd(). B(k..k+VL-1, j) is gathered with stride ldb into a
- * std::vector buffer and loaded with svld1 (svld1_gather_index would touch
- * the same cache lines). svaddv reduces the accumulator at the end.
- */
-#if !HPC_HAS_SVE
-template <typename T>
-void gemm_sve_naive(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) = delete;  // ARM_FEATURE_SVE not available on this target
-#else
-template <typename T>
-void gemm_sve_naive(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
-    static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>,
-                  "gemm_sve_naive: T must be float or double");
-
-    const std::size_t M   = A.rows();
-    const std::size_t K   = A.cols();
-    const std::size_t N   = B.cols();
-    const std::size_t lda = K;
-    const std::size_t ldb = N;
-
-    assert(B.rows() == K && C.rows() == M && C.cols() == N);
-    C.zero();
-
-    if constexpr (sizeof(T) == 4) {
-        const std::size_t vl = svcntw();  // elements per SVE vector (runtime)
-        // Buffer for one gathered B column segment (std::vector: VLAs are not
-        // standard C++).
-        std::vector<float> b_col(vl);
-        for (std::size_t i = 0; i < M; ++i) {
-            for (std::size_t j = 0; j < N; ++j) {
-                svfloat32_t acc = svdup_n_f32(0.f);
-                std::size_t k   = 0;
-                for (; k + vl <= K; k += vl) {
-                    // A(i, k..k+vl): sequential load — cache friendly.
-                    const svfloat32_t a_vec = svld1_f32(svptrue_b32(), A.data() + i * lda + k);
-                    // Gather B column j: fill buffer element by element,
-                    // then load as a contiguous SVE vector.
-                    for (std::size_t lane = 0; lane < vl; ++lane)
-                        b_col[lane] = B.data()[(k + lane) * ldb + j];
-                    const svfloat32_t b_vec = svld1_f32(svptrue_b32(), b_col.data());
-                    acc = svmla_f32_x(svptrue_b32(), acc, a_vec, b_vec);
-                }
-                // Horizontal reduce the SVE accumulator to a scalar.
-                float s = svaddv_f32(svptrue_b32(), acc);
-                // Scalar tail for k % vl elements.
-                for (; k < K; ++k)
-                    s += A(i, k) * B(k, j);
-                C(i, j) = static_cast<T>(s);
-            }
-        }
-    } else {
-        const std::size_t vl = svcntd();
-        std::vector<double> b_col(vl);
-        for (std::size_t i = 0; i < M; ++i) {
-            for (std::size_t j = 0; j < N; ++j) {
-                svfloat64_t acc = svdup_n_f64(0.0);
-                std::size_t k   = 0;
-                for (; k + vl <= K; k += vl) {
-                    const svfloat64_t a_vec = svld1_f64(svptrue_b64(), A.data() + i * lda + k);
-                    for (std::size_t lane = 0; lane < vl; ++lane)
-                        b_col[lane] = B.data()[(k + lane) * ldb + j];
-                    const svfloat64_t b_vec = svld1_f64(svptrue_b64(), b_col.data());
-                    acc = svmla_f64_x(svptrue_b64(), acc, a_vec, b_vec);
-                }
-                double s = svaddv_f64(svptrue_b64(), acc);
-                for (; k < K; ++k)
-                    s += A(i, k) * B(k, j);
-                C(i, j) = static_cast<T>(s);
-            }
-        }
-
-    }
-}
-#endif  // HPC_HAS_SVE
-
-// ============================================================================
-// Kernel 2: gemm_sve_reordered  —  i → k → j,  SVE on the j-loop (VLA)
+// Kernel 1: gemm_sve_reordered  —  i → k → j,  SVE on the j-loop (VLA)
 // ============================================================================
 
 /**
  * @brief SVE GEMM with cache-friendly i-k-j loop order — vector-length agnostic.
  *
- * Counterpart of gemm_neon_reordered / gemm_avx2_reordered. The j-step is
+ * Counterpart of gemm_simd_reordered (simd.hpp). The j-step is
  * svcntw()/svcntd(); the last partial vector uses an svwhilelt_b32(j, N)
  * predicate, so one loop covers any N.
  *
@@ -204,7 +121,7 @@ void gemm_sve_reordered(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
 #endif  // HPC_HAS_SVE
 
 // ============================================================================
-// For Kernel 3: tile sizes (also used by gemm_sve_blocked_prefetch)
+// For Kernel 2: tile sizes (also used by gemm_sve_blocked_prefetch)
 // ============================================================================
 // The j-step is V * svcntw()/svcntd(), read at runtime. Register shape R/V
 // and the outer blocking tile sizes are compile-time parameters.
@@ -221,7 +138,7 @@ inline constexpr std::size_t kSveRegRows = 4;
 inline constexpr std::size_t kSveRegCols = 2;
 
 // ============================================================================
-// For Kernel 3: the register-tile micro-kernels
+// For Kernel 2: the register-tile micro-kernels
 // ============================================================================
 
 #if HPC_HAS_SVE
@@ -240,7 +157,7 @@ struct Ops<float> {
     }
     static svfloat32_t load(svbool_t pg, const float* p) { return svld1_f32(pg, p); }
     static void store(svbool_t pg, float* p, svfloat32_t x) { svst1_f32(pg, p, x); }
-    static svfloat32_t splat(float x) { return svdup_f32(x); }
+    static svfloat32_t load_a(const float* p) { return svdup_f32(*p); }
     static svfloat32_t fma(svbool_t pg, svfloat32_t acc, svfloat32_t a, svfloat32_t b) {
         return svmla_f32_x(pg, acc, a, b);
     }
@@ -253,7 +170,7 @@ struct Ops<double> {
     }
     static svfloat64_t load(svbool_t pg, const double* p) { return svld1_f64(pg, p); }
     static void store(svbool_t pg, double* p, svfloat64_t x) { svst1_f64(pg, p, x); }
-    static svfloat64_t splat(double x) { return svdup_f64(x); }
+    static svfloat64_t load_a(const double* p) { return svdup_f64(*p); }
     static svfloat64_t fma(svbool_t pg, svfloat64_t acc, svfloat64_t a, svfloat64_t b) {
         return svmla_f64_x(pg, acc, a, b);
     }
@@ -288,7 +205,7 @@ template <int V, typename T, std::size_t... I, std::size_t... Rows, std::size_t.
     for (std::size_t k = 0; k < k_len; ++k) {
         const auto step = [&](auto... bv) {
             const auto row = [&]<std::size_t R>() {
-                const auto ar = O::splat(a[R * lda + k]);
+                const auto ar = O::load_a(a + R * lda + k);
                 ((at<R * V + Cols>(acc...) = O::fma(pg(Cols), at<R * V + Cols>(acc...), ar,
                                                     at<Cols>(bv...))),
                  ...);
@@ -387,13 +304,13 @@ void sve_blocked_gemm(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
 #endif  // HPC_HAS_SVE
 
 // ============================================================================
-// Kernel 3: gemm_sve_blocked  —  tiled i → k → j,  VLA register tile
+// Kernel 2: gemm_sve_blocked  —  tiled i → k → j,  VLA register tile
 // ============================================================================
 
 /**
  * @brief SVE GEMM with cache-blocking and VLA register-tiled micro-kernel.
  *
- * Counterpart of gemm_neon_blocked / gemm_avx2_blocked: i-k-j order, 3-level
+ * Counterpart of gemm_simd_blocked (simd.hpp): i-k-j order, 3-level
  * tiling (TileM × TileK × TileN), and an R-row × V-vector C register tile
  * held for a whole K block. Width is V*svcntw()/svcntd(); column tails use
  * predicates and partial row tiles use smaller specializations. Defaults

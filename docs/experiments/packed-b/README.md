@@ -1,7 +1,7 @@
 # Packed B for the FP32 SIMD kernels
 
-Data behind `gemm_avx2_packed`, `gemm_avx512_packed` and
-`gemm_neon_packed` ([`packed_driver.hpp`](../../../src/gemm/packed_driver.hpp)),
+Data behind `gemm_simd_packed<Ymm>`, `gemm_simd_packed<Zmm>` and
+`gemm_simd_packed<Q>` ([`packed_driver.hpp`](../../../src/gemm/packed_driver.hpp)),
 [docs/kernels/blocks.md](../../kernels/blocks.md#packed-b) and the
 "Step 5: pack B" section of
 [part 1](../../articles/simd-gemm.md#step-5-pack-b). The packed kernels run

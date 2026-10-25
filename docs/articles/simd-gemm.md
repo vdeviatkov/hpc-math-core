@@ -132,12 +132,8 @@ At N = 64 the whole problem fits in L1 and the loop is merely slow; from
 there it collapses. At N = 4096 one FP32 multiplication takes about 328 s
 on Zen 5 (312 s for FP64), and FP32 and FP64 run at the same speed (0.42
 and 0.44 GFLOP/s): element width does not matter to a loop that waits on
-memory. Vector instructions do not rescue it either: the AVX2, AVX-512 and
-NEON versions of this loop (`gemm_neon_naive`, `gemm_avx2_naive`,
-`gemm_avx512_naive`) gather B's column into a vector element by
-element. Only the NEON FP32 version helps, at mid sizes (3.5 against
-2.5 GFLOP/s at N = 256); the AVX2 and AVX-512 versions run within about
-±8% of the scalar loop, and at N = 4096 all run within a few percent of it.
+memory. Vector instructions cannot fix it either: what limits the loop is
+the column walk through B, not the arithmetic.
 
 ## Step 2: loop order — 52–73× faster
 
@@ -214,13 +210,15 @@ for (k = 0; k < kc; ++k) {
 }
 ```
 
-Code: the micro-kernels
-[`neon_micro<R, V>`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/neon.hpp),
-[`avx2_micro<R, V>`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/avx2.hpp) and
-[`avx512_micro<R, V>`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/avx512.hpp): one
-template each, written like the loop above, with the tile's R rows and V
-vectors as template parameters and FP32 or FP64 taken from the pointers.
-Each is called by the `gemm_<isa>_blocked` driver in the same file.
+Code: the micro-kernel
+[`vector_micro<Ops, R, V>`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/vector_micro.hpp),
+written like the loop above once for every ISA, with the tile's R rows and
+V vectors as template parameters. `Ops` supplies the instructions:
+[`Q<T>`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/neon.hpp),
+[`Ymm<T>`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/avx2.hpp) or
+[`Zmm<T>`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/avx512.hpp),
+for FP32 or FP64. `gemm_simd_blocked` (`simd.hpp`) calls it through the
+blocked driver.
 
 Per k step: 2 vector loads and 8 broadcasts for 16 FMAs, against a load,
 a store and a load per FMA in step 2. C is loaded once before the loop and
@@ -281,7 +279,7 @@ The library kernel was changed to the 8-row tile, which also divides its
 64-row block evenly (and later to 8 × 3, below). In the full
 multiplication, same session:
 
-| `gemm_avx512_blocked`, GFLOP/s | N = 256 | 512 | 1024 | 4096 |
+| `gemm_simd_blocked<Zmm>`, GFLOP/s | N = 256 | 512 | 1024 | 4096 |
 |---|--:|--:|--:|--:|
 | FP32, 4 × 2 tile | 216.8 | 205.2 | 141.3 | 119.9 |
 | FP32, 8 × 2 tile | **332.7** | **327.9** | **284.6** | **198.2** |
@@ -337,7 +335,7 @@ elements. Transposing the two template numbers changes operand reuse and
 register pressure, rather than merely rotating the same output rectangle.
 
 Measured on the whole multiplication: the library kernel
-`gemm_avx2_blocked<T, R, V>` with each shape (`bench_gemm`'s `Avx2Tile`
+`gemm_simd_blocked<Ymm, R, V, …>` with each shape (`bench_gemm`'s `Avx2Tile`
 benchmarks, built for 16 YMM registers, x86-64-v3; FP32 GFLOP/s, median
 of 3; all shapes and FP64 in
 [docs/kernels/avx2.md](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/kernels/avx2.md)):
@@ -363,7 +361,7 @@ spills on an AVX2-only CPU. The 3 × 3 shape, also swept, is not shown:
 64 rows, was ten 6-row strips and one 4-row strip of the same kernel.
 Same session, old against new, alternated three times:
 
-| `gemm_avx2_blocked`, GFLOP/s | N = 256 | 512 | 1024 | 4096 |
+| `gemm_simd_blocked<Ymm>`, GFLOP/s | N = 256 | 512 | 1024 | 4096 |
 |---|--:|--:|--:|--:|
 | FP32, 4 × 2 tile | 150.4 | 142.3 | 93.2 | 75.7 |
 | FP32, 6 × 2 tile | **171.2** | **167.7** | **124.0** | **95.4** |
@@ -389,7 +387,7 @@ loads into the FMAs and runs 20–68% behind the best shape at N ≤ 512. Of
 the rest, a third vector on the 8-row tile pays where B's rows are 4 KiB
 apart and B comes from L2:
 
-| `gemm_avx512_blocked`, GFLOP/s | N = 256 | 512 | 1024 | 4096 |
+| `gemm_simd_blocked<Zmm>`, GFLOP/s | N = 256 | 512 | 1024 | 4096 |
 |---|--:|--:|--:|--:|
 | FP32, 8 × 2 tile | **327.6** | 325.0 | 281.8 | 197.8 |
 | FP32, 8 × 3 tile | 324.6 | **328.2** | **309.9** | **229.6** |
@@ -554,7 +552,7 @@ does the copy.
 
 ## Step 5: pack B
 
-Code: [`gemm_avx2_packed`, `gemm_avx512_packed`, `gemm_neon_packed`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/packed_driver.hpp).
+Code: [`gemm_simd_packed<Ymm>`, `gemm_simd_packed<Zmm>`, `gemm_simd_packed<Q>`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/packed_driver.hpp).
 
 Every SIMD kernel in this series, including the 16- and 8-bit ones of
 [part 5](lowp-gemm.md), has the same inner step: load a few vectors of a
@@ -643,9 +641,7 @@ Data and method: [experiments/packed-b](https://github.com/vdeviatkov/hpc-math-c
 
 - **Wider vectors on a memory-bound loop.** Explicit AVX2, AVX-512 and
   NEON versions of the reordered loop run at or below the speed of the
-  scalar one, which the compiler already vectorises; vector versions of
-  the textbook loop gain only on NEON FP32 at mid sizes, and nothing at
-  N = 4096.
+  scalar one, which the compiler already vectorises.
 - **Software prefetch** ([`prefetch.hpp`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/prefetch.hpp)). Prefetching A, B and C 2 to 16 tile rows ahead of
   the current register-tile kernels changes their throughput by −1% to
   +0.3% (Zen 5, AVX-512) and −3% to +0.2% (M4, NEON) at N = 256 to 1024:

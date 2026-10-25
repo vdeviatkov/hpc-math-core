@@ -3,8 +3,7 @@
 /**
  * @file blocked_driver.hpp
  * @brief The cache-blocked, register-tiled GEMM driver behind
- *        gemm_avx2_blocked, gemm_avx512_blocked and gemm_neon_blocked (and
- *        their _prefetch variants in prefetch.hpp).
+ *        gemm_simd_blocked (simd.hpp), with or without software prefetch.
  *
  * C = A · B, row-major, i-k-j order with three levels of blocking:
  *

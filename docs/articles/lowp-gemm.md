@@ -248,7 +248,7 @@ All three kernels in one session, the current versions:
 
 | GFLOP/s or GOP/s | N = 256 | 1,024 | 2,048 | 4,096 | best, % of peak |
 |---|--:|--:|--:|--:|--:|
-| FP32, `gemm_avx512_blocked` | **325** | 311 | 302 | 295 | 91% |
+| FP32, `gemm_simd_blocked<Zmm>` | **325** | 311 | 302 | 295 | 91% |
 | bf16 | 619 | **638** | 606 | 574 | 90% |
 | INT8 | 824 | **1,139** | 1,138 | 1,038 | 79% |
 
@@ -275,7 +275,7 @@ that part 1's FP32 kernel used until it moved to 6 × 4.
 
 | GFLOP/s or GOP/s | N = 256 | 1,024 | 2,048 | 4,096 | best, % of peak |
 |---|--:|--:|--:|--:|--:|
-| FP32, `gemm_neon_blocked` | **122** | 121 | 118 | 101 | 90% |
+| FP32, `gemm_simd_blocked<Q>` | **122** | 121 | 118 | 101 | 90% |
 | bf16, `BFMMLA` | **66** | **66** | **66** | 65 | 93% |
 | fp16 → FP32, `FMLAL` | 109 | **114** | 113 | 112 | 80% |
 | fp16 → fp16, `FMLA .8h` | 204 | **216** | 214 | 209 | 81% |

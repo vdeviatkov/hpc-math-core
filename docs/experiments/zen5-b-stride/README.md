@@ -27,15 +27,15 @@ All from [`avx512_b_stride`](../../../benchmarks/experiments/avx512_b_stride.cpp
 | File | Mode | What |
 |---|---|---|
 | `chase.csv` | `chase` | Dependent pointer chase over `lines` lines placed `stride_bytes` apart, random order, on 2 MiB transparent huge pages (no TLB misses from the stride); best of 3 × 20 M loads. Strides 64 B (dense), 4, 8, 16, 64 KiB and each + 64 B |
-| `ldb.csv` | `ldb` | FP32 GEMM M = N = K = 1024, 2048, 4096 with B's row stride `ldb` ≥ N; B in place (as `gemm_avx512_blocked` reads it) and packed |
+| `ldb.csv` | `ldb` | FP32 GEMM M = N = K = 1024, 2048, 4096 with B's row stride `ldb` ≥ N; B in place (as `gemm_simd_blocked<Zmm>` reads it) and packed |
 | `size.csv` | `size` | The same at ldb = N for N around 1024, 2048 and 4096 |
 | `height.csv` | `height` | M = 512, K = 2048, N = 1024; strip height `kc` (rows of the reused B block) from 16 to 1024, B rows 4, 8, 16 KiB apart, each + 64 B, and 4,352 B and 6 KiB apart |
 
 GEMM columns: GFLOP/s of B in place and packed, medians of 5 interleaved
-repetitions; every variant is checked against `gemm_avx512_blocked` before
+repetitions; every variant is checked against `gemm_simd_blocked<Zmm>` before
 timing. The GEMM uses the library kernel's blocking (64 rows of A × `kc`
 rows of B × 512 columns, `kc` = 256 except in `height`) and its
-micro-kernel with the 8 × 2 tile it had then (`avx512_micro<8, 2>`, 8 × 32
+micro-kernel with the 8 × 2 tile it had then (`vector_micro<Zmm<T>, 8, 2>`, 8 × 32
 FP32; the library default is 8 × 3 since 2026-10-21). "Packed" copies each
 `kc` × 512 block of B into contiguous 32-column strips before use; with
 the library's loop order (64-row blocks of A outermost) that copy is

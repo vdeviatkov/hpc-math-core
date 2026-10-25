@@ -711,7 +711,7 @@ run, `gemm_sme_mt` is 111% (FP32) and 117% (FP64) at N = 4096.
 2026-10-22, ten days after the SME rows; NEON's peak assumes the 4.49 GHz
 core clock measured in the M4 runs of 2026-10-21. The SME rows ran at
 3.94–3.99 GHz, so the two are from different runs and clocks. Part 1's
-[packed-B kernel](simd-gemm.md#step-5-pack-b) (`gemm_neon_packed`) removes
+[packed-B kernel](simd-gemm.md#step-5-pack-b) (`gemm_simd_packed<Q>`) removes
 NEON's drop at N = 4096: 120 GFLOP/s there, 123 at N = 1024, from a
 separate run on 2026-10-24.
 

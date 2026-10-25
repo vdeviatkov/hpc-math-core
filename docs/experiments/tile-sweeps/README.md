@@ -27,14 +27,14 @@ column. The docs quote medians.
 | [`tiles_zen5_native.csv`](tiles_zen5_native.csv) | `bench_gemm --benchmark_filter='^(Avx2Tile\|Avx512Tile)'` | Zen 5, every AVX2 and AVX-512 shape, native build (32 vector registers) |
 | [`tiles_zen5_x86-64-v3.csv`](tiles_zen5_x86-64-v3.csv) | `bench_gemm --benchmark_filter='^Avx2Tile'` | Zen 5, every AVX2 shape, 16-register build |
 | [`microkernel_zen5.csv`](microkernel_zen5.csv), [`microkernel_zen5_clock.txt`](microkernel_zen5_clock.txt) | [`simd_microkernel`](../../../benchmarks/experiments/simd_microkernel.cpp) | the library micro-kernels on L1-resident data, Zen 5 |
-| [`bench_zen5_avx512_8x3.csv`](bench_zen5_avx512_8x3.csv) | `bench_gemm --benchmark_filter='^Avx512Blocked'` | `gemm_avx512_blocked` at its new 8 × 3 default and its prefetch variants |
+| [`bench_zen5_avx512_8x3.csv`](bench_zen5_avx512_8x3.csv) | `bench_gemm --benchmark_filter='^Avx512Blocked'` | `gemm_simd_blocked<Zmm>` at its new 8 × 3 default and its prefetch variants |
 | [`lowp_zen5_avx512_8x3.csv`](lowp_zen5_avx512_8x3.csv) | `bench_gemm_lowp --benchmark_filter='^Avx512Blocked'` | the same kernel at the sizes of the low-precision tables |
 | [`load_zen5_avx512_8x3.txt`](load_zen5_avx512_8x3.txt) | `uptime` | load before and after the two runs above |
 | [`tiles_m4.csv`](tiles_m4.csv) | `bench_gemm --benchmark_filter='^NeonTile'` | M4, every NEON shape, A loaded with `LDR` (the current kernel) |
 | [`microkernel_m4.csv`](microkernel_m4.csv), [`microkernel_m4_clock.txt`](microkernel_m4_clock.txt), [`load_m4.txt`](load_m4.txt) | `simd_microkernel`, `uptime` | the same run, continued |
 | [`tiles_m4_ld1r.csv`](tiles_m4_ld1r.csv), [`microkernel_m4_ld1r.csv`](microkernel_m4_ld1r.csv), [`microkernel_m4_ld1r_clock.txt`](microkernel_m4_ld1r_clock.txt), [`load_m4_ld1r.txt`](load_m4_ld1r.txt) | the same programs | the same sweep an hour earlier, with A broadcast by `LD1R` (the kernel before the change in [docs/kernels/neon.md](../../kernels/neon.md#loading-a-ldr-not-ld1r); no 5 × 4 shape) |
 | [`m4_ld1r_ab/`](m4_ld1r_ab/) | `bench_gemm --benchmark_filter='^NeonTile(4x4\|6x3\|6x4)/(f32\|f64)/N=(256\|1024)$'` | the `LD1R` and `LDR` builds alternated three times (`ld1r_<run>.csv`, `ldr_<run>.csv`), one repetition each |
-| [`bench_m4_neon_6x4.csv`](bench_m4_neon_6x4.csv), [`load_m4_neon_6x4.txt`](load_m4_neon_6x4.txt) | `bench_gemm --benchmark_filter='^NeonBlocked'` | `gemm_neon_blocked` at its new 6 × 4 default with `LDR`, and its prefetch variants |
+| [`bench_m4_neon_6x4.csv`](bench_m4_neon_6x4.csv), [`load_m4_neon_6x4.txt`](load_m4_neon_6x4.txt) | `bench_gemm --benchmark_filter='^NeonBlocked'` | `gemm_simd_blocked<Q>` at its new 6 × 4 default with `LDR`, and its prefetch variants |
 | [`lowp_m4_neon_6x4.csv`](lowp_m4_neon_6x4.csv), [`load_lowp_m4_neon_6x4.txt`](load_lowp_m4_neon_6x4.txt) | `bench_gemm_lowp --benchmark_filter='^Neon'` | the FP32 kernel above with all NEON low-precision kernels, one session (replaces the M4 NEON rows of [lowp](../lowp/README.md) in the docs) |
 | [`m4_driver_ab/`](m4_driver_ab/) | `bench_gemm --benchmark_filter='^(NeonBlocked\|NeonTile4x4\|NeonTile8x2)/(f32\|f64)/N=(256\|1024)$'` | the hand-written NEON micro-kernels of commit 3bd58c0 (`handwritten_<run>.csv`) against the template micro-kernel with the same shapes (`driver_<run>.csv`, `NeonBlocked` rows), alternated three times |
 

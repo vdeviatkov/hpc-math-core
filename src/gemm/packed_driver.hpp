@@ -2,8 +2,7 @@
 
 /**
  * @file packed_driver.hpp
- * @brief The packed-B GEMM driver behind gemm_avx2_packed,
- *        gemm_avx512_packed and gemm_neon_packed.
+ * @brief The packed-B GEMM driver behind gemm_simd_packed (simd.hpp).
  *
  * Same micro-kernels as blocked_driver.hpp, different loop order and B
  * layout. GotoBLAS order: each Kc × Nc block of B is copied once into

@@ -29,7 +29,7 @@
  * FMLA .8h computes and accumulates in fp16 (8 lanes): twice the work per
  * instruction, at fp16's precision and range; the C tile is converted to
  * FP32 on store. Both use a 4-row tile with 16 accumulators, the shape of
- * gemm_neon_blocked's FP32 tile before it moved to 6 × 4.
+ * gemm_simd_blocked<Q>'s FP32 tile before it moved to 6 × 4.
  *
  * Blocking (elements): Mc = 256 rows; Kc = 1024 for 16-bit inputs and 2048
  * for INT8 (the same bytes); Nc = 512. K is zero-padded to a whole k group.

@@ -20,15 +20,15 @@
  * Armv8.6+, AVX-512 BF16 / VNNI on x86.
  */
 
-#include "gemm/avx512.hpp"
 #include "gemm/avx512_lowp.hpp"
-#include "gemm/neon.hpp"
 #include "gemm/neon_lowp.hpp"
+#include "gemm/simd.hpp"
 #include "gemm/sme.hpp"
 #include "gemm/sme_lowp.hpp"
 #include "hpc/isa.hpp"
 #include "hpc/lowp.hpp"
 #include "hpc/matrix.hpp"
+#include "simd_params.hpp"
 
 #include <benchmark/benchmark.h>
 
@@ -97,7 +97,7 @@ void register_all() {
     add<std::int8_t>("SmeWidening", "int8", gemm_sme_widening<std::int8_t>);
 #endif
 #if HPC_HAS_NEON
-    add<float>("NeonBlocked", "f32", gemm_neon_blocked<float>);
+    add<float>("NeonBlocked", "f32", hpc::bench::simd_blocked<Q>);
 #endif
 #if HPC_HAS_NEON_LOWP
     add<bf16>("NeonBfmmla", "bf16", gemm_neon_bf16);
@@ -106,7 +106,7 @@ void register_all() {
     add<fp16>("NeonFp16Acc", "fp16", gemm_neon_f16_acc);
 #endif
 #if HPC_HAS_AVX512
-    add<float>("Avx512Blocked", "f32", gemm_avx512_blocked<float>);
+    add<float>("Avx512Blocked", "f32", hpc::bench::simd_blocked<Zmm>);
 #endif
 #if HPC_HAS_AVX512_LOWP
     add<bf16>("Avx512Dpbf16", "bf16", gemm_avx512_bf16);

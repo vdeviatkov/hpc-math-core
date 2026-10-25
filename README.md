@@ -31,12 +31,12 @@ FP32 throughput at a small and a large size: N = 256 and 4096 on the CPU, N = 10
 | Family | Hardware | Register tile, C rows × cols | Blocks, M × K × N | Compute peak, f32, GFLOP/s ⁵ | N = 256, GFLOP/s (% of peak) | N = 4096, GFLOP/s (% of peak) |
 |---|---|---|---|--:|--:|--:|
 | Scalar, cache-blocked (`gemm_blocked`) | Apple M4 Max | — | 64 × 64 × 64 | ~130 | 80 (62%) | 29 (22%) |
-| ARM NEON, blocked (`gemm_neon_blocked`) ⁴ | Apple M4 Max | 6 × 16 | 384 × 256 × 256 | 144 | 123 (85%) | 101 (70%) |
-| ARM NEON, packed B (`gemm_neon_packed`) ⁴ | Apple M4 Max | 6 × 16 | 256 × 512 × 512 | 144 | 121 (84%) | **121 (84%)** |
-| AVX2, blocked (`gemm_avx2_blocked`) ⁴ | AMD Zen 5, GCC | 6 × 16 | 384 × 256 × 256 | 183 | 170 (93%) | 104 (57%) |
-| AVX2, packed B (`gemm_avx2_packed`) ⁴ | AMD Zen 5, GCC | 6 × 16 | 256 × 256 × 512 | 183 | 166 (91%) | **167 (91%)** |
-| AVX-512, blocked (`gemm_avx512_blocked`) ⁴ | AMD Zen 5, GCC | 8 × 48 | 512 × 256 × 512 | 365 | 325 (89%) | 294 (81%) |
-| AVX-512, packed B (`gemm_avx512_packed`) ⁴ | AMD Zen 5, GCC | 8 × 48 | 128 × 512 × 512 | 365 | 311 (85%) | **318 (87%)** |
+| ARM NEON, blocked (`gemm_simd_blocked<Q>`) ⁴ | Apple M4 Max | 6 × 16 | 384 × 256 × 256 | 144 | 123 (85%) | 101 (70%) |
+| ARM NEON, packed B (`gemm_simd_packed<Q>`) ⁴ | Apple M4 Max | 6 × 16 | 256 × 512 × 512 | 144 | 121 (84%) | **121 (84%)** |
+| AVX2, blocked (`gemm_simd_blocked<Ymm>`) ⁴ | AMD Zen 5, GCC | 6 × 16 | 384 × 256 × 256 | 183 | 170 (93%) | 104 (57%) |
+| AVX2, packed B (`gemm_simd_packed<Ymm>`) ⁴ | AMD Zen 5, GCC | 6 × 16 | 256 × 256 × 512 | 183 | 166 (91%) | **167 (91%)** |
+| AVX-512, blocked (`gemm_simd_blocked<Zmm>`) ⁴ | AMD Zen 5, GCC | 8 × 48 | 512 × 256 × 512 | 365 | 325 (89%) | 294 (81%) |
+| AVX-512, packed B (`gemm_simd_packed<Zmm>`) ⁴ | AMD Zen 5, GCC | 8 × 48 | 128 × 512 × 512 | 365 | 311 (85%) | **318 (87%)** |
 | ARM SME2 (`gemm_sme`) | Apple M4 Max | 32 × 32, 4 ZA tiles | 1024 × 2048 × 4096 | 1,960 ⁶ | 835 (43%) | **1,519 (78%)** |
 | ARM SME2, both units (`gemm_sme_mt`, 8 threads) ⁷ | Apple M4 Max | 32 × 32, 4 ZA tiles | 1024 × 2048 × 4096 | 3,930 ⁶ | 370 (9%) | **3,496 (89%)** |
 | Apple AMX via Accelerate (`gemm_amx`) ¹ | Apple M4 Max | — | — | 3,930 ⁶ | 1,685 (43%) | 3,115 (79%) |
@@ -99,8 +99,9 @@ Each family steps through the same techniques, one kernel per step.
 | Family | Kernels | Steps |
 |---|---|---|
 | Scalar | `gemm_naive` → `gemm_reordered` → `gemm_blocked` | i-j-k → cache-friendly i-k-j → cache tiling (tile 64) |
-| SIMD: AVX2, AVX-512, NEON, SVE | `gemm_<isa>_naive` → `_reordered` → `_blocked` → `_packed` | the same three steps with intrinsics, plus a register-tiled micro-kernel; then GotoBLAS loop order with B packed into contiguous strips (AVX2, AVX-512, NEON); SVE is vector-length agnostic with predicated tails |
-| Software prefetch | `gemm_<isa>_blocked_prefetch` | `__builtin_prefetch` for A, B and C, distance swept over {2, 4, 8, 16} |
+| SIMD: AVX2, AVX-512, NEON | `gemm_simd_reordered<Ops>` → `gemm_simd_blocked<Ops, R, V, …>` → `gemm_simd_packed<Ops, R, V, …>`, Ops = `Ymm`, `Zmm`, `Q` | one generic kernel per step over each ISA's primitive struct: i-k-j with intrinsics → cache blocking plus a register-tiled micro-kernel → GotoBLAS loop order with B packed into contiguous strips; tile and blocks are template parameters, measured values in `benchmarks/simd_params.hpp` |
+| SVE | `gemm_sve_reordered` → `gemm_sve_blocked` | the same two steps, vector-length agnostic with predicated tails |
+| Software prefetch | `gemm_simd_blocked<…, PfDist>`, `gemm_blocked_prefetch`, `gemm_sve_blocked_prefetch` | `__builtin_prefetch` for A, B and C, distance swept over {2, 4, 8, 16} |
 | ARM SME2 | `gemm_sme_1tile` → `gemm_sme_tiles` → `gemm_sme_blocked` → `gemm_sme` → `gemm_sme_mt` | `FMOPA` outer products into one ZA tile → all ZA tiles → GotoBLAS cache blocking → packed B → both P-clusters' SME units (shared B panel, dynamic A chunks) |
 | CUDA | `gemm_cuda_*`, Levels 0–8 | shared-memory tiling → register tiling → `cp.async` double buffering → 128-bit loads + swizzle → Tensor Cores via WMMA → raw `ldmatrix`/`mma.sync` → pipelined WMMA with 128×128 tiles → TMA + warp-specialised `mma.sync` |
 | Metal (Apple GPU) | `MetalNaive` → `MetalTiled` → `MetalRegTile` → `MetalSimd` → `MetalSimdTg` → `MetalSimdTgF16` | threadgroup-memory tiles → 8×4 register tile → `simdgroup_matrix` 8×8 MMA → tiles staged in threadgroup memory → fp16 inputs; MPS as the reference |

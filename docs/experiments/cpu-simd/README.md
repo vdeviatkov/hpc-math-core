@@ -73,15 +73,15 @@ GCC 13 compiles it with the B loads folded into the FMAs as memory operands
 32 FMAs with memory operands and no separate B load, so B is re-loaded for
 every FMA. With 6 or more rows it loads B once per k step (4 loads per two
 k steps) and every FMA is
-register-only. The library kernels `gemm_avx512_blocked` and
-`gemm_neon_blocked` (f64) were changed to the 8-row tiles on this evidence;
+register-only. The library kernels `gemm_simd_blocked<Zmm>` and
+`gemm_simd_blocked<Q>` (f64) were changed to the 8-row tiles on this evidence;
 before and after, same session:
 
 | N | 256 | 512 | 1024 | 4096 |
 |---|--:|--:|--:|--:|
-| `gemm_avx512_blocked` f32, 4 × 2 → 8 × 2 | 216.8 → 332.7 | 205.2 → 327.9 | 141.3 → 284.6 | 119.9 → 198.2 |
-| `gemm_avx512_blocked` f64, 4 × 2 → 8 × 2 | 106.2 → 161.5 | 55.8 → 105.2 | 55.1 → 90.9 | 51.1 → 77.2 |
-| `gemm_neon_blocked` f64, 4 × 2 → 8 × 2 | 31.5 → 39.6 | 29.8 → 39.2 | 28.7 → 37.9 | 24.0 → 33.1 |
+| `gemm_simd_blocked<Zmm>` f32, 4 × 2 → 8 × 2 | 216.8 → 332.7 | 205.2 → 327.9 | 141.3 → 284.6 | 119.9 → 198.2 |
+| `gemm_simd_blocked<Zmm>` f64, 4 × 2 → 8 × 2 | 106.2 → 161.5 | 55.8 → 105.2 | 55.1 → 90.9 | 51.1 → 77.2 |
+| `gemm_simd_blocked<Q>` f64, 4 × 2 → 8 × 2 | 31.5 → 39.6 | 29.8 → 39.2 | 28.7 → 37.9 | 24.0 → 33.1 |
 
 ## Reproduce
 
@@ -101,7 +101,7 @@ pinned (`taskset -c 2`), idle. The comparison of all tile shapes is in
 
 | File | Program | What |
 |---|---|---|
-| `library_{native,v3}_{old,new}_{1,2,3}.csv` | `bench_gemm`, filter `^(Avx2Blocked\|Avx512Blocked)(Pf4)?/` | the library before (git HEAD, 4×2 AVX2 tile) and after (6×2), three alternating runs per build; AVX-512 rows check that its rewrite to the `avx512_micro<8, 2>` template is neutral (±0.7%) |
+| `library_{native,v3}_{old,new}_{1,2,3}.csv` | `bench_gemm`, filter `^(Avx2Blocked\|Avx512Blocked)(Pf4)?/` | the library before (git HEAD, 4×2 AVX2 tile) and after (6×2), three alternating runs per build; AVX-512 rows check that its rewrite to the `vector_micro<Zmm<T>, 8, 2>` template is neutral (±0.7%) |
 
 Later tile changes (AVX-512 8 × 2 → 8 × 3, NEON → 6 × 4 with `LDR`) are
 recorded in [tile-sweeps](../tile-sweeps/README.md); the tables above keep

@@ -9,19 +9,20 @@
  * so a kernel that accumulates into C instead of overwriting it fails.
  *
  * A kernel family is in kKernels only where it is compiled (HPC_HAS_* from
- * hpc/isa.hpp); elsewhere its functions are deleted. The test list on a
- * machine is therefore exactly the set of kernels that run there.
+ * hpc/isa.hpp); elsewhere its primitive struct is only declared or its
+ * functions are deleted. The test list on a machine is therefore exactly
+ * the set of kernels that run there. The SIMD kernels (gemm/simd.hpp) take
+ * every size as a template argument; the tests spell them out, including
+ * blocks that are not multiples of the tile.
  */
 
 #include "gemm/amx.hpp"
-#include "gemm/avx2.hpp"
-#include "gemm/avx512.hpp"
 #include "gemm/blocked.hpp"
 #include "gemm/kleidiai.hpp"
 #include "gemm/naive.hpp"
-#include "gemm/neon.hpp"
 #include "gemm/prefetch.hpp"
 #include "gemm/reordered.hpp"
+#include "gemm/simd.hpp"
 #include "gemm/sme.hpp"
 #include "gemm/sve.hpp"
 #include "hpc/isa.hpp"
@@ -131,67 +132,52 @@ struct Kernel {
 #define HPC_BLOCK(name, fn, R, V, M, K, N) \
     Kernel{name, &fn<float, R, V, M, K, N>, &fn<double, R, V, M, K, N>}
 
+// A generic SIMD kernel (gemm/simd.hpp) with its template arguments before T.
+#define HPC_SIMD(name, fn, ...) Kernel{name, &fn<__VA_ARGS__, float>, &fn<__VA_ARGS__, double>}
+// One ISA's SIMD kernels: reordered; blocked at register tile R × V and cache
+// block TM × TK × TN, with prefetch, and with blocks that are not multiples of
+// the tile; packed at Mc × Kc × Nc, with A packed too, with odd blocks.
+#define HPC_SIMD_FAMILY(Isa, Ops, R, V, TM, TK, TN, MC, KC, NC)                                  \
+    HPC_SIMD(#Isa "Reordered", gemm_simd_reordered, Ops),                                         \
+    HPC_SIMD(#Isa "Blocked", gemm_simd_blocked, Ops, R, V, TM, TK, TN, 0),                        \
+    HPC_SIMD(#Isa "BlockedPrefetch", gemm_simd_blocked, Ops, R, V, TM, TK, TN, 4),                \
+    HPC_SIMD(#Isa "Blocked_20x7x37", gemm_simd_blocked, Ops, R, V, 20, 7, 37, 0),                 \
+    HPC_SIMD(#Isa "Packed", gemm_simd_packed, Ops, R, V, MC, KC, NC, false),                      \
+    HPC_SIMD(#Isa "PackedA", gemm_simd_packed, Ops, R, V, MC, KC, NC, true),                      \
+    HPC_SIMD(#Isa "Packed4x2", gemm_simd_packed, Ops, 4, 2, MC, KC, NC, false),                   \
+    HPC_SIMD(#Isa "Packed_5x7x50", gemm_simd_packed, Ops, R, V, 5, 7, 50, false),                 \
+    HPC_SIMD(#Isa "PackedA_5x7x50", gemm_simd_packed, Ops, R, V, 5, 7, 50, true)
+// gemm_simd_blocked with another register tile at the same cache block.
+#define HPC_SIMD_TILE(Isa, Ops, R, V, TM, TK, TN) \
+    HPC_SIMD(#Isa "Blocked" #R "x" #V, gemm_simd_blocked, Ops, R, V, TM, TK, TN, 0)
+
 const Kernel kKernels[] = {
     HPC_BOTH("Reordered", gemm_reordered),
     HPC_BOTH("Blocked", gemm_blocked),
     HPC_BOTH("BlockedPrefetch", gemm_blocked_prefetch),
 #if HPC_HAS_AVX2
-    HPC_BOTH("Avx2Naive", gemm_avx2_naive),
-    HPC_BOTH("Avx2Reordered", gemm_avx2_reordered),
-    HPC_BOTH("Avx2Blocked", gemm_avx2_blocked),
-    HPC_BOTH("Avx2BlockedPrefetch", gemm_avx2_blocked_prefetch),
-    HPC_TILE("Avx2Blocked1x1", gemm_avx2_blocked, 1, 1),
-    HPC_TILE("Avx2Blocked4x2", gemm_avx2_blocked, 4, 2),
-    HPC_TILE("Avx2Blocked2x4", gemm_avx2_blocked, 2, 4),
-    HPC_TILE("Avx2Blocked4x3", gemm_avx2_blocked, 4, 3),
-    HPC_TILE("Avx2Blocked7x2", gemm_avx2_blocked, 7, 2),
-    HPC_BLOCK("Avx2Blocked_20x7x37", gemm_avx2_blocked, 6, 2, 20, 7, 37),
-    HPC_BOTH("Avx2Packed", gemm_avx2_packed),
-    Kernel{"Avx2PackedA", &gemm_avx2_packed<float, 6, 2, kAvx2PackMc, kAvx2PackKc, kAvx2PackNc, true>,
-           &gemm_avx2_packed<double, 6, 2, kAvx2PackMc, kAvx2PackKc, kAvx2PackNc, true>},
-    HPC_TILE("Avx2Packed4x2", gemm_avx2_packed, 4, 2),
-    HPC_BLOCK("Avx2Packed_5x7x50", gemm_avx2_packed, 6, 2, 5, 7, 50),
-    Kernel{"Avx2PackedA_5x7x50", &gemm_avx2_packed<float, 6, 2, 5, 7, 50, true>,
-           &gemm_avx2_packed<double, 6, 2, 5, 7, 50, true>},
+    HPC_SIMD_FAMILY(Avx2, Ymm, 6, 2, 384, 256, 256, 256, 256, 512),
+    HPC_SIMD_TILE(Avx2, Ymm, 1, 1, 384, 256, 256),
+    HPC_SIMD_TILE(Avx2, Ymm, 4, 2, 384, 256, 256),
+    HPC_SIMD_TILE(Avx2, Ymm, 2, 4, 384, 256, 256),
+    HPC_SIMD_TILE(Avx2, Ymm, 4, 3, 384, 256, 256),
+    HPC_SIMD_TILE(Avx2, Ymm, 7, 2, 384, 256, 256),
 #endif
 #if HPC_HAS_AVX512
-    HPC_BOTH("Avx512Naive", gemm_avx512_naive),
-    HPC_BOTH("Avx512Reordered", gemm_avx512_reordered),
-    HPC_BOTH("Avx512Blocked", gemm_avx512_blocked),
-    HPC_BOTH("Avx512BlockedPrefetch", gemm_avx512_blocked_prefetch),
-    HPC_TILE("Avx512Blocked8x2", gemm_avx512_blocked, 8, 2),
-    HPC_TILE("Avx512Blocked4x2", gemm_avx512_blocked, 4, 2),
-    HPC_TILE("Avx512Blocked6x3", gemm_avx512_blocked, 6, 3),
-    HPC_TILE("Avx512Blocked12x2", gemm_avx512_blocked, 12, 2),
-    HPC_BLOCK("Avx512Blocked_20x7x37", gemm_avx512_blocked, 8, 3, 20, 7, 37),
-    HPC_BOTH("Avx512Packed", gemm_avx512_packed),
-    Kernel{"Avx512PackedA", &gemm_avx512_packed<float, 8, 3, kAvx512PackMc, kAvx512PackKc, kAvx512PackNc, true>,
-           &gemm_avx512_packed<double, 8, 3, kAvx512PackMc, kAvx512PackKc, kAvx512PackNc, true>},
-    HPC_TILE("Avx512Packed4x2", gemm_avx512_packed, 4, 2),
-    HPC_BLOCK("Avx512Packed_5x7x50", gemm_avx512_packed, 8, 3, 5, 7, 50),
-    Kernel{"Avx512PackedA_5x7x50", &gemm_avx512_packed<float, 8, 3, 5, 7, 50, true>,
-           &gemm_avx512_packed<double, 8, 3, 5, 7, 50, true>},
+    HPC_SIMD_FAMILY(Avx512, Zmm, 8, 3, 512, 256, 512, 128, 512, 512),
+    HPC_SIMD_TILE(Avx512, Zmm, 8, 2, 512, 256, 512),
+    HPC_SIMD_TILE(Avx512, Zmm, 4, 2, 512, 256, 512),
+    HPC_SIMD_TILE(Avx512, Zmm, 6, 3, 512, 256, 512),
+    HPC_SIMD_TILE(Avx512, Zmm, 12, 2, 512, 256, 512),
 #endif
 #if HPC_HAS_NEON
-    HPC_BOTH("NeonNaive", gemm_neon_naive),
-    HPC_BOTH("NeonReordered", gemm_neon_reordered),
-    HPC_BOTH("NeonBlocked", gemm_neon_blocked),
-    HPC_BOTH("NeonBlockedPrefetch", gemm_neon_blocked_prefetch),
-    HPC_TILE("NeonBlocked1x1", gemm_neon_blocked, 1, 1),
-    HPC_TILE("NeonBlocked4x2", gemm_neon_blocked, 4, 2),
-    HPC_TILE("NeonBlocked6x3", gemm_neon_blocked, 6, 3),
-    HPC_TILE("NeonBlocked3x5", gemm_neon_blocked, 3, 5),
-    HPC_BLOCK("NeonBlocked_20x7x37", gemm_neon_blocked, 6, 4, 20, 7, 37),
-    HPC_BOTH("NeonPacked", gemm_neon_packed),
-    Kernel{"NeonPackedA", &gemm_neon_packed<float, 6, 4, kNeonPackMc, kNeonPackKc, kNeonPackNc, true>,
-           &gemm_neon_packed<double, 6, 4, kNeonPackMc, kNeonPackKc, kNeonPackNc, true>},
-    HPC_TILE("NeonPacked4x2", gemm_neon_packed, 4, 2),
-    HPC_BLOCK("NeonPacked_5x7x50", gemm_neon_packed, 6, 4, 5, 7, 50),
-    Kernel{"NeonPackedA_5x7x50", &gemm_neon_packed<float, 6, 4, 5, 7, 50, true>,
-           &gemm_neon_packed<double, 6, 4, 5, 7, 50, true>},
+    HPC_SIMD_FAMILY(Neon, Q, 6, 4, 384, 256, 256, 256, 512, 512),
+    HPC_SIMD_TILE(Neon, Q, 1, 1, 384, 256, 256),
+    HPC_SIMD_TILE(Neon, Q, 4, 2, 384, 256, 256),
+    HPC_SIMD_TILE(Neon, Q, 6, 3, 384, 256, 256),
+    HPC_SIMD_TILE(Neon, Q, 3, 5, 384, 256, 256),
 #endif
 #if HPC_HAS_SVE
-    HPC_BOTH("SveNaive", gemm_sve_naive),
     HPC_BOTH("SveReordered", gemm_sve_reordered),
     HPC_BOTH("SveBlocked", gemm_sve_blocked),
     HPC_BOTH("SveBlockedPrefetch", gemm_sve_blocked_prefetch),

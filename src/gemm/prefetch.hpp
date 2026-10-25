@@ -2,7 +2,10 @@
 
 /**
  * @file prefetch.hpp
- * @brief Software-prefetch variants of every blocked GEMM kernel.
+ * @brief Software-prefetch variants of the scalar and SVE blocked kernels.
+ *
+ * The AVX2, AVX-512 and NEON kernels need no separate variant:
+ * gemm_simd_blocked's PfDist parameter (simd.hpp) adds the same hints.
  *
  * Hardware prefetchers follow sequential streams; these hints target the
  * three streams they might not predict:
@@ -41,17 +44,14 @@
  *  Design
  * ============================================================
  *
- * The AVX2, AVX-512 and NEON variants are their base kernel's driver
- * (blocked_driver.hpp) with PfDist > 0, at the base kernel's default
- * register tile. SVE shares its own vector-length-agnostic driver in
- * sve.hpp. The scalar variant repeats its base kernel's loop with hints
- * added. Each ISA variant is declared `= delete` on an unsupported target.
+ * gemm_simd_blocked<Ops, …, PfDist> (simd.hpp) is blocked_driver.hpp with
+ * PfDist > 0. SVE shares its own vector-length-agnostic driver in sve.hpp.
+ * The scalar variant repeats its base kernel's loop with hints added. The
+ * SVE variant is declared `= delete` on an unsupported target.
  */
 
-#include "gemm/avx2.hpp"
-#include "gemm/avx512.hpp"
 #include "gemm/blocked.hpp"
-#include "gemm/neon.hpp"
+#include "gemm/blocked_driver.hpp"
 #include "gemm/sve.hpp"
 #include "hpc/matrix.hpp"
 
@@ -112,49 +112,7 @@ void gemm_blocked_prefetch(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C)
 }
 
 // ============================================================================
-// 2.  AVX2 blocked + prefetch
-// ============================================================================
-#if !HPC_HAS_AVX2
-template <typename T, std::size_t PfDist = kDefaultPrefetchDist>
-void gemm_avx2_blocked_prefetch(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) = delete;  // AVX2 not available on this target
-#else
-template <typename T, std::size_t PfDist = kDefaultPrefetchDist>
-void gemm_avx2_blocked_prefetch(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
-    static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>);
-    detail::blocked_gemm<Avx2Micro, 6, 2, kAvx2TileM, kAvx2TileK, kAvx2TileN<T>, PfDist>(A, B, C);
-}
-#endif  // HPC_HAS_AVX2
-
-// ============================================================================
-// 3.  AVX-512 blocked + prefetch
-// ============================================================================
-#if !HPC_HAS_AVX512
-template <typename T, std::size_t PfDist = kDefaultPrefetchDist>
-void gemm_avx512_blocked_prefetch(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) = delete;  // AVX512F not available on this target
-#else
-template <typename T, std::size_t PfDist = kDefaultPrefetchDist>
-void gemm_avx512_blocked_prefetch(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
-    static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>);
-    detail::blocked_gemm<Avx512Micro, 8, 3, kAvx512TileM, kAvx512TileK, kAvx512TileN<T>, PfDist>(A, B, C);
-}
-#endif  // HPC_HAS_AVX512
-
-// ============================================================================
-// 4.  NEON blocked + prefetch
-// ============================================================================
-#if !HPC_HAS_NEON
-template <typename T, std::size_t PfDist = kDefaultPrefetchDist>
-void gemm_neon_blocked_prefetch(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) = delete;  // ARM_NEON not available on this target
-#else
-template <typename T, std::size_t PfDist = kDefaultPrefetchDist>
-void gemm_neon_blocked_prefetch(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
-    static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>);
-    detail::blocked_gemm<NeonMicro, 6, 4, kNeonTileM, kNeonTileK, kNeonTileN, PfDist>(A, B, C);
-}
-#endif  // HPC_HAS_NEON
-
-// ============================================================================
-// 5.  SVE blocked + prefetch
+// 2.  SVE blocked + prefetch
 // ============================================================================
 #if !HPC_HAS_SVE
 template <typename T, std::size_t PfDist = kDefaultPrefetchDist,

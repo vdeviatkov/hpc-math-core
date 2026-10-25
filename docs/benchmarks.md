@@ -54,9 +54,8 @@ double (f64)
 | `gemm_naive` | 8.69 | 2.40 | 2.12 | 2.03 | 0.62 |
 | `gemm_reordered` | 25.62 | 15.90 | 15.84 | 15.98 | 15.62 |
 | `gemm_blocked` | 25.79 | 24.59 | 21.25 | 18.39 | 19.45 |
-| `gemm_neon_naive` | 8.67 | 2.39 | 2.04 | 2.02 | 0.62 |
-| `gemm_neon_reordered` | 25.64 | 13.40 | 14.06 | 7.66 | 14.98 |
-| `gemm_neon_blocked` | 62.13 | 62.25 | 60.99 | 59.52 | 51.03 |
+| `gemm_simd_reordered<Q>` | 25.64 | 13.40 | 14.06 | 7.66 | 14.98 |
+| `gemm_simd_blocked<Q>` | 62.13 | 62.25 | 60.99 | 59.52 | 51.03 |
 
 float (f32)
 
@@ -65,11 +64,10 @@ float (f32)
 | `gemm_naive` | 8.91 | 2.48 | 2.29 | 2.06 | 0.59 |
 | `gemm_reordered` | 82.63 | 30.96 | 31.64 | 31.56 | 30.73 |
 | `gemm_blocked` | 82.97 | 80.47 | 48.54 | 41.05 | 28.85 |
-| `gemm_neon_naive` | 8.82 | 3.50 | 3.23 | 2.11 | 0.60 |
-| `gemm_neon_reordered` | 82.74 | 28.71 | 26.60 | 27.48 | 29.42 |
-| `gemm_neon_blocked` | 122.41 | 122.86 | 123.78 | 121.19 | 102.10 |
+| `gemm_simd_reordered<Q>` | 82.74 | 28.71 | 26.60 | 27.48 | 29.42 |
+| `gemm_simd_blocked<Q>` | 122.41 | 122.86 | 123.78 | 121.19 | 102.10 |
 
-`gemm_neon_blocked` uses a 6×16 f32 / 6×8 f64 register tile (6 rows × 4
+`gemm_simd_blocked<Q>` uses a 6×16 f32 / 6×8 f64 register tile (6 rows × 4
 vectors, 24 accumulators) and loads A with `LDR` instead of `LD1R` since
 2026-10-21, and a 384×256×256 cache block since 2026-10-22
 ([kernels/blocks.md](kernels/blocks.md)). Its rows are the median of three
@@ -286,7 +284,7 @@ f32
 
 Cache-access pattern dominates at large N. `gemm_naive` runs at nearly the same GFLOP/s for f32 and f64 at every size: it waits on cache misses from the column-stride walk of B, where element width doesn't matter. Switching to i-k-j (`gemm_reordered`) makes B and C sequential so every cache line is fully consumed: at N=4096 that is 25× faster than naive for f64 and 52× for f32 (twice the elements per cache line → twice the bandwidth).
 
-Explicit SIMD beats auto-vectorisation mainly by staying flat. `gemm_reordered` and `gemm_blocked` carry no NEON intrinsics — the compiler vectorises the sequential inner j-loop under `-ffast-math`, reaching ~83 GFLOP/s f32 at small N. That figure relies on N being a compile-time constant ([Deriving GFLOP/s](#deriving-gflops)). Adding an explicit 6×16 f32 register tile on top of L2 blocking changes the *shape* of the curve: `gemm_neon_blocked` holds 121–124 GFLOP/s f32 from N=64 through N=1024 (at 4.49 GHz, see above), while the auto-vectorised `gemm_blocked` decays 83 → 41.
+Explicit SIMD beats auto-vectorisation mainly by staying flat. `gemm_reordered` and `gemm_blocked` carry no NEON intrinsics — the compiler vectorises the sequential inner j-loop under `-ffast-math`, reaching ~83 GFLOP/s f32 at small N. That figure relies on N being a compile-time constant ([Deriving GFLOP/s](#deriving-gflops)). Adding an explicit 6×16 f32 register tile on top of L2 blocking changes the *shape* of the curve: `gemm_simd_blocked<Q>` holds 121–124 GFLOP/s f32 from N=64 through N=1024 (at 4.49 GHz, see above), while the auto-vectorised `gemm_blocked` decays 83 → 41.
 
 The accumulator count sets the ceiling. The P-core issues up to 4 FMAs per cycle with a ~3-cycle latency (`fma_peak`, [experiments/cpu-simd](experiments/cpu-simd/README.md)), so a micro-kernel needs 12–16 independent accumulators; the 6×4 tile has 24. The other limit was a single instruction: broadcasting A with `LD1R` held every tile with many rows back, and loading it with `LDR` and multiplying by element made the 6×4 tile 23–30% faster. f32 and f64 now run at the same 85% of their peaks. Every shape measured: [kernels/neon.md](kernels/neon.md).
 
@@ -297,7 +295,7 @@ Peak per family on this machine:
 | `gemm_naive` | 8.69 | 8.91 | 1.0× |
 | `gemm_reordered` | 25.62 | 82.63 | 3.2× |
 | `gemm_blocked` | 25.79 | 82.97 | 3.2× |
-| `gemm_neon_blocked` | 62.25 | 123.78 | 2.0× |
+| `gemm_simd_blocked<Q>` | 62.25 | 123.78 | 2.0× |
 | `gemm_sme` | 424 | **1,504** | 3.5× |
 | `gemm_amx` (Accelerate) | **860.28** | **3,295.78** | 3.8× |
 
@@ -309,7 +307,7 @@ Peak per family on this machine:
 > **CPU Caches:** L1d 48 KiB (×16) · L1i 32 KiB (×16) · L2 1024 KiB (×16) · L3 32768 KiB (×2)
 > **Load Average:** 0.00 / 0.11 / 0.08 on 32 threads — idle
 > **Governor:** `performance` · **Run time:** 2147 s (36 min) for the full CPU sweep
-> **Date:** 2026-10-15; `gemm_avx512_blocked` re-measured the same night after its micro-kernel change (below)
+> **Date:** 2026-10-15; `gemm_simd_blocked<Zmm>` re-measured the same night after its micro-kernel change (below)
 
 Zen 5 has a full-width 512-bit AVX-512 datapath (unlike Zen 4's double-pumped
 256-bit), so this is the first machine in this repo where `gemm_avx512_*`
@@ -325,8 +323,8 @@ double (f64)
 | `gemm_naive` | 14.55 | 2.19 | 1.25 | 0.76 | 0.44 |
 | `gemm_reordered` | 41.91 | 52.50 | 36.76 | 33.10 | 13.04 |
 | `gemm_blocked` | 41.85 | 36.86 | 35.76 | 35.56 | 33.02 |
-| `gemm_avx2_blocked` | 82.79 | 81.86 | 62.32 | 54.83 | 53.76 |
-| `gemm_avx512_blocked` | 153.03 | 162.03 | 157.66 | 150.99 | 145.03 |
+| `gemm_simd_blocked<Ymm>` | 82.79 | 81.86 | 62.32 | 54.83 | 53.76 |
+| `gemm_simd_blocked<Zmm>` | 153.03 | 162.03 | 157.66 | 150.99 | 145.03 |
 
 float (f32)
 
@@ -335,15 +333,13 @@ float (f32)
 | `gemm_naive` | 15.78 | 3.37 | 1.86 | 0.57 | 0.42 |
 | `gemm_reordered` | 50.44 | 93.89 | 82.40 | 70.19 | 30.48 |
 | `gemm_blocked` | 48.94 | 47.82 | 47.52 | 46.03 | 42.48 |
-| `gemm_avx2_blocked` | 166.65 | 171.72 | 169.65 | 126.89 | 105.60 |
-| `gemm_avx512_blocked` | 297.69 | 324.43 | 327.88 | 312.81 | 294.74 |
+| `gemm_simd_blocked<Ymm>` | 166.65 | 171.72 | 169.65 | 126.89 | 105.60 |
+| `gemm_simd_blocked<Zmm>` | 297.69 | 324.43 | 327.88 | 312.81 | 294.74 |
 
-The `*_naive` and `*_reordered` rows for AVX2/AVX-512 are omitted above —
-the naive ones track scalar naive within a few percent (SIMD width cannot
-fix a cache-hostile access pattern), and the reordered ones trail scalar
-reordered, which GCC auto-vectorises at least as well.
+The `gemm_simd_reordered` rows for AVX2/AVX-512 are omitted above — they
+trail scalar reordered, which GCC auto-vectorises at least as well.
 
-The `gemm_avx2_blocked` and `gemm_avx512_blocked` rows are the median of
+The `gemm_simd_blocked<Ymm>` and `gemm_simd_blocked<Zmm>` rows are the median of
 three runs on 2026-10-22 with their current register tiles and cache blocks
 ([`bench_zen5_defaults.csv`](experiments/block-sweeps/bench_zen5_defaults.csv);
 blocks: [kernels/blocks.md](kernels/blocks.md)): AVX2 384×256 × 1 KiB of
@@ -352,14 +348,14 @@ tiles measured 297.22 / 325.52 / 328.96 / 312.15 / 230.25 f32 and 149.90 /
 162.09 / 128.41 / 123.44 / 95.86 f64 (AVX-512), 169.01 / 171.16 / 167.72 /
 124.01 / 95.40 f32 and 82.80 / 83.84 / 62.35 / 54.35 / 48.13 f64 (AVX2).
 
-`gemm_avx512_blocked` uses an 8×48 f32 / 8×24 f64 register tile (8 rows
+`gemm_simd_blocked<Zmm>` uses an 8×48 f32 / 8×24 f64 register tile (8 rows
 × 3 vectors, 24 accumulators) since 2026-10-21. The 8×2 tile it replaced (16 accumulators, since 2026-10-15) measured
 320.29 / 332.68 / 327.92 / 284.59 / 198.23 f32 and 154.62 / 161.54 /
 105.21 / 90.87 / 77.16 f64; the 4×2 tile before that 216.8 / 205.2 / 141.3
 / 119.9 f32 and 106.2 / 55.8 / 55.1 / 51.1 f64 at N=256 / 512 / 1024 /
 4096. Every tile shape and why 8 × 3: [kernels/avx512.md](kernels/avx512.md).
 
-`gemm_avx2_blocked` uses a 6×16 f32 / 6×8 f64 register tile (12
+`gemm_simd_blocked<Ymm>` uses a 6×16 f32 / 6×8 f64 register tile (12
 accumulators) since 2026-10-21, measured alternated with the previous
 4-row tile
 ([experiments/cpu-simd/avx2-tiles](experiments/cpu-simd/avx2-tiles/)). The
@@ -375,8 +371,8 @@ N=4096:
 | `gemm_naive` | 311.84 s | 1.0× | 328.38 s | 1.0× |
 | `gemm_reordered` | 10.54 s | 29.6× | 4.51 s | 72.8× |
 | `gemm_blocked` | 4.16 s | 74.9× | 3.24 s | 101.5× |
-| `gemm_avx2_blocked` | 2.56 s | 122.0× | 1.30 s | 252.3× |
-| `gemm_avx512_blocked` | 0.95 s | 329.0× | 0.47 s | 704.2× |
+| `gemm_simd_blocked<Ymm>` | 2.56 s | 122.0× | 1.30 s | 252.3× |
+| `gemm_simd_blocked<Zmm>` | 0.95 s | 329.0× | 0.47 s | 704.2× |
 
 ### Key observations
 
@@ -408,7 +404,7 @@ from N=512 up, at the same cache block
 ([kernels/avx512.md](kernels/avx512.md)). The current cache blocks add
 +28% f32 and +51% f64 at N=4096 and +22–23% f64 at N=512–1024
 ([kernels/blocks.md](kernels/blocks.md)): the B block now fits in half of
-L2 in either type, and each B block serves 512 rows of A instead of 64. `gemm_avx2_blocked` uses a 6×2-YMM tile (12 accumulators, 15–16 of
+L2 in either type, and each B block serves 512 rows of A instead of 64. `gemm_simd_blocked<Ymm>` uses a 6×2-YMM tile (12 accumulators, 15–16 of
 AVX2's 16 registers without spilling): 171.7 f32 and 81.9 f64 at N=256
 (83.8 with the old block), 94% and 90–92% of the AVX2 peak (182 / 91 GFLOP/s); the 4×2 tile it replaced
 reached 83% ([kernels/avx2.md](kernels/avx2.md)).
@@ -444,8 +440,8 @@ follow these streaming access patterns, so explicit hints add little.
 `gemm_naive` is slower than on Apple M4 Max at N=4096 (0.44 vs 0.62 GFLOP/s
 f64) despite the higher clock, and f32 and f64 are indistinguishable (0.42 vs
 0.44) — it is bound by memory latency, where element width doesn't matter.
-One naive iteration at N=4096 takes 312 s; the six naive-family entries at
-that size take about 90% of the sweep.
+One naive iteration at N=4096 takes 312 s, which dominates the sweep's
+run time.
 
 ---
 

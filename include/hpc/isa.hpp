@@ -10,7 +10,7 @@
  *
  * No silent fallback: where an ISA is absent, that family's gemm_* functions
  * are declared `= delete` (see each src/gemm/<isa>.hpp), so calling
- * gemm_avx2_blocked on an ARM build is a compile-time error rather than a
+ * gemm_simd_blocked<Ymm> on an ARM build is a compile-time error rather than a
  * scalar kernel under an AVX2 name. Benchmarks report such families as
  * SKIPPED without instantiating them, and their tests are not compiled, so a
  * machine's test count is exactly the set of kernels that ran there.

@@ -1,11 +1,11 @@
 # Cache blocks of the SIMD kernels
 
 Around the register tile ([AVX2](avx2.md), [AVX-512](avx512.md),
-[NEON](neon.md)), `gemm_<isa>_blocked` blocks the multiplication for the
+[NEON](neon.md)), `gemm_simd_blocked<Ops>` blocks the multiplication for the
 caches. All three block sizes are template parameters:
 
 ```cpp
-gemm_avx512_blocked<T, R, V, TileM, TileK, TileN>(A, B, C);
+gemm_simd_blocked<Zmm, R, V, TileM, TileK, TileN>(A, B, C);
 ```
 
 | Family | Default block, TileM × TileK × TileN | B block (TileK × TileN) | Machine |
@@ -228,7 +228,7 @@ contiguous strips, as the SME2 kernel does, is the next step: below.
 
 ## Packed B
 
-`gemm_<isa>_packed<T, R, V, Mc, Kc, Nc, PackA = false>`
+`gemm_simd_packed<Ops, R, V, Mc, Kc, Nc, PackA = false>`
 ([`packed_driver.hpp`](../../src/gemm/packed_driver.hpp)) runs the same
 micro-kernel and register tile in GotoBLAS order:
 
@@ -320,4 +320,4 @@ taskset -c 2 ./build/benchmarks/bench_gemm \
 ```
 
 (`Avx2Block`, `NeonBlock` likewise.) A block outside the grid:
-`gemm_avx2_blocked<float, 6, 2, M, K, N>(A, B, C)`.
+`gemm_simd_blocked<Ymm, 6, 2, M, K, N>(A, B, C)`.

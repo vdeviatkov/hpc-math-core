@@ -286,7 +286,7 @@ all. At these sizes it pays for itself several times over.
 
 ## The same experiment on AMD Zen 5
 
-Part 1's AVX-512 kernel, `gemm_avx512_blocked`, also reads B in place, and
+Part 1's AVX-512 kernel, `gemm_simd_blocked<Zmm>`, also reads B in place, and
 it also loses throughput at power-of-two sizes: FP32 at N = 1024 and FP64
 at N = 512, both rows 4 KiB apart ([part 1](simd-gemm.md)). The experiments
 above, repeated on one core of an AMD Ryzen 9 9950X with the kernel's 8 × 2

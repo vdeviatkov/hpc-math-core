@@ -13,8 +13,8 @@
  *         number of lines at which the latency steps up is the capacity of
  *         the cache sets the stride leaves to them, per level.
  *
- * ldb     The FP32 GEMM of gemm_avx512_blocked (same 64 x 256 x 512 blocking,
- *         same avx512_micro<8, 2>) with B stored at row stride ldb >= N. Only
+ * ldb     The FP32 GEMM of gemm_simd_blocked<Zmm> (same 64 x 256 x 512 blocking,
+ *         same 8 x 2 tile of vector_micro<Zmm>) with B stored at row stride ldb >= N. Only
  *         the stride changes; the multiplication does not. Each ldb is run
  *         with B read in place, as the library kernel does, and with each
  *         256 x 512 block of B packed into contiguous 32-column strips first
@@ -31,14 +31,15 @@
  *         L2 sets (whose capacity at a stride does) from L1 sets (whose
  *         capacity is the same 12 lines at every multiple of 4 KiB).
  *
- * Every GEMM variant is checked against gemm_avx512_blocked before timing.
+ * Every GEMM variant is checked against gemm_simd_blocked<Zmm> before timing.
  * Times are medians of 5 repetitions, variants interleaved; GFLOP/s =
  * 2 M N K / time. The core clock is measured first (core_clock.hpp) for the
  * chase's cycle column. Pin the process to one core (taskset -c 2).
  */
 
 #include "core_clock.hpp"
-#include "gemm/avx512.hpp"
+#include "../simd_params.hpp"
+#include "gemm/simd.hpp"
 #include "hpc/matrix.hpp"
 
 #include <algorithm>
@@ -62,7 +63,8 @@ int main() {
 
 namespace {
 
-using hpc::gemm::avx512_micro;
+using hpc::gemm::vector_micro;
+using hpc::gemm::Zmm;
 
 double g_ghz = 0;
 
@@ -154,7 +156,7 @@ void gemm_strided(const float* A, const float* B, float* C, std::size_t M, std::
                 for (std::size_t i = i_blk; i < i_end; i += 8)
                     for (std::size_t j = 0; j < j_len; j += kJStep) {
                         const float* b = pack ? &buf[(j / kJStep) * k_len * kJStep] : b_blk + j;
-                        avx512_micro<8, 2>(A + i * K + k_blk, b, C + i * N + j_blk + j, K, pack ? kJStep : ldb, N,
+                        vector_micro<Zmm<float>, 8, 2>(A + i * K + k_blk, b, C + i * N + j_blk + j, K, pack ? kJStep : ldb, N,
                                          k_len);
                     }
             }
@@ -182,7 +184,7 @@ struct Problem {
         std::copy(A.begin(), A.end(), a.data());
         for (std::size_t k = 0; k < K; ++k)
             std::copy_n(&B[k * ldb], N, b.data() + k * N);
-        hpc::gemm::gemm_avx512_blocked(a, b, c);
+        hpc::bench::simd_blocked<Zmm>(a, b, c);
         for (const bool pack : {false, true}) {
             run(kc, pack);
             for (std::size_t i = 0; i < M * N; ++i)

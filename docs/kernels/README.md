@@ -2,10 +2,10 @@
 
 [Why each default was chosen, including evidence and untuned sizes](sizing.md).
 
-`gemm_avx2_blocked`, `gemm_avx512_blocked` and `gemm_neon_blocked` share
+`gemm_simd_blocked<Ymm>`, `gemm_simd_blocked<Zmm>` and `gemm_simd_blocked<Q>` share
 one driver ([`blocked_driver.hpp`](../../src/gemm/blocked_driver.hpp)) and
 take their register tile, R rows × V vectors of C, as template parameters:
-`gemm_<isa>_blocked<T, R, V>`. `bench_gemm` runs each family with every
+`gemm_simd_blocked<Ops, R, V, …>`. `bench_gemm` runs each family with every
 listed shape (`<Isa>Tile<R>x<V>`), and these pages compare them and explain
 the defaults. SVE exposes the same R/V/cache parameters through a separate
 vector-length-agnostic driver in `sve.hpp`:
@@ -19,11 +19,11 @@ vector-length-agnostic driver in `sve.hpp`:
 | SVE | [sve.md](sve.md) | 4 × 2 (width follows VL) | hardware measurements pending | — | — |
 
 The cache blocks around the register tile are template parameters too
-(`gemm_<isa>_blocked<T, R, V, TileM, TileK, TileN>`), swept in
+(`gemm_simd_blocked<Ops, R, V, TileM, TileK, TileN>`), swept in
 [blocks.md](blocks.md): taller blocks of A and a B block that fits in half
 of Zen 5's L2 made the kernels 10–51% faster at N = 4096.
 
-Best measured is `gemm_<isa>_blocked` at its default tile and its best size
+Best measured is `gemm_simd_blocked` at its measured tile and its best size
 (N = 64–512) with its default cache block, from the runs in
 [benchmarks.md](../benchmarks.md); peaks
 are `fma_peak`'s measured FMA rates at the clock of each run. Raw data and

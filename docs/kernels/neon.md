@@ -1,11 +1,11 @@
-# NEON register tiles (`gemm_neon_blocked`)
+# NEON register tiles (`gemm_simd_blocked<Q>`)
 
-`gemm_neon_blocked<T, R, V>` multiplies with an R × V register tile:
+`gemm_simd_blocked<Q, R, V, …>` multiplies with an R × V register tile:
 R rows of C, V Q-vectors of 4 FP32 / 2 FP64 each, kept in R·V accumulators
 for a whole k block. The default is **6 × 4** (6 × 16 FP32, 6 × 8 FP64) for
 both types. This page gives the measurements behind that choice on an
 Apple M4 Max P-core, and a code-generation change that the sweep led to.
-Code: [`neon.hpp`](../../src/gemm/neon.hpp) (`neon_micro<R, V>`), driver
+Code: [`neon.hpp`](../../src/gemm/neon.hpp) (`vector_micro<Q<T>, R, V>`), driver
 [`blocked_driver.hpp`](../../src/gemm/blocked_driver.hpp). The other
 families: [AVX2](avx2.md), [AVX-512](avx512.md).
 
@@ -138,7 +138,7 @@ GFLOP/s at N = 256). With the cache blocks chosen since
 
 Three changes, each measured against the one before at the same clock:
 
-| `gemm_neon_blocked` | FP32 N = 256 | FP32 N = 1024 | FP64 N = 256 | FP64 N = 1024 |
+| `gemm_simd_blocked<Q>` | FP32 N = 256 | FP32 N = 1024 | FP64 N = 256 | FP64 N = 1024 |
 |---|--:|--:|--:|--:|
 | 4 × 4 / 8 × 2, one hand-written micro-kernel per type (to commit 3bd58c0) | 97.3 | 95.7 | 41.2 | 40.5 |
 | the same shapes through the template micro-kernel and shared driver | 110.9 | 102.0 | 40.6 | 40.0 |
@@ -160,6 +160,6 @@ cmake --build build --target bench_gemm
     --benchmark_repetitions=3 --benchmark_report_aggregates_only=true
 ```
 
-A shape not in the sweep: `gemm_neon_blocked<float, R, V>(A, B, C)`, or a
+A shape not in the sweep: `gemm_simd_blocked<Q, R, V, TileM, TileK, TileN>(A, B, C)`, or a
 line `HPC_NEON_TILE(R, V);` in `add_tiles()` of
 [`bench_gemm.cpp`](../../benchmarks/bench_gemm.cpp).

@@ -1,10 +1,10 @@
-# AVX2 register tiles (`gemm_avx2_blocked`)
+# AVX2 register tiles (`gemm_simd_blocked<Ymm>`)
 
-`gemm_avx2_blocked<T, R, V>` multiplies with an R × V register tile:
+`gemm_simd_blocked<Ymm, R, V, …>` multiplies with an R × V register tile:
 R rows of C, V vectors of 8 FP32 / 4 FP64 each, kept in R·V YMM
 accumulators for a whole k block. The default is **6 × 2** (6 × 16 FP32,
 6 × 8 FP64). This page gives the measurements behind that choice on AMD
-Zen 5. Code: [`avx2.hpp`](../../src/gemm/avx2.hpp) (`avx2_micro<R, V>`),
+Zen 5. Code: [`avx2.hpp`](../../src/gemm/avx2.hpp) (`vector_micro<Ymm<T>, R, V>`),
 driver [`blocked_driver.hpp`](../../src/gemm/blocked_driver.hpp). The other
 families: [AVX-512](avx512.md), [NEON](neon.md).
 
@@ -103,7 +103,7 @@ blocks.
 
 ### Registers and spills
 
-GCC 13, from the disassembly of every `avx2_micro<R, V, float>` shape
+GCC 13, from the disassembly of every `vector_micro<Ymm<float>, R, V>` shape
 above. Only one shape spills:
 
 | Build | Shape | Vector registers used | Stack accesses in the k loop |
@@ -138,7 +138,7 @@ alternating two broadcast registers, still with no spill.
   Zen 5 build) 7 × 2 does not spill and is the best at N ≥ 512 FP64 and
   N ≥ 1024 FP32 (+3–8%), since it reads less B per FMA. But an AVX2 kernel
   exists for CPUs without AVX-512, which have 16 registers; a CPU with 32
-  is better served by `gemm_avx512_blocked`. `gemm_avx2_blocked<T, 7, 2>`
+  is better served by `gemm_simd_blocked<Zmm>`. `gemm_simd_blocked<Ymm, 7, 2, …>`
   is there for anyone who wants it.
 
 The 6 × 2 kernel reaches 94% (FP32) and 92% (FP64) of the AVX2 peak at
@@ -156,6 +156,6 @@ taskset -c 2 ./build/benchmarks/bench_gemm --benchmark_filter='^Avx2Tile' \
 taskset -c 2 ./build/benchmarks/simd_microkernel
 ```
 
-A shape not in the sweep: `gemm_avx2_blocked<float, R, V>(A, B, C)`, or a
+A shape not in the sweep: `gemm_simd_blocked<Ymm, R, V, TileM, TileK, TileN>(A, B, C)`, or a
 line `HPC_AVX2_TILE(R, V);` in `add_tiles()` of
 [`bench_gemm.cpp`](../../benchmarks/bench_gemm.cpp).

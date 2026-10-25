@@ -14,14 +14,15 @@ Cache background: [docs/cache-behavior.md](../../docs/cache-behavior.md).
 | [`naive.hpp`](naive.hpp) | `gemm_naive` (i-j-k, the reference every test compares against) | always |
 | [`reordered.hpp`](reordered.hpp) | `gemm_reordered` (i-k-j) | always |
 | [`blocked.hpp`](blocked.hpp) | `gemm_blocked` (cache-tiled i-k-j) | always |
-| [`avx2.hpp`](avx2.hpp) | `gemm_avx2_{naive,reordered,blocked,packed}` | `__AVX2__` + FMA |
-| [`avx512.hpp`](avx512.hpp) | `gemm_avx512_{naive,reordered,blocked,packed}` | `__AVX512F__` |
-| [`neon.hpp`](neon.hpp) | `gemm_neon_{naive,reordered,blocked,packed}` | AArch64 NEON |
-| [`sve.hpp`](sve.hpp) | `gemm_sve_{naive,reordered,blocked}`; blocked register/cache tiles are template parameters ([sweeps](../../docs/kernels/sve.md)) | `__ARM_FEATURE_SVE` |
-| [`blocked_driver.hpp`](blocked_driver.hpp) | `detail::blocked_gemm<Micro, R, V, …>`: the cache-blocked, register-tiled driver of the AVX2, AVX-512 and NEON blocked kernels and their prefetch variants; any R × V tile, edges by smaller tiles of the same micro-kernel | always (the micro-kernels need their ISA) |
-| [`packed_driver.hpp`](packed_driver.hpp) | `detail::packed_gemm<Micro, R, V, Mc, Kc, Nc, PackA>`: the same micro-kernels in GotoBLAS order with each B block packed once into contiguous strips (optionally A too); the driver of `gemm_{avx2,avx512,neon}_packed` | always (the micro-kernels need their ISA) |
-| [`vector_micro.hpp`](vector_micro.hpp) | `vector_micro<Ops, R, V>` and `VectorMicro<Ops>`: the one register-tiled micro-kernel behind `avx2_micro`, `avx512_micro` and `neon_micro`; each ISA supplies a small `Ops` struct (`Ymm<T>`, `Zmm<T>`, `Q<T>`) | always (the `Ops` structs need their ISA) |
-| [`prefetch.hpp`](prefetch.hpp) | `gemm_{,avx2_,avx512_,neon_,sve_}blocked_prefetch` | per family |
+| [`simd.hpp`](simd.hpp) | `gemm_simd_reordered<Ops>`, `gemm_simd_blocked<Ops, R, V, TileM, TileK, TileN, PfDist = 0>`, `gemm_simd_packed<Ops, R, V, Mc, Kc, Nc, PackA = false>`: the AVX2, AVX-512 and NEON kernels, generic over the ISA's primitive struct | per `Ops` |
+| [`avx2.hpp`](avx2.hpp) | `Ymm<float>`, `Ymm<double>`: the AVX2 primitives (`load`, `store`, `load_a`, `fma`) | `__AVX2__` + FMA |
+| [`avx512.hpp`](avx512.hpp) | `Zmm<float>`, `Zmm<double>`: the AVX-512 primitives | `__AVX512F__` |
+| [`neon.hpp`](neon.hpp) | `Q<float>`, `Q<double>`: the NEON primitives | AArch64 NEON |
+| [`sve.hpp`](sve.hpp) | `gemm_sve_{reordered,blocked}`; blocked register/cache tiles are template parameters ([sweeps](../../docs/kernels/sve.md)) | `__ARM_FEATURE_SVE` |
+| [`blocked_driver.hpp`](blocked_driver.hpp) | `detail::blocked_gemm<Micro, R, V, …>`: the cache-blocked, register-tiled driver of `gemm_simd_blocked`, with or without prefetch; any R × V tile, edges by smaller tiles of the same micro-kernel | always (the micro-kernels need their ISA) |
+| [`packed_driver.hpp`](packed_driver.hpp) | `detail::packed_gemm<Micro, R, V, Mc, Kc, Nc, PackA>`: the same micro-kernels in GotoBLAS order with each B block packed once into contiguous strips (optionally A too); the driver of `gemm_simd_packed` | always (the micro-kernels need their ISA) |
+| [`vector_micro.hpp`](vector_micro.hpp) | `vector_micro<Ops, R, V>` and `VectorMicro<Ops>`: the one register-tiled micro-kernel of `gemm_simd_blocked` and `gemm_simd_packed`, for any `Ops` struct (`Ymm<T>`, `Zmm<T>`, `Q<T>`) | always (the `Ops` structs need their ISA) |
+| [`prefetch.hpp`](prefetch.hpp) | `gemm_{,sve_}blocked_prefetch` (the SIMD kernels take `PfDist` instead) | per family |
 | [`sme.hpp`](sme.hpp) | `gemm_sme_1tile`, `gemm_sme_tiles`, `gemm_sme_blocked`, `gemm_sme`; configurable ZA shape/cache blocks ([guide](../../docs/kernels/sme.md)); `gemm_sme_mt`, the same blocking on several threads to use every P-cluster's SME unit ([sweep](../../docs/kernels/sme.md#several-sme-units)) | SME2, `HPC_ENABLE_SME=ON` |
 | [`amx.hpp`](amx.hpp) | `gemm_amx` (Accelerate BLAS, Apple's route to its AMX unit) | Apple, `HPC_ENABLE_AMX` (default on) |
 | [`kleidiai.hpp`](kleidiai.hpp) | `gemm_kleidiai` (Arm's SME2 micro-kernel, f32 only) | SME2, `HPC_ENABLE_KLEIDIAI` |
@@ -59,14 +60,14 @@ of level 2, and an added technique need not improve every shape.
 
 ## Families
 
-The AVX2, AVX-512 and NEON register tiles and cache blocks are template parameters (`gemm_<isa>_blocked<T, R, V, TileM, TileK, TileN>`); every shape and block measured, and why each default: [docs/kernels](../../docs/kernels/README.md).
+The AVX2, AVX-512 and NEON register tiles and cache blocks are template parameters with no defaults (`gemm_simd_blocked<Ops, R, V, TileM, TileK, TileN>`); the measured values are in [`benchmarks/simd_params.hpp`](../../benchmarks/simd_params.hpp), and every shape and block measured, with the reasons for each choice: [docs/kernels](../../docs/kernels/README.md).
 
 | Family | Register / tile | Key intrinsics or API |
 |---|---|---|
 | Scalar | — (auto-vectorised by the compiler at `-O3 -ffast-math`) | — |
-| AVX2 | 16 × 256-bit YMM: 8 f32 / 4 f64; C tile 6×16 f32, 6×8 f64 by default (`avx2_micro<6, 2>`) | `_mm256_fmadd_ps/pd`, `_mm256_broadcast_ss/sd` |
-| AVX-512 | 32 × 512-bit ZMM: 16 f32 / 8 f64; C tile 8×48 f32, 8×24 f64 by default (`avx512_micro<8, 3>`) | `_mm512_fmadd_ps/pd`, `_mm512_set1_ps/pd` |
-| NEON | 32 × 128-bit Q: 4 f32 / 2 f64; C tile 6×16 f32, 6×8 f64 by default (`neon_micro<6, 4>`) | `vfmaq_lane_f32/f64` (A by element, loaded with `LDR`) |
+| AVX2 | 16 × 256-bit YMM: 8 f32 / 4 f64; C tile 6×16 f32, 6×8 f64 as measured (`vector_micro<Ymm<T>, 6, 2>`) | `_mm256_fmadd_ps/pd`, `_mm256_broadcast_ss/sd` |
+| AVX-512 | 32 × 512-bit ZMM: 16 f32 / 8 f64; C tile 8×48 f32, 8×24 f64 as measured (`vector_micro<Zmm<T>, 8, 3>`) | `_mm512_fmadd_ps/pd`, `_mm512_set1_ps/pd` |
+| NEON | 32 × 128-bit Q: 4 f32 / 2 f64; C tile 6×16 f32, 6×8 f64 as measured (`vector_micro<Q<T>, 6, 4>`) | `vfmaq_lane_f32/f64` (A by element, loaded with `LDR`) |
 | SVE | vector length read at run time (128–2048 bit); C tile R rows × V vectors, default 4×2 | `svmla_f32/f64_x`, `svwhilelt_b32/b64` (predicated tails) |
 | SME2 | ZA: 4 f32 / 8 f64 tiles of SVL×SVL; all used; at M4's 512-bit SVL, 32×32 f32 / 16×32 f64 C block | `svmopa_za32/za64_m`, `svld1_x2`, `svld1/st1_hor_za32/64` |
 | Accelerate | opaque | `cblas_sgemm`, `cblas_dgemm` |

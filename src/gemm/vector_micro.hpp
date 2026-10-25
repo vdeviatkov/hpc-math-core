@@ -2,8 +2,8 @@
 
 /**
  * @file vector_micro.hpp
- * @brief The register-tiled FP32/FP64 micro-kernel shared by AVX2, AVX-512
- *        and NEON (avx2_micro, avx512_micro, neon_micro).
+ * @brief The register-tiled FP32/FP64 micro-kernel of gemm_simd_blocked and
+ *        gemm_simd_packed (simd.hpp), for any ISA primitive struct.
  *
  * C[0..R)[0..V·W) += A[0..R)[0..k_len) × B[0..k_len)[0..V·W), with an
  * R × V-vector tile of C held in R·V accumulators for the whole k loop.
@@ -68,7 +68,7 @@ inline void vector_micro(const T* __restrict__ a, const T* __restrict__ b, T* __
 }
 
 /// The micro-kernel as blocked_gemm (blocked_driver.hpp) and packed_gemm
-/// (packed_driver.hpp) call it: Avx2Micro = VectorMicro<Ymm>, and so on.
+/// (packed_driver.hpp) call it, e.g. VectorMicro<Zmm>.
 template <template <typename> class Ops>
 struct VectorMicro {
     template <typename T>
