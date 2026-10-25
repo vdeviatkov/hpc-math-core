@@ -84,7 +84,9 @@ Low precision at the same sizes as above: N = 256 and 4096 on the CPU, N = 1024 
 | Kernel | Hardware | Format | Unit | Peak | N = 1024 (% of peak) | N = 8192 (% of peak) |
 |---|---|---|---|--:|--:|--:|
 | `gemm_cuda_lowp_tma_device` (Level 8) | NVIDIA RTX 5080 | bf16 → fp32 | TFLOP/s | 124 | 72.6 (59%) | 117.8 (95%) |
+| cuBLAS (reference) | NVIDIA RTX 5080 | bf16 → fp32 | TFLOP/s | 124 | 74.3 (60%) | 120.1 (97%) |
 | `gemm_cuda_lowp_tma_device` (Level 8) | NVIDIA RTX 5080 | INT8 → INT32 | TOP/s | 497 | 192.1 (39%) | 408.2 (82%) |
+| cuBLAS (reference) | NVIDIA RTX 5080 | INT8 → INT32 | TOP/s | 497 | 161.9 (33%) | 419.0 (84%) |
 
 The percentage is again measured ÷ peak. Peaks are the instructions' measured throughput (`VDPBF16PS` / `VPDPBUSD`, `BFMMLA` / `SMMLA`, widening `FMOPA` / `SMOPA`, `mma.sync`), from part 5's [peak table](docs/articles/lowp-gemm.md). Best sizes, where higher: `gemm_avx512_bf16` / `_i8` 638 / 1,139 at N = 1024, `gemm_sme_widening` INT8 3,525 at N = 2048, Level 8 120.5 / 419 at N = 16384.
 
