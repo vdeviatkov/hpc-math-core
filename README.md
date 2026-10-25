@@ -28,25 +28,25 @@ FP32 throughput at a small and a large size: N = 256 and 4096 on the CPU, N = 10
 
 **CPU**
 
-| Family | Hardware | Compute peak, f32, GFLOP/s ⁵ | N = 256, GFLOP/s (% of peak) | N = 4096, GFLOP/s (% of peak) |
-|---|---|---|--:|--:|
-| Scalar, cache-blocked (`gemm_blocked`) | Apple M4 Max | ~130 | 80 (62%) | 29 (22%) |
-| ARM NEON, blocked (`gemm_neon_blocked`) ⁴ | Apple M4 Max | 144 | 123 (85%) | 101 (70%) |
-| ARM NEON, packed B (`gemm_neon_packed`) ⁴ | Apple M4 Max | 144 | 121 (84%) | **121 (84%)** |
-| AVX2, blocked (`gemm_avx2_blocked`) ⁴ | AMD Zen 5, GCC | 183 | 170 (93%) | 104 (57%) |
-| AVX2, packed B (`gemm_avx2_packed`) ⁴ | AMD Zen 5, GCC | 183 | 166 (91%) | **167 (91%)** |
-| AVX-512, blocked (`gemm_avx512_blocked`) ⁴ | AMD Zen 5, GCC | 365 | 325 (89%) | 294 (81%) |
-| AVX-512, packed B (`gemm_avx512_packed`) ⁴ | AMD Zen 5, GCC | 365 | 311 (85%) | **318 (87%)** |
-| ARM SME2 (`gemm_sme`) | Apple M4 Max | 1,960 ⁶ | 835 (43%) | **1,519 (78%)** |
-| ARM SME2, both units (`gemm_sme_mt`, 8 threads) ⁷ | Apple M4 Max | 3,930 ⁶ | 370 (9%) | **3,496 (89%)** |
-| Apple AMX via Accelerate (`gemm_amx`) ¹ | Apple M4 Max | 3,930 ⁶ | 1,685 (43%) | 3,115 (79%) |
-| Accelerate, 1 core (reference) | Apple M4 Max | 1,960 ⁶ | 1,692 (86%) | 1,599 (82%) |
-| KleidiAI, 1 core (reference) | Apple M4 Max | 1,960 ⁶ | 1,055 (54%) | 1,019 (52%) |
+| Family | Hardware | Register tile, C rows × cols | Blocks, M × K × N | Compute peak, f32, GFLOP/s ⁵ | N = 256, GFLOP/s (% of peak) | N = 4096, GFLOP/s (% of peak) |
+|---|---|---|---|--:|--:|--:|
+| Scalar, cache-blocked (`gemm_blocked`) | Apple M4 Max | — | 64 × 64 × 64 | ~130 | 80 (62%) | 29 (22%) |
+| ARM NEON, blocked (`gemm_neon_blocked`) ⁴ | Apple M4 Max | 6 × 16 | 384 × 256 × 256 | 144 | 123 (85%) | 101 (70%) |
+| ARM NEON, packed B (`gemm_neon_packed`) ⁴ | Apple M4 Max | 6 × 16 | 256 × 512 × 512 | 144 | 121 (84%) | **121 (84%)** |
+| AVX2, blocked (`gemm_avx2_blocked`) ⁴ | AMD Zen 5, GCC | 6 × 16 | 384 × 256 × 256 | 183 | 170 (93%) | 104 (57%) |
+| AVX2, packed B (`gemm_avx2_packed`) ⁴ | AMD Zen 5, GCC | 6 × 16 | 256 × 256 × 512 | 183 | 166 (91%) | **167 (91%)** |
+| AVX-512, blocked (`gemm_avx512_blocked`) ⁴ | AMD Zen 5, GCC | 8 × 48 | 512 × 256 × 512 | 365 | 325 (89%) | 294 (81%) |
+| AVX-512, packed B (`gemm_avx512_packed`) ⁴ | AMD Zen 5, GCC | 8 × 48 | 128 × 512 × 512 | 365 | 311 (85%) | **318 (87%)** |
+| ARM SME2 (`gemm_sme`) | Apple M4 Max | 32 × 32, 4 ZA tiles | 1024 × 2048 × 4096 | 1,960 ⁶ | 835 (43%) | **1,519 (78%)** |
+| ARM SME2, both units (`gemm_sme_mt`, 8 threads) ⁷ | Apple M4 Max | 32 × 32, 4 ZA tiles | 1024 × 2048 × 4096 | 3,930 ⁶ | 370 (9%) | **3,496 (89%)** |
+| Apple AMX via Accelerate (`gemm_amx`) ¹ | Apple M4 Max | — | — | 3,930 ⁶ | 1,685 (43%) | 3,115 (79%) |
+| Accelerate, 1 core (reference) | Apple M4 Max | — | — | 1,960 ⁶ | 1,692 (86%) | 1,599 (82%) |
+| KleidiAI, 1 core (reference) | Apple M4 Max | — | — | 1,960 ⁶ | 1,055 (54%) | 1,019 (52%) |
 
 **GPU** (larger sizes: N = 256 is too small to occupy these GPUs)
 
 | Family | Hardware | Compute peak, f32, TFLOP/s ⁵ | N = 1024, TFLOP/s (% of peak) | N = 8192, TFLOP/s (% of peak) |
-|---|---|---|--:|--:|
+|---|---|--:|--:|--:|
 | CUDA, FMA (`gemm_cuda_vectorized`) ² | NVIDIA RTX 5080 | 60.9 | 16.0 (26%) | 27.5 (45%) |
 | cuBLAS SGEMM (reference) ² | NVIDIA RTX 5080 | 60.9 | 26.5 (44%) | 38.9 (64%) |
 | CUDA, Tensor Cores (`gemm_cuda_tma`, Level 8) ² ³ | NVIDIA RTX 5080 | 124.7 | 72.6 (58%) | **117.3 (94%)** |
@@ -66,29 +66,29 @@ Small matrices favour the CPU's vector units: at N = 256 one core's SIMD kernels
 ⁷ Wall-clock time, 8 threads; 111% of Accelerate with all cores at N=4096, 83% at N=1024 ([§ Several SME units](docs/benchmarks.md#several-sme-units-gemm_sme_mt)). Below N ≈ 512 creating 8 threads per call costs more than it saves.
 ⁸ GPU time of the GEMM alone, median of 5 in one run; best figures 10.7 (`MetalSimdTg`, N = 2048), 11.6 (`MetalSimdTgF16`, N = 2048) and 11.1 / 13.7 TFLOP/s (MPS / MPS fp16). The M4 Max GPU's sustained rate moved by up to ~3× between sessions on the recording laptop (power limiting is the likely cause); compare these rows with each other, not across sessions ([§ Metal](docs/benchmarks.md#apple-m4-max-gpu--metal)).
 
-Low precision at the same sizes as above: N = 256 and 4096 on the CPU, N = 1024 and 8192 on the GPU. A multiply-add counts as 2 operations; the Unit column applies to the peak and both sizes ([article 5](docs/articles/lowp-gemm.md)):
+Low precision at the same sizes as above: N = 256 and 4096 on the CPU, N = 1024 and 8192 on the GPU. A multiply-add counts as 2 operations, so for bf16 GOP/s equal GFLOP/s ([article 5](docs/articles/lowp-gemm.md)):
 
 **CPU**
 
-| Kernel | Hardware | Format | Unit | Peak | N = 256 (% of peak) | N = 4096 (% of peak) |
+| Family | Hardware | Register tile, C rows × cols | Blocks, M × K × N | Peak, GOP/s | N = 256, GOP/s (% of peak) | N = 4096, GOP/s (% of peak) |
 |---|---|---|---|--:|--:|--:|
-| `gemm_avx512_bf16` | AMD Zen 5, 1 core | bf16 → fp32 | GFLOP/s | 713 | 619 (87%) | 574 (81%) |
-| `gemm_avx512_i8` | AMD Zen 5, 1 core | INT8 → INT32 | GOP/s | 1,435 | 824 (57%) | 1,038 (72%) |
-| `gemm_neon_bf16` | Apple M4 Max, 1 P-core | bf16 → fp32 | GFLOP/s | 71 | 66 (93%) | 65 (92%) |
-| `gemm_neon_i8` | Apple M4 Max, 1 P-core | INT8 → INT32 | GOP/s | 511 | 449 (88%) | 491 (96%) |
-| `gemm_sme_widening` | Apple M4 Max, 1 SME unit | bf16 → fp32 | GFLOP/s | 2,018 | 967 (48%) | 1,774 (88%) |
-| `gemm_sme_widening` | Apple M4 Max, 1 SME unit | INT8 → INT32 | GOP/s | 4,029 | 1,579 (39%) | 3,413 (85%) |
+| AVX-512, bf16 → fp32 (`gemm_avx512_bf16`) | AMD Zen 5, GCC | 8 × 32 | 128 × 512 × 512 | 713 | 619 (87%) | 574 (81%) |
+| AVX-512, INT8 → INT32 (`gemm_avx512_i8`) | AMD Zen 5, GCC | 8 × 32 | 128 × 1024 × 512 | 1,435 | 824 (57%) | 1,038 (72%) |
+| ARM NEON, bf16 → fp32 (`gemm_neon_bf16`) | Apple M4 Max | 8 × 8 | 256 × 1024 × 512 | 71 | 66 (93%) | 65 (92%) |
+| ARM NEON, INT8 → INT32 (`gemm_neon_i8`) | Apple M4 Max | 8 × 8 | 256 × 2048 × 512 | 511 | 449 (88%) | 491 (96%) |
+| ARM SME2, widening, bf16 → fp32 (`gemm_sme_widening`) | Apple M4 Max | 32 × 32, 4 ZA tiles | 1024 × 4096 × 4096 | 2,018 | 967 (48%) | 1,774 (88%) |
+| ARM SME2, widening, INT8 → INT32 (`gemm_sme_widening`) | Apple M4 Max | 32 × 32, 4 ZA tiles | 1024 × 8192 × 4096 | 4,029 | 1,579 (39%) | 3,413 (85%) |
 
 **GPU**
 
-| Kernel | Hardware | Format | Unit | Peak | N = 1024 (% of peak) | N = 8192 (% of peak) |
-|---|---|---|---|--:|--:|--:|
-| `gemm_cuda_lowp_tma_device` (Level 8) | NVIDIA RTX 5080 | bf16 → fp32 | TFLOP/s | 124 | 72.6 (59%) | 117.8 (95%) |
-| cuBLAS (reference) | NVIDIA RTX 5080 | bf16 → fp32 | TFLOP/s | 124 | 74.3 (60%) | 120.1 (97%) |
-| `gemm_cuda_lowp_tma_device` (Level 8) | NVIDIA RTX 5080 | INT8 → INT32 | TOP/s | 497 | 192.1 (39%) | 408.2 (82%) |
-| cuBLAS (reference) | NVIDIA RTX 5080 | INT8 → INT32 | TOP/s | 497 | 161.9 (33%) | 419.0 (84%) |
+| Family | Hardware | Peak, TOP/s | N = 1024, TOP/s (% of peak) | N = 8192, TOP/s (% of peak) |
+|---|---|--:|--:|--:|
+| CUDA, Tensor Cores, bf16 → fp32 (`gemm_cuda_lowp_tma_device`, Level 8) | NVIDIA RTX 5080 | 124 | 72.6 (59%) | 117.8 (95%) |
+| cuBLAS, bf16 → fp32 (reference) | NVIDIA RTX 5080 | 124 | 74.3 (60%) | 120.1 (97%) |
+| CUDA, Tensor Cores, INT8 → INT32 (`gemm_cuda_lowp_tma_device`, Level 8) | NVIDIA RTX 5080 | 497 | 192.1 (39%) | 408.2 (82%) |
+| cuBLAS, INT8 → INT32 (reference) | NVIDIA RTX 5080 | 497 | 161.9 (33%) | 419.0 (84%) |
 
-The percentage is again measured ÷ peak. Peaks are the instructions' measured throughput (`VDPBF16PS` / `VPDPBUSD`, `BFMMLA` / `SMMLA`, widening `FMOPA` / `SMOPA`, `mma.sync`), from part 5's [peak table](docs/articles/lowp-gemm.md). Best sizes, where higher: `gemm_avx512_bf16` / `_i8` 638 / 1,139 at N = 1024, `gemm_sme_widening` INT8 3,525 at N = 2048, Level 8 120.5 / 419 at N = 16384.
+The percentage is again measured ÷ peak. Peaks here are the instructions' measured throughput (`VDPBF16PS` / `VPDPBUSD`, `BFMMLA` / `SMMLA`, widening `FMOPA` / `SMOPA`, `mma.sync`), from part 5's [peak table](docs/articles/lowp-gemm.md). Best sizes, where higher: `gemm_avx512_bf16` / `_i8` 638 / 1,139 at N = 1024, `gemm_sme_widening` INT8 3,525 at N = 2048, Level 8 120.5 / 419 at N = 16384.
 
 ---
 
