@@ -11,8 +11,8 @@
  *
  *   ZmmDot<In>    VDPBF16PS, VPDPBUSD (avx512.hpp)    bf16, INT8
  *   QMmla<In>     BFMMLA, SMMLA (neon.hpp)            bf16, INT8
- *   QFmlal<In>    FMLAL, fp16 widened to FP32         fp16
- *   QFmlaF16<In>  FMLA .8h, fp16 accumulation         fp16
+ *   QFmlal<In>    FMLAL, fp16 widened to FP32 (neon.hpp)    fp16
+ *   QFmlaF16<In>  FMLA .8h, fp16 accumulation (neon.hpp)    fp16
  *
  * In is deduced from the matrices. R × V is the register tile in
  * accumulators (rows × columns of them), Mc × Kc × Nc the cache block in

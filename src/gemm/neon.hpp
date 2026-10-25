@@ -6,8 +6,8 @@
  *        simd_lowp.hpp).
  *
  *   gemm_simd_reordered<Q>(A, B, C);
- *   gemm_simd_blocked<Q, R, V, TileM, TileK, TileN>(A, B, C);
- *   gemm_simd_packed<Q, R, V, Mc, Kc, Nc>(A, B, C);
+ *   gemm_simd_blocked<Q, R, V, TileM, TileK, TileN[, PfDist]>(A, B, C);
+ *   gemm_simd_packed<Q, R, V, Mc, Kc, Nc[, PackA]>(A, B, C);
  *   gemm_simd_lowp<QMmla, R, V, Mc, Kc, Nc>(A, B, C);      // bf16 or INT8: BFMMLA, SMMLA
  *   gemm_simd_lowp<QFmlal, 4, V, Mc, Kc, Nc>(A, B, C);     // fp16 → FP32: FMLAL
  *   gemm_simd_lowp<QFmlaF16, 4, V, Mc, Kc, Nc>(A, B, C);   // fp16 accumulate: FMLA .8h

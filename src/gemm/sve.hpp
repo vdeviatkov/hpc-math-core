@@ -19,6 +19,9 @@
  *  gemm_sve_blocked    tiled i → k → j with a 4-row × 2-vector C register
  *                      tile by default; R and V are template parameters.
  *
+ * gemm_sve_blocked_prefetch, gemm_sve_blocked with software prefetch, is in
+ * prefetch.hpp and shares this file's driver (sve_blocked_gemm).
+ *
  * Not measured: no SVE hardware was available. Apple Silicon has no
  * non-streaming SVE (see sme.hpp).
  *

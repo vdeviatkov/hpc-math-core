@@ -3,7 +3,8 @@
 /**
  * @file sme.hpp
  * @brief ARM SME (Scalable Matrix Extension) GEMM in four steps: one ZA tile,
- *        all ZA tiles, cache blocking, packed B.
+ *        all ZA tiles, cache blocking, packed B; then packed B on several
+ *        SME units (gemm_sme_mt).
  *
  * ============================================================
  * Shape/cache overrides: gemm_sme<T, R, V, TileM, TileK, TileN>.
@@ -35,19 +36,26 @@
  *
  *
  * ============================================================
- *  The four kernels
+ *  The kernels
  * ============================================================
  *
- *   kernel            ZA tiles   B          cache blocking
- *   gemm_sme_1tile    1          in place   none
- *   gemm_sme_tiles    all        in place   none
- *   gemm_sme_blocked  all        in place   GotoBLAS
- *   gemm_sme          all        packed     GotoBLAS
+ *   kernel            ZA tiles   B          cache blocking   threads
+ *   gemm_sme_1tile    1          in place   none             1
+ *   gemm_sme_tiles    all        in place   none             1
+ *   gemm_sme_blocked  all        in place   GotoBLAS         1
+ *   gemm_sme          all        packed     GotoBLAS         1
+ *   gemm_sme_mt       all        packed     GotoBLAS         `threads`
  *
- * All four pack A, so each step changes one thing. Each is one template for
- * f32 and f64; the last three share macro_kernel. All are single-threaded:
- * compare against Accelerate with VECLIB_MAXIMUM_THREADS=1 (1,600–1,720
- * GFLOP/s f32, 340–460 f64 on one M4 Max core, N = 256–4096).
+ * All pack A, so each step changes one thing. Each is one template for f32
+ * and f64; all but gemm_sme_1tile share macro_kernel. The first four are
+ * single-threaded: compare against Accelerate with VECLIB_MAXIMUM_THREADS=1
+ * (1,600–1,720 GFLOP/s f32, 340–460 f64 on one M4 Max core, N = 256–4096).
+ *
+ * gemm_sme_mt is gemm_sme with the B panel packed once and shared, and A
+ * blocks handed out to threads on demand. An SME unit belongs to a
+ * P-cluster, not a core, so one thread reaches at most one unit's
+ * throughput; M4 Max has two. Details at its definition and in
+ * docs/kernels/sme.md, "Several SME units".
  *
  * One M4 Max core, GFLOP/s, median of 3 runs, block sizes as below:
  *
@@ -228,7 +236,7 @@
  * SME2 is available on Apple M4 / M4 Pro / M4 Max (512-bit SVL), not on
  * Apple M1–M3, AWS Graviton3/4, Fujitsu A64FX or x86. HPC_HAS_SME
  * (hpc/isa.hpp) follows __ARM_FEATURE_SME && __ARM_FEATURE_SME2; where it is
- * 0, all four kernels are declared `= delete`. The flags and why a wrong
+ * 0, all five kernels are declared `= delete`. The flags and why a wrong
  * combination SIGILLs on Apple Silicon: docs/build.md, "SME and AMX build
  * flags".
  *

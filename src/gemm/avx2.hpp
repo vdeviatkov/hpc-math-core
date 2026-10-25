@@ -5,8 +5,8 @@
  * @brief AVX2 + FMA primitives for the generic SIMD kernels (simd.hpp).
  *
  *   gemm_simd_reordered<Ymm>(A, B, C);
- *   gemm_simd_blocked<Ymm, R, V, TileM, TileK, TileN>(A, B, C);
- *   gemm_simd_packed<Ymm, R, V, Mc, Kc, Nc>(A, B, C);
+ *   gemm_simd_blocked<Ymm, R, V, TileM, TileK, TileN[, PfDist]>(A, B, C);
+ *   gemm_simd_packed<Ymm, R, V, Mc, Kc, Nc[, PackA]>(A, B, C);
  *
  * 16 × 256-bit YMM registers (8 f32 / 4 f64). With 2 FMA ports:
  * 2 × 8 lanes × 2 FLOP = 32 FLOP/cycle f32, 16 f64.

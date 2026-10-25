@@ -6,8 +6,8 @@
  *        simd_lowp.hpp).
  *
  *   gemm_simd_reordered<Zmm>(A, B, C);
- *   gemm_simd_blocked<Zmm, R, V, TileM, TileK, TileN>(A, B, C);
- *   gemm_simd_packed<Zmm, R, V, Mc, Kc, Nc>(A, B, C);
+ *   gemm_simd_blocked<Zmm, R, V, TileM, TileK, TileN[, PfDist]>(A, B, C);
+ *   gemm_simd_packed<Zmm, R, V, Mc, Kc, Nc[, PackA]>(A, B, C);
  *   gemm_simd_lowp<ZmmDot, R, V, Mc, Kc, Nc>(A, B, C);   // bf16 or INT8 A, B
  *
  * 32 × 512-bit ZMM registers (16 f32 / 8 f64). With 2 FMA ports:
