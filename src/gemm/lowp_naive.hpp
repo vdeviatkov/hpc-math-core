@@ -1,9 +1,10 @@
 #pragma once
 
 /**
- * @file lowp_reference.hpp
- * @brief Reference for the low-precision GEMMs: C = A · B with bf16 / fp16
- *        inputs and FP32 output, or INT8 inputs and INT32 output.
+ * @file lowp_naive.hpp
+ * @brief Naïve i-j-k GEMM for the low-precision formats, the reference the
+ *        low-precision kernels are tested against: C = A · B with bf16 /
+ *        fp16 inputs and FP32 output, or INT8 inputs and INT32 output.
  *
  * Every input is converted to double (exactly) and the products are summed
  * in double, then rounded once to float; INT8 products are summed in
@@ -27,7 +28,7 @@ template <typename In>
 using lowp_out_t = std::conditional_t<std::is_same_v<In, std::int8_t>, std::int32_t, float>;
 
 template <typename In>
-void gemm_lowp_reference(const Matrix<In>& A, const Matrix<In>& B, Matrix<lowp_out_t<In>>& C) {
+void gemm_lowp_naive(const Matrix<In>& A, const Matrix<In>& B, Matrix<lowp_out_t<In>>& C) {
     const std::size_t M = A.rows(), K = A.cols(), N = B.cols();
     assert(B.rows() == K && C.rows() == M && C.cols() == N);
     for (std::size_t i = 0; i < M; ++i)

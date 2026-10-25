@@ -39,7 +39,7 @@
 
 #include "gemm/sme.hpp"
 #include "hpc/lowp.hpp"
-#include "gemm/lowp_reference.hpp"
+#include "gemm/lowp_naive.hpp"
 
 #include <algorithm>
 #include <cassert>

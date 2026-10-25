@@ -35,7 +35,7 @@
  * for INT8 (the same bytes); Nc = 512. K is zero-padded to a whole k group.
  */
 
-#include "gemm/lowp_reference.hpp"
+#include "gemm/lowp_naive.hpp"
 #include "hpc/isa.hpp"
 #include "hpc/lowp.hpp"
 #include "hpc/matrix.hpp"

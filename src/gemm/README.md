@@ -29,7 +29,7 @@ Cache background: [docs/cache-behavior.md](../../docs/cache-behavior.md).
 | [`neon_lowp.hpp`](neon_lowp.hpp) | `gemm_neon_bf16` (`BFMMLA`), `gemm_neon_i8` (`SMMLA`), `gemm_neon_f16` (`FMLAL`), `gemm_neon_f16_acc` (`FMLA .8h`) | NEON with BF16, I8MM, FP16, FHM |
 | [`sme_lowp.hpp`](sme_lowp.hpp) | `gemm_sme_widening<fp16 \| bf16 \| int8_t>` (widening `FMOPA` / `SMOPA`) | SME2, `HPC_ENABLE_SME=ON` |
 | [`cuda_lowp.hpp`](cuda_lowp.hpp) | `gemm_cuda_lowp_device` (cp.async), `gemm_cuda_lowp_tma_device` (Level 8), `gemm_cuda_{bf16,fp16,fp16_acc16,i8,fp8}`, cuBLAS / cuBLASLt reference; kernels in [`src/cuda/gemm_lowp.cu`](../cuda/gemm_lowp.cu) | CUDA, sm_80+ (FP8: sm_89+; full-rate FP8 with `CMAKE_CUDA_ARCHITECTURES=120a`) |
-| [`lowp_reference.hpp`](lowp_reference.hpp) | `gemm_lowp_reference`, the low-precision tests' reference (double / int64 sums) | always |
+| [`lowp_naive.hpp`](lowp_naive.hpp) | `gemm_lowp_naive` (i-j-k with double / int64 sums, the reference every low-precision test compares against) | always |
 
 Where an ISA is absent, its kernels are declared `= delete`, so calling one is
 a compile-time error rather than a slower kernel under the same name

@@ -3,7 +3,7 @@
  * @brief Correctness tests for the low-precision CUDA GEMMs (gemm/cuda_lowp.hpp).
  *
  * Each format runs through both hand-written kernels (the cp.async one and
- * Level 8, TMA) and through cuBLAS, and is compared with gemm_lowp_reference on the same converted
+ * Level 8, TMA) and through cuBLAS, and is compared with gemm_lowp_naive on the same converted
  * inputs, so input rounding is identical on both sides.
  *
  *   INT8 → INT32: exact equality.
@@ -19,7 +19,7 @@
  */
 #include "gemm/cuda.hpp"
 #include "gemm/cuda_lowp.hpp"
-#include "gemm/lowp_reference.hpp"
+#include "gemm/lowp_naive.hpp"
 #include "hpc/lowp.hpp"
 #include "hpc/matrix.hpp"
 
@@ -73,7 +73,7 @@ template <typename In>
 using Kernel = void (*)(const Matrix<In>&, const Matrix<In>&, Matrix<lowp_out_t<In>>&, CudaLowpImpl);
 
 template <typename In>
-void expect_matches_reference(CudaLowp format, Kernel<In> kernel, CudaLowpImpl impl, const char* name,
+void expect_matches_naive(CudaLowp format, Kernel<In> kernel, CudaLowpImpl impl, const char* name,
                               double unit_roundoff = 0x1p-24) {
     if (cuda_device_count() == 0 || !cuda_lowp_supported(format))
         GTEST_SKIP() << "no CUDA device with this format's mma.sync";
@@ -84,7 +84,7 @@ void expect_matches_reference(CudaLowp format, Kernel<In> kernel, CudaLowpImpl i
         const Matrix<In> A = random_matrix<In>(s.M, s.K, unsigned(s.M * 131 + s.K));
         const Matrix<In> B = random_matrix<In>(s.K, s.N, unsigned(s.K * 137 + s.N));
         Matrix<lowp_out_t<In>> ref(s.M, s.N), C(s.M, s.N);
-        gemm_lowp_reference(A, B, ref);
+        gemm_lowp_naive(A, B, ref);
         C.fill(lowp_out_t<In>(123));
         kernel(A, B, C, impl);
         const std::string what = std::string(name) + " " + std::to_string(s.M) + "x" +
@@ -109,28 +109,28 @@ void expect_matches_reference(CudaLowp format, Kernel<In> kernel, CudaLowpImpl i
         std::printf("[ %s ] worst error %.3g x 2^-24 * sum|ab|\n", name, worst);
 }
 
-TEST(LowpCuda, Bf16) { expect_matches_reference<bf16>(CudaLowp::bf16, gemm_cuda_bf16, CudaLowpImpl::mma, "mma bf16"); }
-TEST(LowpCuda, Fp16) { expect_matches_reference<fp16>(CudaLowp::fp16, gemm_cuda_fp16, CudaLowpImpl::mma, "mma fp16"); }
+TEST(LowpCuda, Bf16) { expect_matches_naive<bf16>(CudaLowp::bf16, gemm_cuda_bf16, CudaLowpImpl::mma, "mma bf16"); }
+TEST(LowpCuda, Fp16) { expect_matches_naive<fp16>(CudaLowp::fp16, gemm_cuda_fp16, CudaLowpImpl::mma, "mma fp16"); }
 TEST(LowpCuda, Fp16Accumulate16) {
-    expect_matches_reference<fp16>(CudaLowp::fp16_acc16, gemm_cuda_fp16_acc16, CudaLowpImpl::mma, "mma fp16 acc16", 0x1p-11);
+    expect_matches_naive<fp16>(CudaLowp::fp16_acc16, gemm_cuda_fp16_acc16, CudaLowpImpl::mma, "mma fp16 acc16", 0x1p-11);
 }
-TEST(LowpCuda, Int8) { expect_matches_reference<std::int8_t>(CudaLowp::int8, gemm_cuda_i8, CudaLowpImpl::mma, "mma int8"); }
-TEST(LowpCuda, Fp8) { expect_matches_reference<fp8_e4m3>(CudaLowp::fp8_e4m3, gemm_cuda_fp8, CudaLowpImpl::mma, "mma fp8"); }
+TEST(LowpCuda, Int8) { expect_matches_naive<std::int8_t>(CudaLowp::int8, gemm_cuda_i8, CudaLowpImpl::mma, "mma int8"); }
+TEST(LowpCuda, Fp8) { expect_matches_naive<fp8_e4m3>(CudaLowp::fp8_e4m3, gemm_cuda_fp8, CudaLowpImpl::mma, "mma fp8"); }
 
-TEST(LowpCudaTma, Bf16) { expect_matches_reference<bf16>(CudaLowp::bf16, gemm_cuda_bf16, CudaLowpImpl::tma, "tma bf16"); }
-TEST(LowpCudaTma, Fp16) { expect_matches_reference<fp16>(CudaLowp::fp16, gemm_cuda_fp16, CudaLowpImpl::tma, "tma fp16"); }
+TEST(LowpCudaTma, Bf16) { expect_matches_naive<bf16>(CudaLowp::bf16, gemm_cuda_bf16, CudaLowpImpl::tma, "tma bf16"); }
+TEST(LowpCudaTma, Fp16) { expect_matches_naive<fp16>(CudaLowp::fp16, gemm_cuda_fp16, CudaLowpImpl::tma, "tma fp16"); }
 TEST(LowpCudaTma, Fp16Accumulate16) {
-    expect_matches_reference<fp16>(CudaLowp::fp16_acc16, gemm_cuda_fp16_acc16, CudaLowpImpl::tma, "tma fp16 acc16", 0x1p-11);
+    expect_matches_naive<fp16>(CudaLowp::fp16_acc16, gemm_cuda_fp16_acc16, CudaLowpImpl::tma, "tma fp16 acc16", 0x1p-11);
 }
-TEST(LowpCudaTma, Int8) { expect_matches_reference<std::int8_t>(CudaLowp::int8, gemm_cuda_i8, CudaLowpImpl::tma, "tma int8"); }
-TEST(LowpCudaTma, Fp8) { expect_matches_reference<fp8_e4m3>(CudaLowp::fp8_e4m3, gemm_cuda_fp8, CudaLowpImpl::tma, "tma fp8"); }
+TEST(LowpCudaTma, Int8) { expect_matches_naive<std::int8_t>(CudaLowp::int8, gemm_cuda_i8, CudaLowpImpl::tma, "tma int8"); }
+TEST(LowpCudaTma, Fp8) { expect_matches_naive<fp8_e4m3>(CudaLowp::fp8_e4m3, gemm_cuda_fp8, CudaLowpImpl::tma, "tma fp8"); }
 
-TEST(LowpCublas, Bf16) { expect_matches_reference<bf16>(CudaLowp::bf16, gemm_cuda_bf16, CudaLowpImpl::cublas, "cublas bf16"); }
-TEST(LowpCublas, Fp16) { expect_matches_reference<fp16>(CudaLowp::fp16, gemm_cuda_fp16, CudaLowpImpl::cublas, "cublas fp16"); }
+TEST(LowpCublas, Bf16) { expect_matches_naive<bf16>(CudaLowp::bf16, gemm_cuda_bf16, CudaLowpImpl::cublas, "cublas bf16"); }
+TEST(LowpCublas, Fp16) { expect_matches_naive<fp16>(CudaLowp::fp16, gemm_cuda_fp16, CudaLowpImpl::cublas, "cublas fp16"); }
 TEST(LowpCublas, Fp16Accumulate16) {
-    expect_matches_reference<fp16>(CudaLowp::fp16_acc16, gemm_cuda_fp16_acc16, CudaLowpImpl::cublas, "cublas fp16 acc16", 0x1p-11);
+    expect_matches_naive<fp16>(CudaLowp::fp16_acc16, gemm_cuda_fp16_acc16, CudaLowpImpl::cublas, "cublas fp16 acc16", 0x1p-11);
 }
-TEST(LowpCublas, Int8) { expect_matches_reference<std::int8_t>(CudaLowp::int8, gemm_cuda_i8, CudaLowpImpl::cublas, "cublas int8"); }
-TEST(LowpCublas, Fp8) { expect_matches_reference<fp8_e4m3>(CudaLowp::fp8_e4m3, gemm_cuda_fp8, CudaLowpImpl::cublas, "cublas fp8"); }
+TEST(LowpCublas, Int8) { expect_matches_naive<std::int8_t>(CudaLowp::int8, gemm_cuda_i8, CudaLowpImpl::cublas, "cublas int8"); }
+TEST(LowpCublas, Fp8) { expect_matches_naive<fp8_e4m3>(CudaLowp::fp8_e4m3, gemm_cuda_fp8, CudaLowpImpl::cublas, "cublas fp8"); }
 
 }  // namespace

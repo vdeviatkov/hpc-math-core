@@ -35,7 +35,7 @@
  * at the default 8 × 2, inside the 48 KiB L1.
  */
 
-#include "gemm/lowp_reference.hpp"
+#include "gemm/lowp_naive.hpp"
 #include "hpc/isa.hpp"
 #include "hpc/lowp.hpp"
 #include "hpc/matrix.hpp"

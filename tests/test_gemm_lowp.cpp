@@ -2,7 +2,7 @@
  * @file test_gemm_lowp.cpp
  * @brief Correctness tests for the low-precision CPU GEMMs.
  *
- * Every kernel is compared with gemm_lowp_reference on the same converted
+ * Every kernel is compared with gemm_lowp_naive on the same converted
  * inputs, so the comparison isolates the kernel: input rounding to bf16 /
  * fp16 is identical on both sides.
  *
@@ -18,7 +18,7 @@
  */
 
 #include "gemm/avx512_lowp.hpp"
-#include "gemm/lowp_reference.hpp"
+#include "gemm/lowp_naive.hpp"
 #include "gemm/neon_lowp.hpp"
 #include "gemm/sme_lowp.hpp"
 #include "hpc/lowp.hpp"
@@ -74,12 +74,12 @@ using Kernel = void (*)(const Matrix<In>&, const Matrix<In>&, Matrix<lowp_out_t<
 
 /// unit_roundoff: of the accumulation, 2^-24 for FP32 and 2^-11 for fp16.
 template <typename In>
-void expect_matches_reference(Kernel<In> kernel, const char* name, double unit_roundoff = 0x1p-24) {
+void expect_matches_naive(Kernel<In> kernel, const char* name, double unit_roundoff = 0x1p-24) {
     for (const Shape& s : kShapes) {
         const Matrix<In> A = random_matrix<In>(s.M, s.K, unsigned(s.M * 131 + s.K));
         const Matrix<In> B = random_matrix<In>(s.K, s.N, unsigned(s.K * 137 + s.N));
         Matrix<lowp_out_t<In>> ref(s.M, s.N), C(s.M, s.N);
-        gemm_lowp_reference(A, B, ref);
+        gemm_lowp_naive(A, B, ref);
         C.fill(lowp_out_t<In>(123));
         kernel(A, B, C);
         const std::string what = std::string(name) + " " + std::to_string(s.M) + "x" +
@@ -154,43 +154,43 @@ TEST(Lowp, ConversionsRoundToNearestEven) {
 }
 
 #if HPC_HAS_AVX512_LOWP
-TEST(LowpAvx512, Bf16MatchesReference) { expect_matches_reference<bf16>(gemm_avx512_bf16, "avx512 bf16"); }
-TEST(LowpAvx512, Int8MatchesReference) {
-    expect_matches_reference<std::int8_t>(gemm_avx512_i8, "avx512 int8");
+TEST(LowpAvx512, Bf16MatchesNaive) { expect_matches_naive<bf16>(gemm_avx512_bf16, "avx512 bf16"); }
+TEST(LowpAvx512, Int8MatchesNaive) {
+    expect_matches_naive<std::int8_t>(gemm_avx512_i8, "avx512 int8");
 }
 // Other register tiles and k blocks: R not dividing Mc = 128 (6, 12), wide
 // strips (V = 3, 4), one vector (V = 1), and k blocks small enough that the
 // shapes above span many of them (KcBytes = 4: one k group per block).
 template <int R, int V, std::size_t KcBytes>
-void expect_avx512_tile_matches_reference() {
+void expect_avx512_tile_matches_naive() {
     const std::string tile = std::to_string(R) + "x" + std::to_string(V) + " kc" + std::to_string(KcBytes);
-    expect_matches_reference<bf16>(gemm_avx512_bf16<R, V, KcBytes>, ("avx512 bf16 " + tile).c_str());
-    expect_matches_reference<std::int8_t>(gemm_avx512_i8<R, V, KcBytes>, ("avx512 int8 " + tile).c_str());
+    expect_matches_naive<bf16>(gemm_avx512_bf16<R, V, KcBytes>, ("avx512 bf16 " + tile).c_str());
+    expect_matches_naive<std::int8_t>(gemm_avx512_i8<R, V, KcBytes>, ("avx512 int8 " + tile).c_str());
 }
 TEST(LowpAvx512, OtherTilesMatchReference) {
-    expect_avx512_tile_matches_reference<8, 3, 1024>();
-    expect_avx512_tile_matches_reference<6, 4, 512>();
-    expect_avx512_tile_matches_reference<12, 2, 1024>();
-    expect_avx512_tile_matches_reference<16, 1, 64>();
-    expect_avx512_tile_matches_reference<1, 1, 4>();
+    expect_avx512_tile_matches_naive<8, 3, 1024>();
+    expect_avx512_tile_matches_naive<6, 4, 512>();
+    expect_avx512_tile_matches_naive<12, 2, 1024>();
+    expect_avx512_tile_matches_naive<16, 1, 64>();
+    expect_avx512_tile_matches_naive<1, 1, 4>();
 }
 #endif
 
 #if HPC_HAS_NEON_LOWP
-TEST(LowpNeon, Bf16MatchesReference) { expect_matches_reference<bf16>(gemm_neon_bf16, "neon bf16"); }
-TEST(LowpNeon, Int8MatchesReference) { expect_matches_reference<std::int8_t>(gemm_neon_i8, "neon int8"); }
-TEST(LowpNeon, Fp16MatchesReference) { expect_matches_reference<fp16>(gemm_neon_f16, "neon fp16"); }
+TEST(LowpNeon, Bf16MatchesNaive) { expect_matches_naive<bf16>(gemm_neon_bf16, "neon bf16"); }
+TEST(LowpNeon, Int8MatchesNaive) { expect_matches_naive<std::int8_t>(gemm_neon_i8, "neon int8"); }
+TEST(LowpNeon, Fp16MatchesNaive) { expect_matches_naive<fp16>(gemm_neon_f16, "neon fp16"); }
 // FP16 accumulation: the bound uses fp16's unit roundoff, 2^-11.
 TEST(LowpNeon, Fp16AccumulateWithinFp16Bound) {
-    expect_matches_reference<fp16>(gemm_neon_f16_acc, "neon fp16 acc", 0x1p-11);
+    expect_matches_naive<fp16>(gemm_neon_f16_acc, "neon fp16 acc", 0x1p-11);
 }
 #endif
 
 #if HPC_HAS_SME
-TEST(LowpSme, Fp16MatchesReference) { expect_matches_reference<fp16>(gemm_sme_widening<fp16>, "sme fp16"); }
-TEST(LowpSme, Bf16MatchesReference) { expect_matches_reference<bf16>(gemm_sme_widening<bf16>, "sme bf16"); }
-TEST(LowpSme, Int8MatchesReference) {
-    expect_matches_reference<std::int8_t>(gemm_sme_widening<std::int8_t>, "sme int8");
+TEST(LowpSme, Fp16MatchesNaive) { expect_matches_naive<fp16>(gemm_sme_widening<fp16>, "sme fp16"); }
+TEST(LowpSme, Bf16MatchesNaive) { expect_matches_naive<bf16>(gemm_sme_widening<bf16>, "sme bf16"); }
+TEST(LowpSme, Int8MatchesNaive) {
+    expect_matches_naive<std::int8_t>(gemm_sme_widening<std::int8_t>, "sme int8");
 }
 #endif
 
