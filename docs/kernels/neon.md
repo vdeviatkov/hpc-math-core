@@ -6,7 +6,7 @@ for a whole k block. The default is **6 × 4** (6 × 16 FP32, 6 × 8 FP64) for
 both types. This page gives the measurements behind that choice on an
 Apple M4 Max P-core, and a code-generation change that the sweep led to.
 Code: [`neon.hpp`](../../src/gemm/neon.hpp) (`vector_micro<Q<T>, R, V>`), driver
-[`blocked_driver.hpp`](../../src/gemm/blocked_driver.hpp). The other
+[`simd.hpp`](../../src/gemm/simd.hpp). The other
 families: [AVX2](avx2.md), [AVX-512](avx512.md).
 
 ## What a tile shape decides

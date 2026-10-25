@@ -211,7 +211,7 @@ for (k = 0; k < kc; ++k) {
 ```
 
 Code: the micro-kernel
-[`vector_micro<Ops, R, V>`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/vector_micro.hpp),
+[`vector_micro<Ops, R, V>`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/simd.hpp),
 written like the loop above once for every ISA, with the tile's R rows and
 V vectors as template parameters. `Ops` supplies the instructions:
 [`Q<T>`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/neon.hpp),
@@ -552,7 +552,7 @@ does the copy.
 
 ## Step 5: pack B
 
-Code: [`gemm_simd_packed<Ymm>`, `gemm_simd_packed<Zmm>`, `gemm_simd_packed<Q>`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/packed_driver.hpp).
+Code: [`gemm_simd_packed<Ymm>`, `gemm_simd_packed<Zmm>`, `gemm_simd_packed<Q>`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/simd.hpp).
 
 Every SIMD kernel in this series, including the 16- and 8-bit ones of
 [part 5](lowp-gemm.md), has the same inner step: load a few vectors of a
@@ -728,7 +728,7 @@ ctest --test-dir build
 The kernels are in
 [`src/gemm/`](https://github.com/vdeviatkov/hpc-math-core/tree/main/src/gemm)
 (`naive.hpp`, `reordered.hpp`, `blocked.hpp`, `neon.hpp`, `avx2.hpp`,
-`avx512.hpp`, `packed_driver.hpp`). Raw data and method:
+`avx512.hpp`, `simd.hpp`). Raw data and method:
 [experiments/cpu-simd](https://github.com/vdeviatkov/hpc-math-core/tree/main/docs/experiments/cpu-simd),
 [tile-sweeps](https://github.com/vdeviatkov/hpc-math-core/tree/main/docs/experiments/tile-sweeps)
 and [block-sweeps](https://github.com/vdeviatkov/hpc-math-core/tree/main/docs/experiments/block-sweeps).

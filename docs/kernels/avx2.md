@@ -5,7 +5,7 @@ R rows of C, V vectors of 8 FP32 / 4 FP64 each, kept in R·V YMM
 accumulators for a whole k block. The default is **6 × 2** (6 × 16 FP32,
 6 × 8 FP64). This page gives the measurements behind that choice on AMD
 Zen 5. Code: [`avx2.hpp`](../../src/gemm/avx2.hpp) (`vector_micro<Ymm<T>, R, V>`),
-driver [`blocked_driver.hpp`](../../src/gemm/blocked_driver.hpp). The other
+driver [`simd.hpp`](../../src/gemm/simd.hpp). The other
 families: [AVX-512](avx512.md), [NEON](neon.md).
 
 ## What a tile shape decides

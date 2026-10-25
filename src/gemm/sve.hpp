@@ -27,7 +27,7 @@
  * Where it is 0 the kernels are declared `= delete`.
  */
 
-#include "gemm/blocked_driver.hpp"
+#include "gemm/simd.hpp"  // detail::pf
 #include "hpc/isa.hpp"
 #include "hpc/matrix.hpp"
 

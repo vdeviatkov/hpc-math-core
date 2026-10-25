@@ -44,14 +44,14 @@
  *  Design
  * ============================================================
  *
- * gemm_simd_blocked<Ops, …, PfDist> (simd.hpp) is blocked_driver.hpp with
+ * gemm_simd_blocked<Ops, …, PfDist> (simd.hpp) adds the same hints with
  * PfDist > 0. SVE shares its own vector-length-agnostic driver in sve.hpp.
  * The scalar variant repeats its base kernel's loop with hints added. The
  * SVE variant is declared `= delete` on an unsupported target.
  */
 
 #include "gemm/blocked.hpp"
-#include "gemm/blocked_driver.hpp"
+#include "gemm/simd.hpp"
 #include "gemm/sve.hpp"
 #include "hpc/matrix.hpp"
 
@@ -65,7 +65,7 @@ namespace hpc::gemm {
 /// Default prefetch distance in micro-kernel rows.
 inline constexpr std::size_t kDefaultPrefetchDist = 4;
 
-using detail::pf;  // software prefetch helper, blocked_driver.hpp
+using detail::pf;  // software prefetch helper, simd.hpp
 
 // ============================================================================
 // 1.  Scalar blocked + prefetch

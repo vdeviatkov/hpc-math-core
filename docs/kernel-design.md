@@ -114,37 +114,35 @@ live with the benchmarks (`benchmarks/simd_params.hpp`).
 `gemm_simd_packed<Ops, R, V, Mc, Kc, Nc, PackA = false>(A, B, C)`, with T
 deduced from the matrices. The reordered loop is written once against
 `Ops::load`, `store`, `load_a` and `fma`, with a scalar loop for the
-columns that do not fill a vector. The blocked and packed kernels pass
-`VectorMicro<Ops>` to the drivers below; `PfDist > 0` is the prefetch
-variant. `Ops<T>` is declared on every target and defined only where its
+columns that do not fill a vector. The blocked and packed kernels hold
+their own loop nests and share the micro-kernel and the edge helpers
+below; `PfDist > 0` is the prefetch variant. `Ops<T>` is declared on every target and defined only where its
 ISA is compiled, so instantiating a kernel for an absent ISA is a
 compile-time error, and the benchmarks and tests guard each family with
 `HPC_HAS_*` (or `if constexpr` on `kHave*`).
 
-### `src/gemm/blocked_driver.hpp`
+#### `simd.hpp`: `gemm_simd_blocked`
 
-`gemm_simd_blocked` (with or without prefetch) is one driver,
-`detail::blocked_gemm<Micro, R, V, TileM, TileK, TileN, PfDist>`, around
-the micro-kernel. The register tile, R rows × V vectors, and the cache
-block, TileM × TileK × TileN, are template parameters of
+The register tile, R rows × V vectors, and the cache block,
+TileM × TileK × TileN, are template parameters of
 `gemm_simd_blocked<Ops, R, V, TileM, TileK, TileN>`; `bench_gemm` sweeps both (`<Isa>Tile<R>x<V>`,
 `<Isa>Block<M>x<K>x<N>`, [docs/kernels](kernels/README.md)) and the tests
-run several, including blocks that are not multiples of the tile. Remainders use the same micro-kernel: a strip of fewer than R rows
-runs `Micro::run<rows, V>`, the last whole vectors of a block run a
+run several, including blocks that are not multiples of the tile. Remainders use the same micro-kernel (`detail::row_strip`): a strip of
+fewer than R rows runs `vector_micro<Ops<T>, rows, V>`, the last whole vectors of a block run a
 narrower tile, and only columns that do not fill one vector take a scalar
 loop. `PfDist > 0` adds the prefetch hints of `prefetch.hpp`. Every loop in
 a micro-kernel is unrolled with `#pragma GCC unroll 16`, so R and V are
 limited to 16 (a `static_assert`); a partially unrolled loop would move the
 accumulators to memory.
 
-### `src/gemm/packed_driver.hpp`
+#### `simd.hpp`: `gemm_simd_packed`
 
-`detail::packed_gemm<Micro, R, V, Mc, Kc, Nc, PackA>` runs the blocked
-kernels' micro-kernels in GotoBLAS order: for each Kc × Nc block of B
+`gemm_simd_packed<Ops, R, V, Mc, Kc, Nc, PackA>` runs the blocked
+kernel's micro-kernel in GotoBLAS order: for each Kc × Nc block of B
 (Nc rounded down to whole strips), copy it once into strips NR = V·W
 columns wide (kc rows of NR contiguous elements, zero-padded), then for
-each Mc-row block of A, for each strip, for each R-row tile, call
-`Micro::run` with `ldb = NR`. A is read in place unless `PackA`, which
+each Mc-row block of A, for each strip, for each R-row tile, call the
+micro-kernel with `ldb = NR`. A is read in place unless `PackA`, which
 copies the Mc × Kc block of A into a row-major buffer with `lda = kc`.
 Edges go through `row_strip` with the strip's true width, so the padding is
 never computed or stored. B's row-major layout already suits the FP32
@@ -154,15 +152,14 @@ gains up to 60% at N ≥ 1024 ([experiments/packed-b](experiments/packed-b/READM
 so the blocked kernels stay as they are and the packed ones are a separate
 entry point, `gemm_simd_packed<Ops, R, V, Mc, Kc, Nc, PackA = false>`.
 
-### `src/gemm/vector_micro.hpp`
+#### `simd.hpp`: the micro-kernel
 
 The micro-kernel is one template, `vector_micro<Ops<T>, R, V>`: load the
 R × V-vector tile of C, then per k load V vectors of B, load A once per
 row and do R·V FMAs, then store the tile. `load_a` is where the ISAs
 differ (a broadcast from memory, a broadcast of a scalar, a plain `LDR`
-for an FMLA by element). `VectorMicro<Ops>` is the `Micro` the drivers
-take. The blocked and packed kernels compile to the same machine code as
-the three per-ISA kernels did before (Clang, M4 and Zen 5 targets). SVE
+for an FMLA by element). The blocked and packed kernels compile to the
+same machine code as the three per-ISA kernels did before (Clang, M4 and Zen 5 targets). SVE
 is not part of it: its vectors are sizeless, so its accumulators cannot be
 an array, and every operation takes a predicate (`sve.hpp`).
 

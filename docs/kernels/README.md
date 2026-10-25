@@ -3,7 +3,7 @@
 [Why each default was chosen, including evidence and untuned sizes](sizing.md).
 
 `gemm_simd_blocked<Ymm>`, `gemm_simd_blocked<Zmm>` and `gemm_simd_blocked<Q>` share
-one driver ([`blocked_driver.hpp`](../../src/gemm/blocked_driver.hpp)) and
+one driver ([`simd.hpp`](../../src/gemm/simd.hpp)) and
 take their register tile, R rows × V vectors of C, as template parameters:
 `gemm_simd_blocked<Ops, R, V, …>`. `bench_gemm` runs each family with every
 listed shape (`<Isa>Tile<R>x<V>`), and these pages compare them and explain

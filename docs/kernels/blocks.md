@@ -22,7 +22,7 @@ new blocks are 10–12% faster for AVX2 and NEON, 28% for AVX-512 FP32 and
 
 ## What each size decides
 
-The driver ([`blocked_driver.hpp`](../../src/gemm/blocked_driver.hpp)) runs
+The driver ([`simd.hpp`](../../src/gemm/simd.hpp)) runs
 
 ```text
 for each block of TileM rows of A            (i-block)
@@ -229,7 +229,7 @@ contiguous strips, as the SME2 kernel does, is the next step: below.
 ## Packed B
 
 `gemm_simd_packed<Ops, R, V, Mc, Kc, Nc, PackA = false>`
-([`packed_driver.hpp`](../../src/gemm/packed_driver.hpp)) runs the same
+([`simd.hpp`](../../src/gemm/simd.hpp)) runs the same
 micro-kernel and register tile in GotoBLAS order:
 
 ```text

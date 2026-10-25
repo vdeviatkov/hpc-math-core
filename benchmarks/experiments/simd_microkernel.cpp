@@ -6,7 +6,7 @@
  *   ./build/benchmarks/simd_microkernel > microkernel.csv
  *
  * The kernel is the library's own micro-kernel, vector_micro<Ops, R, V>
- * (gemm/vector_micro.hpp) with Ops = Q, Ymm or Zmm: an R x (V·W) block of C held in R·V
+ * (gemm/simd.hpp) with Ops = Q, Ymm or Zmm: an R x (V·W) block of C held in R·V
  * vector accumulators, and per k step V vector loads of B, R broadcasts of A
  * and R·V FMAs, for k = 0 … 255 (the kernels' k tile). It runs repeatedly on the same small A, B and C, so the operands
  * come from L1 and nothing but the core is measured. Two variables:
@@ -37,19 +37,19 @@ using namespace hpc::experiments;
 
 constexpr int kK = 256;  // k tile of the library kernels
 
-/// The library micro-kernel of an ISA (simd_isa.hpp names the ISAs).
-template <typename Isa> struct Lib;
+/// The library's primitive struct of an ISA (simd_isa.hpp names the ISAs).
+template <typename Isa> struct LibOps;
 #if HPC_HAS_NEON
-template <> struct Lib<NeonF32> : hpc::gemm::VectorMicro<hpc::gemm::Q> {};
-template <> struct Lib<NeonF64> : Lib<NeonF32> {};
+template <> struct LibOps<NeonF32> { using type = hpc::gemm::Q<float>; };
+template <> struct LibOps<NeonF64> { using type = hpc::gemm::Q<double>; };
 #endif
 #if HPC_HAS_AVX2
-template <> struct Lib<Avx2F32> : hpc::gemm::VectorMicro<hpc::gemm::Ymm> {};
-template <> struct Lib<Avx2F64> : Lib<Avx2F32> {};
+template <> struct LibOps<Avx2F32> { using type = hpc::gemm::Ymm<float>; };
+template <> struct LibOps<Avx2F64> { using type = hpc::gemm::Ymm<double>; };
 #endif
 #if HPC_HAS_AVX512
-template <> struct Lib<Avx512F32> : hpc::gemm::VectorMicro<hpc::gemm::Zmm> {};
-template <> struct Lib<Avx512F64> : Lib<Avx512F32> {};
+template <> struct LibOps<Avx512F32> { using type = hpc::gemm::Zmm<float>; };
+template <> struct LibOps<Avx512F64> { using type = hpc::gemm::Zmm<double>; };
 #endif
 
 /// C[R][V·W] += A[R][kK] · B[kK][V·W], B rows ldb apart. Not inlined, so the
@@ -57,7 +57,8 @@ template <> struct Lib<Avx512F64> : Lib<Avx512F32> {};
 template <typename Isa, int R, int V>
 __attribute__((noinline)) void micro(const typename Isa::T* a, const typename Isa::T* b,
                                      typename Isa::T* c, int ldb) {
-    Lib<Isa>::template run<R, V>(a, b, c, kK, static_cast<std::size_t>(ldb), V * Isa::lanes, kK);
+    hpc::gemm::vector_micro<typename LibOps<Isa>::type, R, V>(a, b, c, kK, static_cast<std::size_t>(ldb),
+                                                              V * Isa::lanes, kK);
 }
 
 double g_ghz = 0;
