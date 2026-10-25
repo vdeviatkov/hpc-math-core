@@ -2,8 +2,8 @@
 
 /**
  * @file simd_params.hpp
- * @brief Measured parameters of the generic SIMD kernels (gemm/simd.hpp),
- *        for the benchmarks and experiments.
+ * @brief Measured parameters of the generic SIMD kernels (gemm/simd.hpp,
+ *        gemm/simd_lowp.hpp), for the benchmarks and experiments.
  *
  * The kernels take the register tile and the cache blocks as template
  * parameters with no defaults; these are the values the sweeps in
@@ -15,9 +15,14 @@
  *   R × V               register tile: R rows × V vectors of C
  *   TileM/TileK/TileN   gemm_simd_blocked's cache block
  *   Mc/Kc/Nc            gemm_simd_packed's cache block
+ *
+ * LowpParams: gemm_simd_lowp's tile (R × V accumulators) and cache block
+ * (Mc × Kc × Nc elements; Kc depends on the input type), from
+ * docs/articles/lowp-gemm.md and bench_gemm_lowp's tile sweeps.
  */
 
 #include "gemm/simd.hpp"
+#include "gemm/simd_lowp.hpp"
 
 #include <cstddef>
 #include <type_traits>
@@ -62,6 +67,47 @@ struct SimdParams<gemm::Q> {
     template <typename T>
     static constexpr std::size_t TileN = 256;
     static constexpr std::size_t Mc = 256, Kc = 512, Nc = 512;
+};
+
+template <template <typename> class Ops>
+struct LowpParams;
+
+// Zen 5. 8 × 2 ZMM accumulators (8 rows × 32 columns of C); a k block of
+// 1 KiB (512 bf16, 1,024 INT8) keeps a B strip, 32 KiB, inside the 48 KiB L1.
+template <>
+struct LowpParams<gemm::ZmmDot> {
+    static constexpr int R = 8, V = 2;
+    static constexpr std::size_t Mc = 128, Nc = 512;
+    template <typename In>
+    static constexpr std::size_t Kc = 1024 / sizeof(In);
+};
+
+// Apple M4. 4 × 4 accumulators of 2 × 2: an 8 × 8 block of C in 16 registers.
+template <>
+struct LowpParams<gemm::QMmla> {
+    static constexpr int R = 4, V = 4;
+    static constexpr std::size_t Mc = 256, Nc = 512;
+    template <typename In>
+    static constexpr std::size_t Kc = 2048 / sizeof(In);  // 1,024 bf16, 2,048 INT8
+};
+
+// Apple M4. 4 rows (the lanes of A) × 4 accumulators: 4 × 16 (FMLAL) or
+// 4 × 32 (FMLA .8h) elements of C.
+template <>
+struct LowpParams<gemm::QFmlal> {
+    static constexpr int R = 4, V = 4;
+    static constexpr std::size_t Mc = 256, Nc = 512;
+    template <typename In>
+    static constexpr std::size_t Kc = 512;
+};
+template <>
+struct LowpParams<gemm::QFmlaF16> : LowpParams<gemm::QFmlal> {};
+
+/// gemm_simd_lowp at its measured parameters, as a function pointer.
+template <template <typename> class Ops, typename In>
+inline constexpr auto simd_lowp = +[](const Matrix<In>& A, const Matrix<In>& B, Matrix<gemm::lowp_out_t<In>>& C) {
+    using P = LowpParams<Ops>;
+    gemm::gemm_simd_lowp<Ops, P::R, P::V, P::Mc, P::template Kc<In>, P::Nc>(A, B, C);
 };
 
 /// gemm_simd_reordered, which has no parameters to tune, as a kernel object.

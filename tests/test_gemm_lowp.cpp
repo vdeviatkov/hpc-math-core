@@ -17,9 +17,8 @@
  * A kernel family is listed only where it is compiled.
  */
 
-#include "gemm/avx512_lowp.hpp"
 #include "gemm/lowp_naive.hpp"
-#include "gemm/neon_lowp.hpp"
+#include "gemm/simd_lowp.hpp"
 #include "gemm/sme_lowp.hpp"
 #include "hpc/lowp.hpp"
 #include "hpc/matrix.hpp"
@@ -153,10 +152,20 @@ TEST(Lowp, ConversionsRoundToNearestEven) {
     EXPECT_EQ(hpc::to_bf16(1.0f + 0x1p-8f + 0x1p-20f).bits, 0x3f81u);
 }
 
+// gemm_simd_lowp<Ops, R, V, Mc, Kc, Nc> for both formats of a struct, with a
+// k block of KcBytes (Kc = KcBytes / sizeof(In) elements).
+template <template <typename> class Ops, typename In, int R, int V, std::size_t Mc, std::size_t KcBytes,
+          std::size_t Nc>
+void lowp(const Matrix<In>& A, const Matrix<In>& B, Matrix<lowp_out_t<In>>& C) {
+    gemm_simd_lowp<Ops, R, V, Mc, KcBytes / sizeof(In), Nc>(A, B, C);
+}
+
 #if HPC_HAS_AVX512_LOWP
-TEST(LowpAvx512, Bf16MatchesNaive) { expect_matches_naive<bf16>(gemm_avx512_bf16, "avx512 bf16"); }
+TEST(LowpAvx512, Bf16MatchesNaive) {
+    expect_matches_naive<bf16>(lowp<ZmmDot, bf16, 8, 2, 128, 1024, 512>, "avx512 bf16");
+}
 TEST(LowpAvx512, Int8MatchesNaive) {
-    expect_matches_naive<std::int8_t>(gemm_avx512_i8, "avx512 int8");
+    expect_matches_naive<std::int8_t>(lowp<ZmmDot, std::int8_t, 8, 2, 128, 1024, 512>, "avx512 int8");
 }
 // Other register tiles and k blocks: R not dividing Mc = 128 (6, 12), wide
 // strips (V = 3, 4), one vector (V = 1), and k blocks small enough that the
@@ -164,8 +173,9 @@ TEST(LowpAvx512, Int8MatchesNaive) {
 template <int R, int V, std::size_t KcBytes>
 void expect_avx512_tile_matches_naive() {
     const std::string tile = std::to_string(R) + "x" + std::to_string(V) + " kc" + std::to_string(KcBytes);
-    expect_matches_naive<bf16>(gemm_avx512_bf16<R, V, KcBytes>, ("avx512 bf16 " + tile).c_str());
-    expect_matches_naive<std::int8_t>(gemm_avx512_i8<R, V, KcBytes>, ("avx512 int8 " + tile).c_str());
+    expect_matches_naive<bf16>(lowp<ZmmDot, bf16, R, V, 128, KcBytes, 512>, ("avx512 bf16 " + tile).c_str());
+    expect_matches_naive<std::int8_t>(lowp<ZmmDot, std::int8_t, R, V, 128, KcBytes, 512>,
+                                      ("avx512 int8 " + tile).c_str());
 }
 TEST(LowpAvx512, OtherTilesMatchReference) {
     expect_avx512_tile_matches_naive<8, 3, 1024>();
@@ -177,12 +187,26 @@ TEST(LowpAvx512, OtherTilesMatchReference) {
 #endif
 
 #if HPC_HAS_NEON_LOWP
-TEST(LowpNeon, Bf16MatchesNaive) { expect_matches_naive<bf16>(gemm_neon_bf16, "neon bf16"); }
-TEST(LowpNeon, Int8MatchesNaive) { expect_matches_naive<std::int8_t>(gemm_neon_i8, "neon int8"); }
-TEST(LowpNeon, Fp16MatchesNaive) { expect_matches_naive<fp16>(gemm_neon_f16, "neon fp16"); }
+TEST(LowpNeon, Bf16MatchesNaive) {
+    expect_matches_naive<bf16>(lowp<QMmla, bf16, 4, 4, 256, 2048, 512>, "neon bf16");
+}
+TEST(LowpNeon, Int8MatchesNaive) {
+    expect_matches_naive<std::int8_t>(lowp<QMmla, std::int8_t, 4, 4, 256, 2048, 512>, "neon int8");
+}
+TEST(LowpNeon, Fp16MatchesNaive) {
+    expect_matches_naive<fp16>(lowp<QFmlal, fp16, 4, 4, 256, 1024, 512>, "neon fp16");
+}
 // FP16 accumulation: the bound uses fp16's unit roundoff, 2^-11.
 TEST(LowpNeon, Fp16AccumulateWithinFp16Bound) {
-    expect_matches_naive<fp16>(gemm_neon_f16_acc, "neon fp16 acc", 0x1p-11);
+    expect_matches_naive<fp16>(lowp<QFmlaF16, fp16, 4, 4, 256, 1024, 512>, "neon fp16 acc", 0x1p-11);
+}
+// Other tiles and blocks: MMLA tiles of other row and column pairs, Mr not
+// dividing Mc, wide fp16 strips, and k blocks of a few k groups.
+TEST(LowpNeon, OtherTilesMatchNaive) {
+    expect_matches_naive<bf16>(lowp<QMmla, bf16, 2, 6, 100, 64, 60>, "neon bf16 2x6");
+    expect_matches_naive<std::int8_t>(lowp<QMmla, std::int8_t, 3, 2, 50, 16, 36>, "neon int8 3x2");
+    expect_matches_naive<fp16>(lowp<QFmlal, fp16, 4, 6, 30, 14, 100>, "neon fp16 4x6");
+    expect_matches_naive<fp16>(lowp<QFmlaF16, fp16, 4, 2, 30, 14, 100>, "neon fp16 acc 4x2", 0x1p-11);
 }
 #endif
 

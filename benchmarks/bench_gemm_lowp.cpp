@@ -20,9 +20,8 @@
  * Armv8.6+, AVX-512 BF16 / VNNI on x86.
  */
 
-#include "gemm/avx512_lowp.hpp"
-#include "gemm/neon_lowp.hpp"
 #include "gemm/simd.hpp"
+#include "gemm/simd_lowp.hpp"
 #include "gemm/sme.hpp"
 #include "gemm/sme_lowp.hpp"
 #include "hpc/isa.hpp"
@@ -100,29 +99,37 @@ void register_all() {
     add<float>("NeonBlocked", "f32", hpc::bench::simd_blocked<Q>);
 #endif
 #if HPC_HAS_NEON_LOWP
-    add<bf16>("NeonBfmmla", "bf16", gemm_neon_bf16);
-    add<std::int8_t>("NeonSmmla", "int8", gemm_neon_i8);
-    add<fp16>("NeonFmlal", "fp16", gemm_neon_f16);
-    add<fp16>("NeonFp16Acc", "fp16", gemm_neon_f16_acc);
+    add<bf16>("NeonBfmmla", "bf16", hpc::bench::simd_lowp<QMmla, bf16>);
+    add<std::int8_t>("NeonSmmla", "int8", hpc::bench::simd_lowp<QMmla, std::int8_t>);
+    add<fp16>("NeonFmlal", "fp16", hpc::bench::simd_lowp<QFmlal, fp16>);
+    add<fp16>("NeonFp16Acc", "fp16", hpc::bench::simd_lowp<QFmlaF16, fp16>);
 #endif
 #if HPC_HAS_AVX512
     add<float>("Avx512Blocked", "f32", hpc::bench::simd_blocked<Zmm>);
 #endif
 #if HPC_HAS_AVX512_LOWP
-    add<bf16>("Avx512Dpbf16", "bf16", gemm_avx512_bf16);
-    add<std::int8_t>("Avx512Vnni", "int8", gemm_avx512_i8);
+    add<bf16>("Avx512Dpbf16", "bf16", hpc::bench::simd_lowp<ZmmDot, bf16>);
+    add<std::int8_t>("Avx512Vnni", "int8", hpc::bench::simd_lowp<ZmmDot, std::int8_t>);
 #endif
 }
 
+/// gemm_simd_lowp<ZmmDot> with an R × V tile and a k block of KC bytes, at
+/// the measured Mc and Nc.
+template <typename In, int R, int V, std::size_t KC>
+void zmm_dot_tile(const Matrix<In>& A, const Matrix<In>& B, Matrix<lowp_out_t<In>>& C) {
+    using P = hpc::bench::LowpParams<ZmmDot>;
+    gemm_simd_lowp<ZmmDot, R, V, P::Mc, KC / sizeof(In), P::Nc>(A, B, C);
+}
+
 /// Register-tile sweep of the AVX-512 kernels:
-/// Avx512{Dpbf16,Vnni}Tile<R>x<V>[Kc<bytes>]/<format>/N=<n>. The default is
-/// 8x2 with Kc = 1024 bytes; a strip of B is Kc · 16·V bytes, so the wider
+/// Avx512{Dpbf16,Vnni}Tile<R>x<V>[Kc<bytes>]/<format>/N=<n>. The measured best
+/// is 8x2 with Kc = 1024 bytes; a strip of B is Kc · 16·V bytes, so the wider
 /// tiles also run at Kc = 512 to keep it inside Zen 5's 48 KiB L1.
 void add_tiles() {
 #if HPC_HAS_AVX512_LOWP
 #define HPC_AVX512_LOWP_TILE(R, V, KC, SUFFIX)                                                     \
-    add<bf16>("Avx512Dpbf16Tile" #R "x" #V SUFFIX, "bf16", gemm_avx512_bf16<R, V, KC>);             \
-    add<std::int8_t>("Avx512VnniTile" #R "x" #V SUFFIX, "int8", gemm_avx512_i8<R, V, KC>)
+    add<bf16>("Avx512Dpbf16Tile" #R "x" #V SUFFIX, "bf16", zmm_dot_tile<bf16, R, V, KC>);           \
+    add<std::int8_t>("Avx512VnniTile" #R "x" #V SUFFIX, "int8", zmm_dot_tile<std::int8_t, R, V, KC>)
     // 32 ZMM registers: R·V accumulators + V for B + 1 broadcast.
     HPC_AVX512_LOWP_TILE(8, 2, 1024, ""); HPC_AVX512_LOWP_TILE(6, 2, 1024, "");
     HPC_AVX512_LOWP_TILE(4, 3, 1024, ""); HPC_AVX512_LOWP_TILE(16, 1, 1024, "");
