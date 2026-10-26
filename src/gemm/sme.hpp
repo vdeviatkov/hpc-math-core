@@ -16,7 +16,7 @@
  *  SME in brief
  * ============================================================
  *
- * The AVX2, AVX-512, NEON and SVE kernels compute C with vector FMA:
+ * The AVX2, AVX-512 and NEON kernels compute C with vector FMA:
  * broadcast one scalar, multiply it against a vector, add into a vector that
  * holds part of a row of C. SME's FMOPA instead takes a column vector `a` and
  * a row vector `b` (SVL elements each) and adds their whole SVL×SVL outer

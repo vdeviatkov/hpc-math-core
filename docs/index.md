@@ -35,7 +35,7 @@ and AMD Zen 5), on Apple's SME2 matrix unit, and on an NVIDIA GPU, then in
 
 [hpc-math-core](https://github.com/vdeviatkov/hpc-math-core) is a set of
 GEMM implementations, each one optimisation step apart: scalar C++, AVX2,
-AVX-512, NEON, SVE, ARM SME2, Apple's Accelerate, and CUDA from naive
+AVX-512, NEON, ARM SME2, Apple's Accelerate, and CUDA from naive
 kernels to pipelined Tensor Cores, every one tested against a reference and
 benchmarked with Google Benchmark.
 

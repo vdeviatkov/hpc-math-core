@@ -172,14 +172,14 @@ Which kernel families exist in a build is decided once, at compile time, by the 
 
 | Machine | Runs | Skipped |
 |---|---|---|
-| **Apple M-series** (default build — `HPC_ENABLE_AMX` and `HPC_ENABLE_METAL` default ON) | Scalar · NEON · Scalar-Pf · NEON-Pf · **AMX** · **Metal** | AVX2 · AVX-512 · SVE · SME · CUDA |
-| **Apple M4 Max, `-DHPC_ENABLE_SME=ON`** (the run recorded in [benchmarks.md](benchmarks.md)) | Scalar · NEON · Scalar-Pf · NEON-Pf · **SME** (incl. `gemm_sme_mt`) · **AMX** · **KleidiAI** · **Metal** | AVX2 · AVX-512 · SVE · CUDA |
-| Intel Mac (Accelerate present; internal dispatch depends on the CPU) | Scalar · supported x86 SIMD/Pf · **AMX**\* | Unsupported x86 SIMD · NEON · SVE · SME · CUDA |
-| Intel Skylake (Linux/Windows, AVX2, no AVX-512, no GPU) | Scalar · AVX2 · Scalar-Pf · AVX2-Pf | AVX-512 · NEON · SVE · SME · AMX · CUDA |
-| Intel Skylake + NVIDIA GPU | Scalar · AVX2 · Scalar-Pf · AVX2-Pf · **CUDA** | AVX-512 · NEON · SVE · SME · AMX |
-| Intel Sapphire Rapids + NVIDIA GPU | Scalar · AVX2 · AVX-512 · all Pf · **CUDA** | NEON · SVE · SME · AMX |
-| AWS Graviton3 / Neoverse V1 | Scalar · NEON · SVE (256-bit) · all Pf variants | AVX2 · AVX-512 · SME · AMX · CUDA |
-| Fujitsu A64FX | Scalar · NEON · SVE (512-bit) · all Pf variants | AVX2 · AVX-512 · SME · AMX · CUDA |
+| **Apple M-series** (default build — `HPC_ENABLE_AMX` and `HPC_ENABLE_METAL` default ON) | Scalar · NEON · Scalar-Pf · NEON-Pf · **AMX** · **Metal** | AVX2 · AVX-512 · SME · CUDA |
+| **Apple M4 Max, `-DHPC_ENABLE_SME=ON`** (the run recorded in [benchmarks.md](benchmarks.md)) | Scalar · NEON · Scalar-Pf · NEON-Pf · **SME** (incl. `gemm_sme_mt`) · **AMX** · **KleidiAI** · **Metal** | AVX2 · AVX-512 · CUDA |
+| Intel Mac (Accelerate present; internal dispatch depends on the CPU) | Scalar · supported x86 SIMD/Pf · **AMX**\* | Unsupported x86 SIMD · NEON · SME · CUDA |
+| Intel Skylake (Linux/Windows, AVX2, no AVX-512, no GPU) | Scalar · AVX2 · Scalar-Pf · AVX2-Pf | AVX-512 · NEON · SME · AMX · CUDA |
+| Intel Skylake + NVIDIA GPU | Scalar · AVX2 · Scalar-Pf · AVX2-Pf · **CUDA** | AVX-512 · NEON · SME · AMX |
+| Intel Sapphire Rapids + NVIDIA GPU | Scalar · AVX2 · AVX-512 · all Pf · **CUDA** | NEON · SME · AMX |
+| AWS Graviton3 / Neoverse V1 | Scalar · NEON · all Pf variants | AVX2 · AVX-512 · SME · AMX · CUDA |
+| Fujitsu A64FX | Scalar · NEON · all Pf variants | AVX2 · AVX-512 · SME · AMX · CUDA |
 
 \* Expected to work, since Accelerate ships with every macOS SDK, but not run: no Intel Mac was available. The two Apple Silicon rows are verified.
 
@@ -217,7 +217,7 @@ sources are cached between runs.
 | Job | Runner | Compiler | Kernel families tested |
 |---|---|---|---|
 | `linux-x86` | `ubuntu-24.04` | GCC 14, `HPC_MARCH=x86-64-v3` | scalar, AVX2, prefetch |
-| `linux-arm` | `ubuntu-24.04-arm` | GCC 14 | scalar, NEON, prefetch (SVE if the runner has it) |
+| `linux-arm` | `ubuntu-24.04-arm` | GCC 14 | scalar, NEON, prefetch |
 | `macos` | `macos-14` | Apple Clang | scalar, NEON, prefetch, AMX via Accelerate |
 
 These jobs do not enable SME. The configured hosted runners are expected

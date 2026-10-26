@@ -4,7 +4,7 @@
 
 Progressive GEMM optimization and benchmarking across scalar C++, SIMD, ARM SME, Apple AMX, CUDA Tensor Cores and Apple GPUs (Metal), in FP32/FP64 and in bf16, fp16, INT8 and FP8.
 
-Starting from readable scalar code, each step adds one layer of hardware exploitation — cache-friendly loop order, cache blocking, explicit SIMD (AVX2 · AVX-512 · NEON · SVE), software prefetch, CUDA (shared-memory tiling through Tensor Cores and TMA), and matrix-engine hardware (ARM SME2, Apple AMX). Low-precision versions of the fastest kernels show what each narrower format changes. Google Benchmark registers every kernel family; available kernels are checked against a reference by Google Test. SVE still lacks hardware validation.
+Starting from readable scalar code, each step adds one layer of hardware exploitation — cache-friendly loop order, cache blocking, explicit SIMD (AVX2 · AVX-512 · NEON), software prefetch, CUDA (shared-memory tiling through Tensor Cores and TMA), and matrix-engine hardware (ARM SME2, Apple AMX). Low-precision versions of the fastest kernels show what each narrower format changes. Google Benchmark registers every kernel family; available kernels are checked against a reference by Google Test. SVE still lacks hardware validation.
 
 ---
 
@@ -100,8 +100,7 @@ Each family steps through the same techniques, one kernel per step.
 |---|---|---|
 | Scalar | `gemm_naive` → `gemm_reordered` → `gemm_blocked` | i-j-k → cache-friendly i-k-j → cache tiling (tile 64) |
 | SIMD: AVX2, AVX-512, NEON | `gemm_simd_reordered<Ops>` → `gemm_simd_blocked<Ops, R, V, …>` → `gemm_simd_packed<Ops, R, V, …>`, Ops = `Ymm`, `Zmm`, `Q` | one generic kernel per step over each ISA's primitive struct: i-k-j with intrinsics → cache blocking plus a register-tiled micro-kernel → GotoBLAS loop order with B packed into contiguous strips; tile and blocks are template parameters, measured values in `benchmarks/simd_params.hpp` |
-| SVE | `gemm_sve_reordered` → `gemm_sve_blocked` | the same two steps, vector-length agnostic with predicated tails |
-| Software prefetch | `gemm_simd_blocked<…, PfDist>`, `gemm_blocked_prefetch`, `gemm_sve_blocked_prefetch` | `__builtin_prefetch` for A, B and C, distance swept over {2, 4, 8, 16} |
+| Software prefetch | `gemm_simd_blocked<…, PfDist>`, `gemm_blocked_prefetch` | `__builtin_prefetch` for A, B and C, distance swept over {2, 4, 8, 16} |
 | ARM SME2 | `gemm_sme_1tile` → `gemm_sme_tiles` → `gemm_sme_blocked` → `gemm_sme` → `gemm_sme_mt` | `FMOPA` outer products into one ZA tile → all ZA tiles → GotoBLAS cache blocking → packed B → both P-clusters' SME units (shared B panel, dynamic A chunks) |
 | CUDA | `gemm_cuda_*`, Levels 0–8 | shared-memory tiling → register tiling → `cp.async` double buffering → 128-bit loads + swizzle → Tensor Cores via WMMA → raw `ldmatrix`/`mma.sync` → pipelined WMMA with 128×128 tiles → TMA + warp-specialised `mma.sync` |
 | Metal (Apple GPU) | `MetalNaive` → `MetalTiled` → `MetalRegTile` → `MetalSimd` → `MetalSimdTg` → `MetalSimdTgF16` | threadgroup-memory tiles → 8×4 register tile → `simdgroup_matrix` 8×8 MMA → tiles staged in threadgroup memory → fp16 inputs; MPS as the reference |
@@ -111,7 +110,7 @@ Each family steps through the same techniques, one kernel per step.
 
 A family is compiled only where its ISA exists; elsewhere its kernels are
 declared `= delete`, and the benchmarks list them as `SKIPPED`. Every family
-has run on real hardware except SVE, for which no machine was available.
+has run on real hardware.
 Files, techniques and intrinsics: [src/gemm/README.md](src/gemm/README.md).
 Detailed reasoning, contracts and tradeoffs for each source file:
 [docs/kernel-design.md](docs/kernel-design.md).

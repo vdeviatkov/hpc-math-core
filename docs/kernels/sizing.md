@@ -17,7 +17,6 @@ Cache dimensions below are M×K×N in elements, not bytes.
 | AVX2 | 6×2 | 384×256×256 / 384×256×128 | 12 independent accumulators hide FMA latency; 12+2+1=15 vector registers fit the 16-register AVX2 target. Six rows reuse B without spilling. The 256 KiB B block is a quarter of Zen 5's 1 MiB L2; M=384 amortizes fetching it across 64 row strips. [Tile measurements](avx2.md), [block measurements](blocks.md). |
 | AVX-512 | 8×3 | 512×256×512 / 512×256×256 | 24 accumulators plus 3 B registers fit 32 ZMMs. GCC's emitted code reuses B loads for this shape; smaller shapes sometimes repeat them per FMA. The 512 KiB B block leaves half the L2 for other data; M=512 reaches the measured plateau without the largest blocks' small-size cost. [Tiles](avx512.md), [blocks](blocks.md). |
 | NEON | 6×4 | 384×256×256 for both | 24 accumulators+4 B+1 A=29 of 32 vector registers. Six rows reuse B; lane FMAs with scalar LDR avoid the compiler's slower LD1R schedule on M4. M=384 was chosen near the block sweep's plateau; B is 256/512 KiB, well below the P-cluster L2, rather than sized to fill it. [Tiles](neon.md), [blocks](blocks.md). |
-| SVE | 4×2 | 64×256×512 for both | Unmeasured starting values, retained for compatibility, **not tuned defaults**. Eight accumulators use a modest part of the 32 Z registers. B is 512 KiB FP32 / 1 MiB FP64, which need not fit a particular SVE CPU's L2. Physical VL and cache sizes vary. [Sweep instructions and correctness evidence](sve.md). |
 | SME2 | 2×2 FP32 / 2×4 FP64 | 1024×2048×4096 / 512×2048×4096 | All four/eight ZA tiles give independent FMOPA chains and reuse A/B vectors. At M4's 512-bit streaming length, C is 32×32 / 16×32 elements. Cache sizes came from an M4 sweep: A is 8 MiB, half that machine's 16 MiB P-cluster L2; a B strip is 256/512 KiB and serves 32 A strips. The 32/64 MiB packed B panel is streamed, not expected to fit L2. [SME guide](sme.md), [original block data](../experiments/sme2-gemm/README.md). |
 
 For fixed-width SIMD, K=256 balances C reload/store overhead against operand
@@ -42,7 +41,7 @@ historical default measurements.
 
 Naive/reordered SIMD kernels have no R×V register-blocked micro-kernel or
 three-dimensional cache-block policy. Their vector width comes from the
-instruction type (or runtime VL for SVE). Prefetch variants inherit the
+instruction type. Prefetch variants inherit the
 blocked kernel's shape and blocks; distance is a separate experiment.
 The scalar blocked kernel's single tile dimension is also independent of
 SIMD register tiling.

@@ -55,7 +55,7 @@
  * kernel (packing, micro-kernel, driver), gemm_simd_packed and
  * gemm_simd_lowp. SME's widening outer products (gemm_sme, sme.hpp) are not
  * part of it: they run in streaming mode and accumulate in ZA. detail::pf,
- * the prefetch helper, is also used by prefetch.hpp and sve.hpp.
+ * the prefetch helper, is also used by prefetch.hpp.
  */
 
 #include "gemm/avx2.hpp"

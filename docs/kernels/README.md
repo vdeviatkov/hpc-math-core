@@ -7,8 +7,7 @@ one driver ([`simd.hpp`](../../src/gemm/simd.hpp)) and
 take their register tile, R rows × V vectors of C, as template parameters:
 `gemm_simd_blocked<Ops, R, V, …>`. `bench_gemm` runs each family with every
 listed shape (`<Isa>Tile<R>x<V>`), and these pages compare them and explain
-the defaults. SVE exposes the same R/V/cache parameters through a separate
-vector-length-agnostic driver in `sve.hpp`:
+the measured choices:
 
 | Family | Page | Default tile | Machine | Best measured, FP32 / FP64 GFLOP/s | Share of the core's peak |
 |---|---|---|---|--:|--:|
@@ -16,7 +15,6 @@ vector-length-agnostic driver in `sve.hpp`:
 | AVX-512 | [avx512.md](avx512.md) | 8 × 3 (8 × 48 FP32) | AMD Zen 5 | 327.9 / 162.0 | 91% / 90% |
 | NEON | [neon.md](neon.md) | 6 × 4 (6 × 16 FP32) | Apple M4 Max | 123.8 / 62.2 | 86% / 87% |
 | SME2 | [sme.md](sme.md) | 2×2 FP32 / 2×4 FP64 ZA tiles | Apple M4 Max | See SME measurements | — |
-| SVE | [sve.md](sve.md) | 4 × 2 (width follows VL) | hardware measurements pending | — | — |
 
 The cache blocks around the register tile are template parameters too
 (`gemm_simd_blocked<Ops, R, V, TileM, TileK, TileN>`), swept in

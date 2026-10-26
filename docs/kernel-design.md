@@ -95,7 +95,7 @@ not beat the reordered kernel on every shape.
 AVX2, AVX-512 and NEON share one set of kernels (`simd.hpp`), generic over
 the ISA: each ISA header defines only a primitive struct (`Ymm<T>`,
 `Zmm<T>`, `Q<T>`), and the kernels take it as their first template
-argument. SVE keeps its own kernels (`sve.hpp`). Reordered kernels
+argument. Reordered kernels
 broadcast A and vectorize the contiguous j loop. Blocked kernels keep a
 small rectangular C tile in registers for a whole k-block, amortizing C
 traffic and reusing both A broadcasts and B loads; they read B in place.
@@ -164,9 +164,7 @@ R × V-vector tile of C, then per k load V vectors of B, load A once per
 row and do R·V FMAs, then store the tile. `load_a` is where the ISAs
 differ (a broadcast from memory, a broadcast of a scalar, a plain `LDR`
 for an FMLA by element). The blocked and packed kernels compile to the
-same machine code as the three per-ISA kernels did before (Clang, M4 and Zen 5 targets). SVE
-is not part of it: its vectors are sizeless, so its accumulators cannot be
-an array, and every operation takes a predicate (`sve.hpp`).
+same machine code as the three per-ISA kernels did before (Clang, M4 and Zen 5 targets).
 
 ### `src/gemm/avx2.hpp`, `avx512.hpp`, `neon.hpp`
 
@@ -194,29 +192,6 @@ blocks; NEON a 6 × 4 tile (24 accumulators in 29 of 32 registers) with
 [kernels/neon.md](kernels/neon.md), [kernels/blocks.md](kernels/blocks.md))
 and is not a universal optimum for other CPUs or compiler versions.
 
-### `src/gemm/sve.hpp`
-
-SVE reads the calling thread's vector length at runtime. Blocked entry
-points take register shape R/V and cache sizes as template arguments, with
-unchanged defaults 4x2 and 64x256x512. The C micro-tile is R rows by V scalable
-vectors; partial row tiles use smaller row specializations, and predicates
-handle every column tail. Ordinary and prefetch wrappers share
-`detail::sve_blocked_gemm`; PfDist=0 removes all hints at compile time.
-
-Unlike fixed-width SIMD, SVE's sizeless vectors cannot be array elements.
-`sve_micro<R,V>` therefore expands accumulator and operand parameter packs:
-R*V independent accumulators, V B loads reused across rows, and one A
-broadcast per row and K step. The compile-time expansion leaves only K as a
-runtime loop. Inactive vector addresses are clamped to the valid row end;
-stores use the same predicates as loads. No temporary accumulator buffer
-is deliberately allocated, although oversized shapes can cause compiler
-spills.
-
-Callers must keep VL stable during a call. [SVE sweep instructions](kernels/sve.md)
-record actual vector length and tile width with each result. This family has
-no physical SVE performance measurements; NEON, SME and emulator timings do
-not establish an SVE tile optimum.
-
 ### `src/gemm/prefetch.hpp`
 
 Each variant retains its base blocked traversal and micro-kernel, adding
@@ -226,9 +201,9 @@ The hints cover particular lines, not whole tiles. `pf<Rw,Loc>` maps to
 `__builtin_prefetch`, or x86 `_mm_prefetch` under MSVC; the latter ignores
 the write intent. Locality is a compiler/architecture-dependent hint,
 not a guaranteed cache destination. Distances 2/4/8/16 are benchmarked;
-the recorded runs show little benefit. Fixed-width SIMD and SVE each share
-a driver with their ordinary blocked entry points; only the scalar variant
-keeps a separate traversal.
+the recorded runs show little benefit. The SIMD kernels share a driver with
+their ordinary blocked entry points; only the scalar variant keeps a
+separate traversal.
 
 ## Matrix engines and vendor references
 
@@ -491,7 +466,6 @@ does not automatically preserve a cycle or cache interpretation.
 | `docs/experiments/sme2-gemm/*` | Raw SME ladder, block-sweep and vendor-comparison samples behind part 2; the README records their provenance. |
 | `docs/experiments/zen5-b-stride/*` | Pointer chase and stride / size / height sweeps behind part 3's Zen 5 section; the README lists the cache geometry and method. |
 | `docs/experiments/lowp/*` | Instruction peaks, CPU and GPU GEMM runs, accuracy and Nsight counters behind part 5; the README lists machines, builds and method. |
-| `docs/experiments/sve-tiles/*` | GCC/QEMU correctness logs at six runtime vector lengths, source hashes, flags and a Linux test main that selects VL before running Google Test. These are validation results, not hardware throughput measurements. |
 | `docs/experiments/sme2-machine/*` | Cache/TLB/FMOPA samples and metadata for the M4 machine model. TLB capacities and cluster sharing are experimental inferences. |
 | `docs/experiments/sme-b-stride/*` | Phase timings and stride/height/width/chase data; metadata includes commands and source hashes for historical reproduction. |
 | `docs/experiments/metal-m4/*` | Metal ladder, MPS and FMA peak in one bracketed GPU session, plus the tile-variant sweep; the README records the clock and power caveats. |
@@ -501,5 +475,4 @@ does not automatically preserve a cycle or cache interpretation.
 
 Primary specifications for the architectural contracts:
 [Arm ACLE](https://arm-software.github.io/acle/main/acle.html),
-[Linux SVE thread vector lengths](https://www.kernel.org/doc/html/latest/arch/arm64/sve.html),
 [NVIDIA WMMA requirements](https://docs.nvidia.com/cuda/archive/11.8.0/cuda-c-programming-guide/index.html#wmma).

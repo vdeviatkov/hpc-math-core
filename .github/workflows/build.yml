@@ -3,7 +3,7 @@
 # (src/cuda/gemm_kernels_stub.cpp) and the SME / KleidiAI kernels are absent.
 #
 #   linux-x86   GCC 14, HPC_MARCH=x86-64-v3   scalar, AVX2, prefetch
-#   linux-arm   GCC 14, -march=native         scalar, NEON, prefetch (SVE if the runner has it)
+#   linux-arm   GCC 14, -march=native         scalar, NEON, prefetch
 #   macos       Apple Clang                   scalar, NEON, prefetch, AMX via Accelerate
 #
 # linux-x86 pins x86-64-v3 because ccache may hand objects to a later job on a

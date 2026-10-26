@@ -157,7 +157,7 @@ For the reordered kernel, effective bandwidth is much higher (from caches), but 
 ```
 Peak compute = cores × SIMD width × FMA throughput × frequency
 ```
-This motivates the explicit SIMD kernels (AVX2, AVX-512, NEON, SVE) and the matrix engines.
+This motivates the explicit SIMD kernels (AVX2, AVX-512, NEON) and the matrix engines.
 
 
 ---
