@@ -2,8 +2,7 @@
 
 /**
  * @file neon.hpp
- * @brief ARM NEON primitives for the generic SIMD kernels (simd.hpp,
- *        simd_lowp.hpp).
+ * @brief ARM NEON primitives for the generic SIMD kernels (simd.hpp).
  *
  *   gemm_simd_reordered<Q>(A, B, C);
  *   gemm_simd_blocked<Q, R, V, TileM, TileK, TileN[, PfDist]>(A, B, C);

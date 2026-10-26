@@ -230,7 +230,8 @@ contiguous strips, as the SME2 kernel does, is the next step: below.
 
 `gemm_simd_packed<Ops, R, V, Mc, Kc, Nc, PackA = false>`
 ([`simd.hpp`](../../src/gemm/simd.hpp)) runs the same
-micro-kernel and register tile in GotoBLAS order:
+outer product per k step and register tile in GotoBLAS order. It is the
+k-group kernel of `gemm_simd_lowp` with the FMA as k group G = 1:
 
 ```text
 for each block of Nc columns of B                (jc; rounded down to whole strips)
@@ -297,7 +298,9 @@ Medians, GFLOP/s (Zen 5: 3 runs; M4: 5 runs, interleaved):
   whose rows are already 4 KiB apart). Packing is inside the timed call.
 - **Packing A too** (`PackA = true`) is 0.95–1.00× of packing B alone on
   both machines: once B is contiguous, A's row stride does not limit these
-  kernels.
+  kernels. (Measured with A copied row-major. Since 2026-10-26, A is packed
+  into R-row strips, as in the low-precision kernels; against the row copy
+  that is −3% to +10% on Zen 5 and −0.5% to +4% on M4 at N = 1000–4096.)
 
 The blocked kernels stay the defaults of the main tables, which include
 N = 64 … 512; the packed ones are separate entry points for large N.

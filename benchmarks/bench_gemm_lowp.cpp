@@ -21,7 +21,6 @@
  */
 
 #include "gemm/simd.hpp"
-#include "gemm/simd_lowp.hpp"
 #include "gemm/sme.hpp"
 #include "gemm/sme_lowp.hpp"
 #include "hpc/isa.hpp"

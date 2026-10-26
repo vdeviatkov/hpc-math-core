@@ -216,7 +216,7 @@ Medians of 3 repetitions, one thread:
 
 ### Zen 5, AVX-512
 
-Code: [`gemm_simd_lowp`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/simd_lowp.hpp) with [`ZmmDot<In>`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/avx512.hpp).
+Code: [`gemm_simd_lowp`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/simd.hpp) with [`ZmmDot<In>`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/avx512.hpp).
 
 The micro-kernel is an 8 × 2-register tile (8 rows × 32 columns of C,
 16 accumulators) with `VDPBF16PS` or `VPDPBUSD` in place of the FMA. Per
@@ -262,7 +262,7 @@ N = 4,000 it is not slower.
 
 ### Apple M4, NEON
 
-Code: [`gemm_simd_lowp`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/simd_lowp.hpp) with [`QMmla<In>`, `QFmlal<In>`, `QFmlaF16<In>`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/neon.hpp).
+Code: [`gemm_simd_lowp`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/simd.hpp) with [`QMmla<In>`, `QFmlal<In>`, `QFmlaF16<In>`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/neon.hpp).
 
 `BFMMLA` and `SMMLA` are not vector FMAs but tiny matrix multiplications:
 each takes a 2 × G block of A and a G × 2 block of B, one 128-bit register

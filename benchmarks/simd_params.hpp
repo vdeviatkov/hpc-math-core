@@ -2,8 +2,8 @@
 
 /**
  * @file simd_params.hpp
- * @brief Measured parameters of the generic SIMD kernels (gemm/simd.hpp,
- *        gemm/simd_lowp.hpp), for the benchmarks and experiments.
+ * @brief Measured parameters of the generic SIMD kernels (gemm/simd.hpp),
+ *        for the benchmarks and experiments.
  *
  * The kernels take the register tile and the cache blocks as template
  * parameters with no defaults; these are the values the sweeps in
@@ -22,7 +22,6 @@
  */
 
 #include "gemm/simd.hpp"
-#include "gemm/simd_lowp.hpp"
 
 #include <cstddef>
 #include <type_traits>

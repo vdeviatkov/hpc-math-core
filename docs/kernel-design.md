@@ -114,9 +114,10 @@ live with the benchmarks (`benchmarks/simd_params.hpp`).
 `gemm_simd_packed<Ops, R, V, Mc, Kc, Nc, PackA = false>(A, B, C)`, with T
 deduced from the matrices. The reordered loop is written once against
 `Ops::load`, `store`, `load_a` and `fma`, with a scalar loop for the
-columns that do not fill a vector. The blocked and packed kernels hold
-their own loop nests and share the micro-kernel and the edge helpers
-below; `PfDist > 0` is the prefetch variant. `Ops<T>` is declared on every target and defined only where its
+columns that do not fill a vector. The blocked kernel uses the
+micro-kernel and the edge helpers below; `PfDist > 0` is the prefetch
+variant. The packed kernel is the k-group kernel that `gemm_simd_lowp` also
+runs (below), with the FMA as an instruction of k group G = 1. `Ops<T>` is declared on every target and defined only where its
 ISA is compiled, so instantiating a kernel for an absent ISA is a
 compile-time error, and the benchmarks and tests guard each family with
 `HPC_HAS_*` (or `if constexpr` on `kHave*`).
@@ -137,15 +138,19 @@ accumulators to memory.
 
 #### `simd.hpp`: `gemm_simd_packed`
 
-`gemm_simd_packed<Ops, R, V, Mc, Kc, Nc, PackA>` runs the blocked
-kernel's micro-kernel in GotoBLAS order: for each Kc × Nc block of B
-(Nc rounded down to whole strips), copy it once into strips NR = V·W
-columns wide (kc rows of NR contiguous elements, zero-padded), then for
-each Mc-row block of A, for each strip, for each R-row tile, call the
-micro-kernel with `ldb = NR`. A is read in place unless `PackA`, which
-copies the Mc × Kc block of A into a row-major buffer with `lda = kc`.
-Edges go through `row_strip` with the strip's true width, so the padding is
-never computed or stored. B's row-major layout already suits the FP32
+`gemm_simd_packed<Ops, R, V, Mc, Kc, Nc, PackA>` is `detail::gemm_kgroup`,
+the kernel of `gemm_simd_lowp`, run with `detail::Fma<Ops, PackA>`: the
+ISA's `load_a` / `load` / `fma` as an instruction of k group G = 1, one
+accumulator per vector of a row of C. GotoBLAS order: for each Kc × Nc
+block of B (Nc rounded down to whole strips), copy it once into strips
+Nr = V·W columns wide (kc rows of Nr contiguous elements, zero-padded),
+then for each Mc-row block of A, for each strip, for each R-row tile, run
+the micro-kernel. With G = 1, packing B by k group is a copy of rows, so
+the per-k work is the blocked kernel's outer product. A is read in place
+unless `PackA`, which packs the Mc × Kc block into R-row strips (the R
+values of one k step contiguous). A strip's last columns run a tile with
+only as many accumulator columns as they need, and a tile cut short by
+the matrix or a block goes through a buffer. B's row-major layout already suits the FP32
 micro-kernel; the copy only removes the cache-set conflicts of a
 power-of-two row stride. Packing costs 2–13% at N ≤ 256 on Zen 5 and
 gains up to 60% at N ≥ 1024 ([experiments/packed-b](experiments/packed-b/README.md)),
@@ -309,7 +314,7 @@ multiple of G. Article: [part 5](articles/lowp-gemm.md).
 | File | Design |
 |---|---|
 | `src/gemm/lowp_naive.hpp` | `gemm_lowp_naive`: products summed in double (exactly in int64 for INT8), rounded once. The tests' reference; `lowp_out_t<In>` names the output type. |
-| `src/gemm/simd_lowp.hpp` | `gemm_simd_lowp<Ops, R, V, Mc, Kc, Nc>`: the low-precision SIMD kernel, generic over an instruction-shape struct (`ZmmDot<In>` in `avx512.hpp`; `QMmla<In>`, `QFmlal<In>`, `QFmlaF16<In>` in `neon.hpp`). GotoBLAS order; B is always packed by k group (word w of column c holds G consecutive k), A only where the instruction needs it. One micro-kernel: per k group, V B operands, one A operand per row unit, R·V instructions; rows and vectors unrolled with `#pragma GCC unroll`, so FMLAL's lane is a constant. Kept out of line: inlined, the AVX-512 bf16 k loop reloaded its row pointers (56 → 420 instructions with Clang). Tile and blocks are template parameters; the measured values are in `benchmarks/simd_params.hpp` (`LowpParams`). |
+| `src/gemm/simd.hpp`: `gemm_simd_lowp` | `gemm_simd_lowp<Ops, R, V, Mc, Kc, Nc>`: the low-precision SIMD kernel, generic over an instruction-shape struct (`ZmmDot<In>` in `avx512.hpp`; `QMmla<In>`, `QFmlal<In>`, `QFmlaF16<In>` in `neon.hpp`). It runs `detail::gemm_kgroup`, the kernel `gemm_simd_packed` runs with G = 1. GotoBLAS order; B is always packed by k group (word w of column c holds G consecutive k), A only where the instruction needs it. One micro-kernel: per k group, V B operands, one A operand per row unit, R·V instructions; rows and vectors unrolled with `#pragma GCC unroll`, so FMLAL's lane is a constant. Kept out of line: inlined, the AVX-512 bf16 k loop reloaded its row pointers (56 → 420 instructions with Clang). Tile and blocks are template parameters; the measured values are in `benchmarks/simd_params.hpp` (`LowpParams`). |
 | `ZmmDot<In>` (`avx512.hpp`) | `VDPBF16PS` (bf16), `VPDPBUSD` (INT8). One accumulator is 1 × 16 of C; measured tile 8 × 2 (8 × 32 of C), swept by `bench_gemm_lowp`'s `Avx512{Dpbf16,Vnni}Tile*` rows. Only B is packed (G rows interleaved, as the instructions need); A is broadcast in place. `VPDPBUSD` is unsigned × signed, so B is packed + 128 and each row's accumulators start at −128 · Σ_k A(i, k): exact. `VPDPBUSD` is one inline `asm` instruction because GCC 13 wraps the intrinsic in register copies that cost 16–26%. Edges: masked C loads and stores. Measured blocks: Mc = 128, Kc = 1024 bytes of k, Nc = 512. |
 | `QMmla<In>`, `QFmlal<In>`, `QFmlaF16<In>` (`neon.hpp`) | `BFMMLA` (bf16) and `SMMLA` (INT8): 2 × 2-tile matrix instructions, one accumulator per 2 × 2 of C, A and B both packed; measured as an 8 × 8 C block in 16 registers (R = V = 4). `FMLAL` (fp16, FP32 accumulate) and `FMLA .8h` (fp16 accumulate, converted on load and store) multiply by element: A is packed 4 rows per k and row r uses lane r, so R = 4; measured with 16 accumulators. Edges through a buffer. |
 | `src/gemm/sme_lowp.hpp` | `gemm_sme_widening<fp16 \| bf16 \| int8_t>`: `gemm_sme`'s structure with widening `FMOPA` / `SMOPA` into the four 32-bit ZA tiles. A packed by NEON transposes of 32-bit words, B by zipping G rows. Blocks keep the FP32 kernel's sizes in bytes (8 MiB A block). |

@@ -18,7 +18,7 @@
  */
 
 #include "gemm/lowp_naive.hpp"
-#include "gemm/simd_lowp.hpp"
+#include "gemm/simd.hpp"
 #include "gemm/sme_lowp.hpp"
 #include "hpc/lowp.hpp"
 #include "hpc/matrix.hpp"

@@ -2,8 +2,7 @@
 
 /**
  * @file avx512.hpp
- * @brief AVX-512 primitives for the generic SIMD kernels (simd.hpp,
- *        simd_lowp.hpp).
+ * @brief AVX-512 primitives for the generic SIMD kernels (simd.hpp).
  *
  *   gemm_simd_reordered<Zmm>(A, B, C);
  *   gemm_simd_blocked<Zmm, R, V, TileM, TileK, TileN[, PfDist]>(A, B, C);
