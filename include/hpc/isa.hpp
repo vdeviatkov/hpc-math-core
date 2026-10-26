@@ -26,7 +26,6 @@
  *   NEON low precision
  *             NEON and the BF16, I8MM, FP16 FML and FP16 vector extensions
  *             (BFMMLA, SMMLA, FMLAL, FMLA .8h)
- *   SVE       __ARM_FEATURE_SVE
  *   SME       __ARM_FEATURE_SME && __ARM_FEATURE_SME2 (HPC_ENABLE_SME=ON and
  *             the configure-time probe passed; gemm_sme uses SME2 loads)
  *   AMX       HPC_ACCELERATE_AVAILABLE && __APPLE__ (HPC_ENABLE_AMX=ON and
@@ -65,12 +64,6 @@
     #define HPC_HAS_NEON_LOWP 0
 #endif
 
-#if defined(__ARM_FEATURE_SVE)
-    #define HPC_HAS_SVE 1
-#else
-    #define HPC_HAS_SVE 0
-#endif
-
 #if defined(__ARM_FEATURE_SME) && defined(__ARM_FEATURE_SME2)
     #define HPC_HAS_SME 1
 #else
@@ -97,7 +90,6 @@ inline constexpr bool kHaveAvx512 = HPC_HAS_AVX512 != 0;
 inline constexpr bool kHaveAvx512Lowp = HPC_HAS_AVX512_LOWP != 0;
 inline constexpr bool kHaveNeon   = HPC_HAS_NEON != 0;
 inline constexpr bool kHaveNeonLowp = HPC_HAS_NEON_LOWP != 0;
-inline constexpr bool kHaveSve    = HPC_HAS_SVE != 0;
 inline constexpr bool kHaveSme    = HPC_HAS_SME != 0;
 inline constexpr bool kHaveAmx    = HPC_HAS_AMX != 0;
 inline constexpr bool kHaveKleidiAI = HPC_HAS_KLEIDIAI != 0;

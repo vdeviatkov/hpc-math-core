@@ -2,7 +2,7 @@
 
 /**
  * @file prefetch.hpp
- * @brief Software-prefetch variants of the scalar and SVE blocked kernels.
+ * @brief Software-prefetch variant of the scalar blocked kernel.
  *
  * The AVX2, AVX-512 and NEON kernels need no separate variant:
  * gemm_simd_blocked's PfDist parameter (simd.hpp) adds the same hints.
@@ -45,14 +45,12 @@
  * ============================================================
  *
  * gemm_simd_blocked<Ops, …, PfDist> (simd.hpp) adds the same hints with
- * PfDist > 0. SVE shares its own vector-length-agnostic driver in sve.hpp.
- * The scalar variant repeats its base kernel's loop with hints added. The
- * SVE variant is declared `= delete` on an unsupported target.
+ * PfDist > 0. The scalar variant repeats its base kernel's loop with hints
+ * added.
  */
 
 #include "gemm/blocked.hpp"
 #include "gemm/simd.hpp"
-#include "gemm/sve.hpp"
 #include "hpc/matrix.hpp"
 
 #include <algorithm>
@@ -110,25 +108,6 @@ void gemm_blocked_prefetch(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C)
         }
     }
 }
-
-// ============================================================================
-// 2.  SVE blocked + prefetch
-// ============================================================================
-#if !HPC_HAS_SVE
-template <typename T, std::size_t PfDist = kDefaultPrefetchDist,
-          int R = kSveRegRows, int V = kSveRegCols, std::size_t TileM = kSveTileM,
-          std::size_t TileK = kSveTileK, std::size_t TileN = kSveTileN>
-void gemm_sve_blocked_prefetch(const Matrix<T>&, const Matrix<T>&, Matrix<T>&) = delete;
-#else
-// Keep PfDist as the second argument for existing callers; R/V and cache
-// tiles follow it, so experiments can use the same shape with or without hints.
-template <typename T, std::size_t PfDist = kDefaultPrefetchDist,
-          int R = kSveRegRows, int V = kSveRegCols, std::size_t TileM = kSveTileM,
-          std::size_t TileK = kSveTileK, std::size_t TileN = kSveTileN>
-void gemm_sve_blocked_prefetch(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
-    detail::sve_blocked_gemm<T, R, V, TileM, TileK, TileN, PfDist>(A, B, C);
-}
-#endif  // HPC_HAS_SVE
 
 }  // namespace hpc::gemm
 
