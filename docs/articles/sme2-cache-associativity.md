@@ -182,7 +182,7 @@ losing almost as much as N = 4096.
 
 This calculation illustrates the conflict mechanism for a conventional
 modulo-indexed cache. Modern processors can instead hash higher address
-bits into the set index, and Apple does not document the set-indexing
+bits into the set index ([how each level picks its set](#how-an-address-picks-its-set-l1-l2-and-llc-slices)), and Apple does not document the set-indexing
 function of M4's L2. The table is therefore a model of the mechanism, not
 a reconstruction of the M4 Max's physical cache organization. The evidence
 for conflicts on this machine is the controlled stride and working-set
@@ -400,6 +400,157 @@ Zen 5, with the current tiles and blocks. At N = 4096 AVX-512 runs at 319
 GFLOP/s packed against 294 in place (+8%), and AVX2, whose 4 KiB strides
 cost it most, at 167 against 104 (+60%).
 
+## How an address picks its set: L1, L2, and LLC slices
+
+A cache splits each address into three fields: the low bits are the byte
+offset within the line, the next bits are the **set index**, and the
+rest is the tag that is stored and compared. How each level forms its index
+decides which strides conflict, and the levels do it differently.
+
+```text
+ physical address:  |        tag        |  set index  | line offset |
+ Zen 5 L1 (64 sets, 64 B lines):          bits 11..6     bits 5..0
+ M4 L1 (128 sets, 128 B lines):           bits 13..7     bits 6..0
+```
+
+**L1: plain bits, inside the page offset.** L1 is on the critical path of
+every load, so it looks up the set *while* the TLB translates the address
+(virtually indexed, physically tagged, VIPT). That only works if every index
+bit lies inside the page offset, where virtual and physical addresses are
+identical, and this limits L1 to `page size × ways`:
+
+| | Page | Ways | Largest VIPT L1 | Actual L1 | Set index bits |
+|---|--:|--:|--:|--:|---|
+| Zen 5 | 4 KiB | 12 | 48 KiB | 48 KiB | 6–11 |
+| M4 P-core | 16 KiB | 8 (inferred) | 128 KiB | 128 KiB | 7–13 |
+
+Both L1s sit exactly at this limit. This is also why their conflicts are so
+regular. The index is the plain address bits with no hashing (an XOR in front of the
+lookup would add latency), and those bits repeat every page. So any stride
+that is a multiple of the page size (4 KiB on Zen 5, 16 KiB on the M4) puts
+every row into one set, which holds as many lines as the cache has ways:
+12 on Zen 5 and 8 on the M4, as both pointer chases measured. Apple does
+not document the M4's associativity. The 8 ways are inferred from the
+8-line limit and fit the VIPT rule exactly.
+
+**L2: physical bits, usually above the page.** L2 is looked up after
+translation (physically indexed, PIPT), and it has more sets than one page
+can index. Zen 5's 1,024 sets of 64 B lines need bits 6–15, and bits 12–15
+come from the physical page number the OS chose, not from the program's
+addresses. So the mapping a program sees depends on its pages:
+
+- With 2 MiB huge pages, as in the Zen 5 pointer chase, physical bits 0–20
+  equal the virtual ones, and L2 behaved exactly like the modulo model: 256,
+  128 and 64 lines at 4, 8 and 16 KiB.
+- With small pages, the upper index bits of each row follow its physical frame.
+  Rows a power of two apart in virtual memory may land in more sets or
+  fewer, depending on which frames the OS handed out (*page colouring*).
+  Run-to-run variation in an L2-bound threshold, like the
+  448-to-640-line step on the M4, is what you would expect from this.
+
+On the M4, the 16 MiB L2's index runs well above the 16 KiB page offset,
+and Apple documents neither those bits nor whether they are hashed. The
+measurements only show that a 16 KiB stride still confines a strip to a few
+hundred of L2's 131,072 lines.
+
+**LLC and SLC: first a slice, then a set.** A large last-level cache is not
+one array. It is built from **slices**, one per core or per stop on the
+on-chip network: one per core on a Zen CCD and on Intel's ring and mesh,
+one per home node (HN-F) in Arm's CMN interconnect, and blocks next to the
+memory controllers in Apple's SoCs. A lookup happens in two steps:
+
+1. **Slice = hash(physical address).** A fixed function, typically XORs of
+   many address bits above the line offset, picks the slice. Its job is to
+   spread traffic evenly: consecutive lines, and strided streams, go to
+   different slices, so no single slice or network stop becomes a hot spot.
+   Vendors do not publish these functions. Intel's were reverse-engineered
+   from performance counters (Maurice et al., *Reverse Engineering Intel
+   Last-Level Cache Complex Addressing*, RAID 2015). For a memory-side SLC the slice is
+   tied to how addresses interleave across memory channels.
+2. **Set = index bits within that slice.** These are the low bits above the
+   line offset, as in any cache, sometimes with further hashing.
+
+The hash is what makes the last level tolerant of the strides that break
+L1 and L2. A stride that maps every row to one set of one slice under plain
+indexing is spread over all slices by the hash, which multiplies the space
+the rows can use by the number of slices. Zen 5's L3 kept 16,384 lines 4,
+8 and 16 KiB apart, at least twice what plain modulo indexing of all its
+32,768 sets would allow, so its slice choice and probably its set index
+are hashed. That is why it can absorb the rows L2 conflicts drop, as the
+next section explains.
+
+## Where an evicted line goes: L1/L2 inclusion and the LLC
+
+The same set conflicts cost the M4 two thirds and Zen 5 a sixth. To see
+why, it helps to know what a cache does with a line it evicts, and
+which level can still supply it. Four policies decide that.
+
+**Replacement within a set.** When a set is full, the cache picks one of
+its ways to evict. L1 and L2 typically use a cheap approximation of
+least-recently-used (tree pseudo-LRU and similar); large last-level caches
+often use adaptive policies of the RRIP family, which keep a line that has been reused
+over one that has not. Every one of them evicts a line in a full set,
+however hot it is. That is why the strided strip evicts itself: in a set
+holding more strip rows than it has ways, each new row can only replace another row of the
+strip.
+
+**Write-back and write-allocate.** CPU caches are write-back: a store
+changes only the cached copy and marks it dirty, and the line goes to the
+next level only when it is evicted. A store that misses first reads the line in
+(write-allocate) unless it is a non-temporal store. Evicting a clean line
+can be silent. Evicting a dirty line costs a write to the next level as well.
+
+**Inclusion between levels.** This decides whether a line evicted from one
+level still exists in the next:
+
+| Policy | What the outer level holds | Effective capacity | Cost |
+|---|---|---|---|
+| **Inclusive** | a copy of every line in the inner levels | outer level only | evicting from the outer level must also invalidate the inner copies (*back-invalidation*), even of hot lines |
+| **Exclusive** (victim cache) | only lines the inner level evicted; a hit moves the line back in | inner + outer | every inner eviction, clean or dirty, is a fill of the outer level |
+| **Non-inclusive** (NINE) | whatever it happens to keep; no guarantee either way | between the two | the coherence protocol needs a separate directory or snoop filter |
+
+Between L1 and L2, inclusion is common and cheap because L2 is many times
+larger. AMD documents Zen's L2 as inclusive of its L1 caches, and
+Arm's Cortex-A76/Neoverse N1 L2 is strictly inclusive of L1 data. So a
+line that falls out of L1 because of a set conflict is usually still in L2,
+one L2 hit away (14 cycles on Zen 5). L1 conflicts are therefore cheap. That
+is the 14–17% loss Zen 5 shows above.
+
+**The last level.** Here designs diverge, and this is what the experiments
+above actually feel:
+
+- **Zen (AMD): an exclusive victim L3.** L3 is filled from lines the L2s of
+  its CCD evict, not on the way in from memory, and it is mostly exclusive
+  of them. Lines kept in several cores, such as shared code, stay in both. Shadow
+  tags of the L2s let the L3 answer coherence requests without probing the
+  cores. A line L2 drops because of a conflict goes straight into L3,
+  whose sliced and hashed set index (see the pointer chase above) does not
+  alias at these strides, and it returns in about 45 cycles.
+- **Intel: from inclusive to non-inclusive.** The L3 was inclusive through
+  Broadwell: simple coherence, but every L3 eviction back-invalidates the core's copies
+  (*inclusion victims*), and L3 capacity was spent duplicating L2.
+  Skylake-SP and later server parts enlarged L2 and made L3 non-inclusive,
+  with a snoop filter to track the lines held by private caches.
+- **Arm and Apple: a system-level cache (SLC).** In Arm reference systems
+  (the SLC in the CMN interconnect) and in Apple's SoCs, the last level is
+  shared by the CPU clusters, the GPU, and other agents, and sits on the
+  memory side, in front of the DRAM controllers. Each address has one home
+  slice. A CPU line that misses in L2 goes over the fabric to that slice, and
+  a dirty line L2 evicts is written back through it. It is a different kind of cache
+  from Zen's L3: farther away (about 150 cycles on the M4 against 45), shared with
+  non-CPU traffic, and not sized or managed for one core's working set.
+  Apple documents neither the inclusion policy of the M4's L2 nor
+  the SLC's allocation policy.
+
+Put together, this explains rule 5 below. On Zen 5 a strip row evicted by
+an L1 conflict comes back from the inclusive L2 at 14 cycles, and one
+evicted by an L2 conflict comes back from the victim L3 at 45. Every
+level the kernel falls back to is close and does not conflict at these strides. On the M4 the
+conflicting level is L2 itself, and the next copy of the line is in the SLC
+(or DRAM) about 150 cycles away: an L2 conflict reload costs about three
+times what it does on Zen 5, and ten times an L1 conflict reload there. As in the rest of this article, this is an inference from
+latencies and documented policies, not from counted evictions.
+
 ## Limitations
 
 What the experiments do not establish:
@@ -446,7 +597,7 @@ What the experiments do not establish:
 5. **What sits behind the conflicting level decides the cost.** The same
    L2 conflicts that cost the M4 two thirds cost Zen 5 little, because
    Zen 5's evicted lines come back from a nearby L3 that does not conflict
-   at these strides.
+   at these strides ([where an evicted line goes](#where-an-evicted-line-goes-l1l2-inclusion-and-the-llc)).
 
 ## Method and reproduction
 
