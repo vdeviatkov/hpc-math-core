@@ -20,12 +20,11 @@ Cache background: [docs/cache-behavior.md](../../docs/cache-behavior.md).
 | [`neon.hpp`](neon.hpp) | `Q<float>`, `Q<double>`: the NEON primitives | AArch64 NEON |
 | [`sve.hpp`](sve.hpp) | `gemm_sve_{reordered,blocked}`; blocked register/cache tiles are template parameters ([sweeps](../../docs/kernels/sve.md)) | `__ARM_FEATURE_SVE` |
 | [`prefetch.hpp`](prefetch.hpp) | `gemm_{,sve_}blocked_prefetch` (the SIMD kernels take `PfDist` instead) | per family |
-| [`sme.hpp`](sme.hpp) | `gemm_sme_1tile`, `gemm_sme_tiles`, `gemm_sme_blocked`, `gemm_sme`; configurable ZA shape/cache blocks ([guide](../../docs/kernels/sme.md)); `gemm_sme_mt`, the same blocking on several threads to use every P-cluster's SME unit ([sweep](../../docs/kernels/sme.md#several-sme-units)) | SME2, `HPC_ENABLE_SME=ON` |
+| [`sme.hpp`](sme.hpp) | `gemm_sme_1tile`, `gemm_sme_tiles`, `gemm_sme_blocked`, `gemm_sme`; configurable ZA shape/cache blocks ([guide](../../docs/kernels/sme.md)); `gemm_sme_mt`, the same blocking on several threads to use every P-cluster's SME unit ([sweep](../../docs/kernels/sme.md#several-sme-units)). `gemm_sme` and `gemm_sme_mt` also take fp16 / bf16 / INT8 (widening `FMOPA` / `SMOPA`, FP32 / INT32 C): the same packing, macro-kernel and drivers with a k-group word in place of an element | SME2, `HPC_ENABLE_SME=ON` |
 | [`amx.hpp`](amx.hpp) | `gemm_amx` (Accelerate BLAS, Apple's route to its AMX unit) | Apple, `HPC_ENABLE_AMX` (default on) |
 | [`kleidiai.hpp`](kleidiai.hpp) | `gemm_kleidiai` (Arm's SME2 micro-kernel, f32 only) | SME2, `HPC_ENABLE_KLEIDIAI` |
 | [`cuda.hpp`](cuda.hpp) | `gemm_cuda_*`, Levels 0–8, and the cuBLAS reference; kernels in [`src/cuda/gemm_kernels.cu`](../cuda/gemm_kernels.cu) (Level 8: [`src/cuda/gemm_lowp.cu`](../cuda/gemm_lowp.cu)) | CUDA toolkit found (else a stub that reports no device) |
 | [`metal.hpp`](metal.hpp) | `MetalGemm` / `gemm_metal`: six Metal levels (naive → threadgroup tiles → register tile → `simdgroup_matrix` → staged in threadgroup memory → fp16 inputs) and the MPS reference; shaders in [`src/metal/gemm.metal`](../metal/gemm.metal), host in [`src/metal/gemm_metal.mm`](../metal/gemm_metal.mm) | Apple, `HPC_ENABLE_METAL` (default on; else a stub that reports no device) |
-| [`sme_lowp.hpp`](sme_lowp.hpp) | `gemm_sme_widening<fp16 \| bf16 \| int8_t>` (widening `FMOPA` / `SMOPA`) | SME2, `HPC_ENABLE_SME=ON` |
 | [`cuda_lowp.hpp`](cuda_lowp.hpp) | `gemm_cuda_lowp_device` (cp.async), `gemm_cuda_lowp_tma_device` (Level 8), `gemm_cuda_{bf16,fp16,fp16_acc16,i8,fp8}`, cuBLAS / cuBLASLt reference; kernels in [`src/cuda/gemm_lowp.cu`](../cuda/gemm_lowp.cu) | CUDA, sm_80+ (FP8: sm_89+; full-rate FP8 with `CMAKE_CUDA_ARCHITECTURES=120a`) |
 | [`lowp_naive.hpp`](lowp_naive.hpp) | `gemm_lowp_naive` (i-j-k with double / int64 sums, the reference every low-precision test compares against) | always |
 
@@ -51,7 +50,7 @@ of level 2, and an added technique need not improve every shape.
 | GPU simdgroup matrices | A 32-thread simdgroup multiplies 8×8 fragments (`simdgroup_multiply_accumulate`); on M1–M4 they run on the FP32 ALUs, with no separate matrix unit. | `gemm.metal`, Levels 3–5 |
 | GPU shared-memory and register tiling, double buffering, Tensor Cores | The GPU counterparts, one per CUDA level. | `cuda.hpp`, `gemm_kernels.cu` |
 | TMA, swizzled shared memory, warp specialisation | A producer warp issues one TMA copy per tile into hardware-swizzled shared memory; consumer warps only run `ldmatrix` + `mma.sync`, synchronised by mbarriers. | `gemm_lowp.cu`, `kernel_tma` |
-| k-group packing for widening instructions | bf16 / fp16 / INT8 instructions add a dot product of G = 2 or 4 consecutive k into each 32-bit lane, so B is packed with G rows interleaved and K padded to a multiple of G. | `*_lowp.hpp` |
+| k-group packing for widening instructions | bf16 / fp16 / INT8 instructions add a dot product of G = 2 or 4 consecutive k into each 32-bit lane, so B is packed with G rows interleaved and K padded to a multiple of G. The FP32 / FP64 packing is the case G = 1. | `simd.hpp` (`detail::gemm_kgroup`), `sme.hpp`, `cuda_lowp.hpp` |
 
 ## Families
 
@@ -64,7 +63,7 @@ The AVX2, AVX-512 and NEON register tiles and cache blocks are template paramete
 | AVX-512 | 32 × 512-bit ZMM: 16 f32 / 8 f64; C tile 8×48 f32, 8×24 f64 as measured (`vector_micro<Zmm<T>, 8, 3>`) | `_mm512_fmadd_ps/pd`, `_mm512_set1_ps/pd` |
 | NEON | 32 × 128-bit Q: 4 f32 / 2 f64; C tile 6×16 f32, 6×8 f64 as measured (`vector_micro<Q<T>, 6, 4>`) | `vfmaq_lane_f32/f64` (A by element, loaded with `LDR`) |
 | SVE | vector length read at run time (128–2048 bit); C tile R rows × V vectors, default 4×2 | `svmla_f32/f64_x`, `svwhilelt_b32/b64` (predicated tails) |
-| SME2 | ZA: 4 f32 / 8 f64 tiles of SVL×SVL; all used; at M4's 512-bit SVL, 32×32 f32 / 16×32 f64 C block | `svmopa_za32/za64_m`, `svld1_x2`, `svld1/st1_hor_za32/64` |
+| SME2 | ZA: 4 f32 / 8 f64 tiles of SVL×SVL; all used; at M4's 512-bit SVL, 32×32 f32 / 16×32 f64 C block | `svmopa_za32/za64_m` (widening: `svmopa_za32_f16/bf16/s8_m`), `svld1_x2`, `svld1/st1_hor_za32/64` |
 | Accelerate | opaque | `cblas_sgemm`, `cblas_dgemm` |
 | KleidiAI | 2VL×2VL (all four f32 ZA tiles) | `kai_run_matmul_clamp_f32_f32p2vlx1_f32p2vlx1biasf32_sme2_mopa` |
 | Metal | 1 output per thread (Level 0) → 8×4 per thread (Level 2) → 4×4 `simdgroup_float8x8` accumulators per simdgroup, 2×2 simdgroups per threadgroup (Levels 3–5) | `threadgroup` memory, `simdgroup_load`, `simdgroup_multiply_accumulate`, `MPSMatrixMultiplication` |

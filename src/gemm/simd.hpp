@@ -53,7 +53,7 @@
  * The file is laid out bottom-up: vector_micro and the tile edges of
  * gemm_simd_blocked, the reordered and blocked kernels, then the k-group
  * kernel (packing, micro-kernel, driver), gemm_simd_packed and
- * gemm_simd_lowp. SME's widening outer products (sme_lowp.hpp) are not
+ * gemm_simd_lowp. SME's widening outer products (gemm_sme, sme.hpp) are not
  * part of it: they run in streaming mode and accumulate in ZA. detail::pf,
  * the prefetch helper, is also used by prefetch.hpp and sve.hpp.
  */

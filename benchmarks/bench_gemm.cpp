@@ -36,6 +36,7 @@
 #include "hpc/isa.hpp"
 #include "hpc/matrix.hpp"
 #include "simd_params.hpp"
+#include "sme_params.hpp"
 
 #include <benchmark/benchmark.h>
 
@@ -48,6 +49,7 @@
 namespace {
 
 using hpc::bench::SimdParams;
+using hpc::bench::SmeParams;
 using hpc::bench::simd_blocked;
 using hpc::bench::simd_packed;
 using hpc::bench::simd_reordered;
@@ -315,7 +317,10 @@ void add_sme_shape(Sizes<N...>) {
                 time_gemm<T, Size, kHaveSme>(
                     state, kNoSme,
                     []<typename U>(const hpc::Matrix<U>& A, const hpc::Matrix<U>& B,
-                                   hpc::Matrix<U>& C) { hpc::gemm::gemm_sme<U, R, V>(A, B, C); },
+                                   hpc::Matrix<U>& C) {
+                        using P = SmeParams<U>;
+                        hpc::gemm::gemm_sme<U, R, V, P::Mc, P::Kc, P::Nc>(A, B, C);
+                    },
                     SmeTileCounters<R, V>{});
             })
             ->Unit(benchmark::kMicrosecond);
@@ -344,7 +349,7 @@ void add_sme_sweeps() {
         []<std::size_t M, std::size_t K, std::size_t N>() {
             return []<typename T>(const hpc::Matrix<T>& A, const hpc::Matrix<T>& B,
                                   hpc::Matrix<T>& C) {
-                gemm_sme<T, 2, kSmeRegCols<T>, M, K, N>(A, B, C);
+                gemm_sme<T, SmeParams<T>::R, SmeParams<T>::V, M, K, N>(A, B, C);
             };
         },
         SmeSvl{});
@@ -419,7 +424,8 @@ void time_bstride(benchmark::State& state, std::size_t N, std::size_t ldb) {
     fill_random(A, 1);
     fill_random(B, 2);
     for (auto _ : state) {
-        hpc::gemm::sme_detail::blocked_driver<T, PackB>(A, B.data(), ldb, C);
+        using P = SmeParams<T>;
+        hpc::gemm::sme_detail::blocked_driver<T, PackB, P::R, P::V, P::Mc, P::Kc, P::Nc>(A, B.data(), ldb, C);
         benchmark::DoNotOptimize(C.data());
         benchmark::ClobberMemory();
     }
@@ -454,14 +460,15 @@ void add_bstride() {
 
 /// gemm_sme_mt sweep: SmeMtT<threads>Mc<rows>/<type>/N=<n>, every thread
 /// count with three A block heights, wall-clock time. Results and the choice
-/// of kSmeThreads / kSmeMtMc: docs/kernels/sme.md, "Several SME units".
+/// of SmeParams::Threads / MtMc: docs/kernels/sme.md, "Several SME units".
 void add_sme_mt_sweep() {
     using namespace hpc::gemm;
     constexpr Sizes<1024, 2048, 4096> sizes{};
     auto one = [&]<unsigned Threads, std::size_t Mc>() {
         add<kHaveSme>("SmeMtT" + std::to_string(Threads) + "Mc" + std::to_string(Mc), kNoSme,
                       []<typename T>(const hpc::Matrix<T>& A, const hpc::Matrix<T>& B, hpc::Matrix<T>& C) {
-                          gemm_sme_mt<T, Mc>(A, B, C, Threads);
+                          using P = SmeParams<T>;
+                          gemm_sme_mt<T, P::R, P::V, Mc, P::Kc, P::Nc>(A, B, C, Threads);
                       },
                       sizes, SmeSvl{}, true);
     };
@@ -532,11 +539,11 @@ void register_all() {
     // The four SME steps; N=4000 is a non-power-of-two control for N=4096.
     constexpr Sizes<64, 256, 512, 1024, 2048, 4000, 4096> sme{};
     add<kHaveSme>("Sme1Tile", kNoSme, HPC_KERNEL(gemm_sme_1tile), sme, SmeSvl{});
-    add<kHaveSme>("SmeTiles", kNoSme, HPC_KERNEL(gemm_sme_tiles), sme, SmeSvl{});
-    add<kHaveSme>("SmeBlocked", kNoSme, HPC_KERNEL(gemm_sme_blocked), sme, SmeSvl{});
-    add<kHaveSme>("Sme", kNoSme, HPC_KERNEL(gemm_sme), sme, SmeSvl{});
+    add<kHaveSme>("SmeTiles", kNoSme, hpc::bench::sme_tiles, sme, SmeSvl{});
+    add<kHaveSme>("SmeBlocked", kNoSme, hpc::bench::sme_blocked, sme, SmeSvl{});
+    add<kHaveSme>("Sme", kNoSme, hpc::bench::sme, sme, SmeSvl{});
     // Several SME units (one per P-cluster): wall-clock time, as for Amx.
-    add<kHaveSme>("SmeMt", kNoSme, HPC_KERNEL(gemm_sme_mt), sme, SmeSvl{}, true);
+    add<kHaveSme>("SmeMt", kNoSme, hpc::bench::sme_mt, sme, SmeSvl{}, true);
 
     // Accelerate may run on several threads, and Google Benchmark's default
     // CPU time counts only the calling thread, so it is timed by wall clock;

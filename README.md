@@ -76,8 +76,8 @@ Low precision at the same sizes as above: N = 256 and 4096 on the CPU, N = 1024 
 | AVX-512, INT8 → INT32 (`gemm_simd_lowp<ZmmDot>`) | AMD Zen 5, GCC | 8 × 32 | 128 × 1024 × 512 | 1,435 | 824 (57%) | 1,038 (72%) |
 | ARM NEON, bf16 → fp32 (`gemm_simd_lowp<QMmla>`) | Apple M4 Max | 8 × 8 | 256 × 1024 × 512 | 71 | 66 (93%) | 65 (92%) |
 | ARM NEON, INT8 → INT32 (`gemm_simd_lowp<QMmla>`) | Apple M4 Max | 8 × 8 | 256 × 2048 × 512 | 511 | 449 (88%) | 491 (96%) |
-| ARM SME2, widening, bf16 → fp32 (`gemm_sme_widening`) | Apple M4 Max | 32 × 32, 4 ZA tiles | 1024 × 4096 × 4096 | 2,018 | 967 (48%) | 1,774 (88%) |
-| ARM SME2, widening, INT8 → INT32 (`gemm_sme_widening`) | Apple M4 Max | 32 × 32, 4 ZA tiles | 1024 × 8192 × 4096 | 4,029 | 1,579 (39%) | 3,413 (85%) |
+| ARM SME2, widening, bf16 → fp32 (`gemm_sme<bf16>`) | Apple M4 Max | 32 × 32, 4 ZA tiles | 1024 × 4096 × 4096 | 2,018 | 967 (48%) | 1,774 (88%) |
+| ARM SME2, widening, INT8 → INT32 (`gemm_sme<int8_t>`) | Apple M4 Max | 32 × 32, 4 ZA tiles | 1024 × 8192 × 4096 | 4,029 | 1,579 (39%) | 3,413 (85%) |
 
 **GPU**
 
@@ -88,7 +88,7 @@ Low precision at the same sizes as above: N = 256 and 4096 on the CPU, N = 1024 
 | CUDA, Tensor Cores, INT8 → INT32 (`gemm_cuda_lowp_tma_device`, Level 8) | NVIDIA RTX 5080 | 497 | 192.1 (39%) | 408.2 (82%) |
 | cuBLAS, INT8 → INT32 (reference) | NVIDIA RTX 5080 | 497 | 161.9 (33%) | 419.0 (84%) |
 
-The percentage is again measured ÷ peak. Peaks here are the instructions' measured throughput (`VDPBF16PS` / `VPDPBUSD`, `BFMMLA` / `SMMLA`, widening `FMOPA` / `SMOPA`, `mma.sync`), from part 5's [peak table](docs/articles/lowp-gemm.md). Best sizes, where higher: `gemm_simd_lowp<ZmmDot>` bf16 / INT8 638 / 1,139 at N = 1024, `gemm_sme_widening` INT8 3,525 at N = 2048, Level 8 120.5 / 419 at N = 16384.
+The percentage is again measured ÷ peak. Peaks here are the instructions' measured throughput (`VDPBF16PS` / `VPDPBUSD`, `BFMMLA` / `SMMLA`, widening `FMOPA` / `SMOPA`, `mma.sync`), from part 5's [peak table](docs/articles/lowp-gemm.md). Best sizes, where higher: `gemm_simd_lowp<ZmmDot>` bf16 / INT8 638 / 1,139 at N = 1024, `gemm_sme<int8_t>` INT8 3,525 at N = 2048, Level 8 120.5 / 419 at N = 16384.
 
 ---
 
@@ -105,7 +105,7 @@ Each family steps through the same techniques, one kernel per step.
 | ARM SME2 | `gemm_sme_1tile` → `gemm_sme_tiles` → `gemm_sme_blocked` → `gemm_sme` → `gemm_sme_mt` | `FMOPA` outer products into one ZA tile → all ZA tiles → GotoBLAS cache blocking → packed B → both P-clusters' SME units (shared B panel, dynamic A chunks) |
 | CUDA | `gemm_cuda_*`, Levels 0–8 | shared-memory tiling → register tiling → `cp.async` double buffering → 128-bit loads + swizzle → Tensor Cores via WMMA → raw `ldmatrix`/`mma.sync` → pipelined WMMA with 128×128 tiles → TMA + warp-specialised `mma.sync` |
 | Metal (Apple GPU) | `MetalNaive` → `MetalTiled` → `MetalRegTile` → `MetalSimd` → `MetalSimdTg` → `MetalSimdTgF16` | threadgroup-memory tiles → 8×4 register tile → `simdgroup_matrix` 8×8 MMA → tiles staged in threadgroup memory → fp16 inputs; MPS as the reference |
-| Low precision, CPU | `gemm_avx512_{bf16,i8}`, `gemm_neon_{bf16,i8,f16,f16_acc}`, `gemm_sme_widening<…>` | the FP32 kernels with widening dot-product / outer-product instructions and k-group packing |
+| Low precision, CPU | `gemm_avx512_{bf16,i8}`, `gemm_neon_{bf16,i8,f16,f16_acc}`, `gemm_sme<fp16 \| bf16 \| int8_t>` | the FP32 kernels with widening dot-product / outer-product instructions and k-group packing |
 | Low precision, CUDA | `gemm_cuda_{bf16,fp16,fp16_acc16,i8,fp8}` | one `mma.sync` kernel template for five formats, as a cp.async kernel and as Level 8 |
 | References | `gemm_amx` (Accelerate), `gemm_kleidiai`, `gemm_cuda_cublas*`, MPS | vendor libraries the hand-written kernels are measured against |
 

@@ -6,7 +6,8 @@
  *
  * The loop nest of sme_detail::blocked_driver<T, true> (pack B per (jc, pc),
  * pack A per ic, macro-kernel), with Mc, Kc and Nc as arguments instead of
- * the compile-time kSmeMc / kSmeKc / kSmeNc. Every combination of Mc in
+ * compile-time template parameters, at the measured ZA shape
+ * (sme_params.hpp). Every combination of Mc in
  * {256, 512, 1024, 2048}, Kc in {1024, 2048, 4096} and Nc in {1024, 2048,
  * 4096}, plus (128, 1024, 4096), the kernel's first sizing, runs on square
  * matrices N = 512 … 4096, FP32 and FP64. Configurations are timed in turn
@@ -14,6 +15,7 @@
  * reported. stdout gets CSV rows.
  */
 
+#include "../sme_params.hpp"
 #include "gemm/sme.hpp"
 #include "hpc/matrix.hpp"
 
@@ -41,8 +43,9 @@ struct Blocks {
 template <typename T>
 void gemm(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C, Blocks bl) {
     const std::size_t M = A.rows(), K = A.cols(), N = B.cols();
+    using P              = hpc::bench::SmeParams<T>;
     const std::size_t s  = sme::kF32<T> ? svcntsw() : svcntsd();
-    const std::size_t mr = 2 * s, nr = sme::kCols<T> * s;
+    const std::size_t mr = P::R * s, nr = P::V * s;
     auto round_up        = [](std::size_t x, std::size_t m) { return (x + m - 1) / m * m; };
     Matrix<T> a_pack(round_up(std::min(bl.mc, M), mr), std::min(bl.kc, K));
     Matrix<T> b_pack(std::min(bl.kc, K), round_up(std::min(bl.nc, N), nr));
@@ -54,7 +57,7 @@ void gemm(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C, Blocks bl) {
             for (std::size_t ic = 0; ic < M; ic += bl.mc) {
                 const std::size_t mc = std::min(bl.mc, M - ic);
                 sme::pack_a(A.data() + ic * K + pc, K, mc, kc, mr, a_pack.data());
-                sme::macro_kernel<T>(a_pack.data(), b_pack.data(), std::int64_t(kc),
+                sme::macro_kernel<T, P::R, P::V>(a_pack.data(), b_pack.data(), std::int64_t(kc),
                                      std::int64_t(nr), C.data() + ic * N + jc, std::int64_t(N),
                                      std::int64_t(mc), std::int64_t(nc), std::int64_t(kc), pc > 0);
             }

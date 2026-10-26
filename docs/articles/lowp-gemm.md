@@ -298,7 +298,7 @@ it.
 
 ### Apple M4, SME2
 
-Code: [`gemm_sme_widening`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/sme_lowp.hpp).
+Code: [`gemm_sme<fp16 | bf16 | int8_t>`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/sme.hpp).
 
 Part 2's kernel with the widening instruction: four ZA tiles hold a 32 × 32
 FP32 (or INT32) block of C, and each k group issues four widening

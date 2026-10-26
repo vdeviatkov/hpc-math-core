@@ -243,7 +243,7 @@ column-contiguous strips using NEON 4x4 or 2x2 transposes plus scalar edges;
 - `gemm_sme_1tile` packs all A into SVL-row strips and streams B in place,
   using only ZA tile 0. One dependency chain exposes FMOPA latency.
 - `gemm_sme_tiles<T,R,V>` packs A into R*SVL-row strips and uses R×V ZA tiles:
-  default 2x2 for float, 2x4 for double. Independent accumulators hide latency,
+  measured 2x2 for float, 2x4 for double. Independent accumulators hide latency,
   and each loaded vector feeds multiple outer products.
 - `gemm_sme_blocked` keeps that micro-kernel and adds jc/pc/ic blocking.
   B remains in the caller's layout, exposing power-of-two stride conflicts.
@@ -252,12 +252,13 @@ column-contiguous strips using NEON 4x4 or 2x2 transposes plus scalar edges;
   all ic blocks.
 
 `gemm_sme` and `gemm_sme_blocked` expose R/V and M/K/N cache sizes as
-template parameters; every legal rectangular ZA shape has a benchmark
-registration and correctness tests. Default shapes retain paired SME2 loads;
+template parameters with no defaults; the measured values are in
+`benchmarks/sme_params.hpp`. Every legal rectangular ZA shape has a benchmark
+registration and correctness tests. The all-tiles shapes (2x2 za32, 2x4 za64) retain paired SME2 loads;
 other shapes use expanded single-vector loads. See [SME tuning](kernels/sme.md)
 and [the sizing rationale for all CPU families](kernels/sizing.md).
 
-Default Mc=1024 float / 512 double, Kc=2048 and Nc=4096 aim for an 8 MiB packed A
+The measured Mc=1024 float / 512 double, Kc=2048 and Nc=4096 aim for an 8 MiB packed A
 block in M4 Max's shared 16 MiB L2. The streaming macro-kernel visits B
 strips then A strips; C stays in ZA through kc, and is reloaded only when
 pc>0. Predicated C transfers and row bounds handle edges; full tiles use a
@@ -268,7 +269,7 @@ packing happen outside streaming mode, but inside each timed GEMM call.
 The L2 explanation is an inference from controlled measurements; Apple's
 physical cache indexing and matrix-engine internals are undocumented.
 
-`gemm_sme_mt<T,TileM>(A, B, C, threads = 8)` runs the same jc/pc loops on a
+`gemm_sme_mt<T,R,V,TileM,TileK,TileN>(A, B, C, threads)` (measured: 8 threads) runs the same jc/pc loops on a
 team of threads, to use the SME unit of each P-cluster. Per pass, every
 thread packs every team-th B strip into one shared panel; after a barrier,
 threads claim row chunks (at most TileM, about four per thread, at least
@@ -317,7 +318,7 @@ multiple of G. Article: [part 5](articles/lowp-gemm.md).
 | `src/gemm/simd.hpp`: `gemm_simd_lowp` | `gemm_simd_lowp<Ops, R, V, Mc, Kc, Nc>`: the low-precision SIMD kernel, generic over an instruction-shape struct (`ZmmDot<In>` in `avx512.hpp`; `QMmla<In>`, `QFmlal<In>`, `QFmlaF16<In>` in `neon.hpp`). It runs `detail::gemm_kgroup`, the kernel `gemm_simd_packed` runs with G = 1. GotoBLAS order; B is always packed by k group (word w of column c holds G consecutive k), A only where the instruction needs it. One micro-kernel: per k group, V B operands, one A operand per row unit, R·V instructions; rows and vectors unrolled with `#pragma GCC unroll`, so FMLAL's lane is a constant. Kept out of line: inlined, the AVX-512 bf16 k loop reloaded its row pointers (56 → 420 instructions with Clang). Tile and blocks are template parameters; the measured values are in `benchmarks/simd_params.hpp` (`LowpParams`). |
 | `ZmmDot<In>` (`avx512.hpp`) | `VDPBF16PS` (bf16), `VPDPBUSD` (INT8). One accumulator is 1 × 16 of C; measured tile 8 × 2 (8 × 32 of C), swept by `bench_gemm_lowp`'s `Avx512{Dpbf16,Vnni}Tile*` rows. Only B is packed (G rows interleaved, as the instructions need); A is broadcast in place. `VPDPBUSD` is unsigned × signed, so B is packed + 128 and each row's accumulators start at −128 · Σ_k A(i, k): exact. `VPDPBUSD` is one inline `asm` instruction because GCC 13 wraps the intrinsic in register copies that cost 16–26%. Edges: masked C loads and stores. Measured blocks: Mc = 128, Kc = 1024 bytes of k, Nc = 512. |
 | `QMmla<In>`, `QFmlal<In>`, `QFmlaF16<In>` (`neon.hpp`) | `BFMMLA` (bf16) and `SMMLA` (INT8): 2 × 2-tile matrix instructions, one accumulator per 2 × 2 of C, A and B both packed; measured as an 8 × 8 C block in 16 registers (R = V = 4). `FMLAL` (fp16, FP32 accumulate) and `FMLA .8h` (fp16 accumulate, converted on load and store) multiply by element: A is packed 4 rows per k and row r uses lane r, so R = 4; measured with 16 accumulators. Edges through a buffer. |
-| `src/gemm/sme_lowp.hpp` | `gemm_sme_widening<fp16 \| bf16 \| int8_t>`: `gemm_sme`'s structure with widening `FMOPA` / `SMOPA` into the four 32-bit ZA tiles. A packed by NEON transposes of 32-bit words, B by zipping G rows. Blocks keep the FP32 kernel's sizes in bytes (8 MiB A block). |
+| `src/gemm/sme.hpp`: `gemm_sme<fp16 \| bf16 \| int8_t>` | `gemm_sme` and `gemm_sme_mt` with widening `FMOPA` / `SMOPA` into the four 32-bit ZA tiles: the FP32 kernels with a 32-bit word of G = 2 or 4 elements in place of an element (G = 1 for FP32 / FP64), so one `pack_a` (NEON transposes of 32-bit words), one `macro_kernel` and one driver serve all five types; `pack_b` zips G rows. Any R × V ZA shape and cache block, as for FP32 (TileK in elements, a multiple of G). Default blocks keep FP32's sizes in k groups (8 MiB A block). |
 | `src/gemm/cuda_lowp.hpp`, `src/cuda/gemm_lowp.cu` | One `mma.sync` kernel template per format struct (`Bf16`, `Fp16`, `Fp16Acc16`, `Int8`, `Fp8`), in two kernels: `kernel_lowp` (cp.async, 2 stages, padded rows, 128 × 128) and `kernel_tma` (Level 8). Both take A and B K-major (B transposed), so one non-transposing `ldmatrix` serves 8- and 16-bit formats. FP8 uses the block-scaled `kind::mxf8f6f4` instruction with unit scales in an `sm_120a` build (full rate), the sm_89 form otherwise. cuBLAS / cuBLASLt references on the same buffers. Matrix wrappers pad, transpose B and select the implementation (`CudaLowpImpl`). |
 | `src/cuda/gemm_lowp_stub.cpp` | The same symbols without CUDA; every format reports unsupported and kernels throw. |
 

@@ -19,7 +19,7 @@
 
 #include "gemm/lowp_naive.hpp"
 #include "gemm/simd.hpp"
-#include "gemm/sme_lowp.hpp"
+#include "gemm/sme.hpp"
 #include "hpc/lowp.hpp"
 #include "hpc/matrix.hpp"
 
@@ -211,11 +211,34 @@ TEST(LowpNeon, OtherTilesMatchNaive) {
 #endif
 
 #if HPC_HAS_SME
-TEST(LowpSme, Fp16MatchesNaive) { expect_matches_naive<fp16>(gemm_sme_widening<fp16>, "sme fp16"); }
-TEST(LowpSme, Bf16MatchesNaive) { expect_matches_naive<bf16>(gemm_sme_widening<bf16>, "sme bf16"); }
-TEST(LowpSme, Int8MatchesNaive) {
-    expect_matches_naive<std::int8_t>(gemm_sme_widening<std::int8_t>, "sme int8");
+// gemm_sme with the widening outer products: M4's measured shape and blocks
+// (benchmarks/sme_params.hpp: 2 × 2 ZA tiles, Mc = 1024, Kc = 2048 k groups,
+// Nc = 4096), other ZA shapes, odd cache blocks (Kc three k groups, so K
+// spans many passes and ends in a partial group), and gemm_sme_mt with
+// uneven chunks and several passes (larger odd blocks: each pass has two
+// barriers across the threads).
+template <typename In>
+void expect_sme_matches_naive(const std::string& name) {
+    constexpr std::size_t G = kSmeG<In>, Mc = 1024, Kc = 2048 * G, Nc = 4096;
+    expect_matches_naive<In>(gemm_sme<In, 2, 2, Mc, Kc, Nc>, name.c_str());
+    expect_matches_naive<In>(gemm_sme<In, 1, 4, Mc, Kc, Nc>, (name + " 1x4").c_str());
+    expect_matches_naive<In>(gemm_sme<In, 4, 1, Mc, Kc, Nc>, (name + " 4x1").c_str());
+    expect_matches_naive<In>(gemm_sme<In, 1, 1, Mc, Kc, Nc>, (name + " 1x1").c_str());
+    expect_matches_naive<In>(gemm_sme<In, 2, 2, 5, 3 * G, 13>, (name + " odd blocks").c_str());
+    expect_matches_naive<In>(
+        +[](const Matrix<In>& A, const Matrix<In>& B, Matrix<lowp_out_t<In>>& C) {
+            gemm_sme_mt<In, 2, 2, Mc, Kc, Nc>(A, B, C, 3);
+        },
+        (name + " mt").c_str());
+    expect_matches_naive<In>(
+        +[](const Matrix<In>& A, const Matrix<In>& B, Matrix<lowp_out_t<In>>& C) {
+            gemm_sme_mt<In, 1, 4, 5, 64 * G, 96>(A, B, C, 8);
+        },
+        (name + " mt 1x4 odd blocks").c_str());
 }
+TEST(LowpSme, Fp16MatchesNaive) { expect_sme_matches_naive<fp16>("sme fp16"); }
+TEST(LowpSme, Bf16MatchesNaive) { expect_sme_matches_naive<bf16>("sme bf16"); }
+TEST(LowpSme, Int8MatchesNaive) { expect_sme_matches_naive<std::int8_t>("sme int8"); }
 #endif
 
 }  // namespace

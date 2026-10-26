@@ -1,18 +1,22 @@
 # SME2: configurable ZA shapes and cache blocks
 
 ```cpp
-// T, ZA tile rows, ZA tile columns, TileM, TileK, TileN.
-gemm_sme<float, 1, 4>(A, B, C);
+// T, ZA tile rows, ZA tile columns, TileM, TileK, TileN; no defaults.
+gemm_sme<float, 1, 4, 1024, 2048, 4096>(A, B, C);
 gemm_sme<double, 4, 2, 512, 2048, 4096>(A64, B64, C64);
 gemm_sme_blocked<float, 2, 2, 256, 1024, 2048>(A, B, C); // B in place
 gemm_sme_tiles<double, 4, 2>(A64, B64, C64); // no cache blocking
+gemm_sme_mt<float, 2, 2, 1024, 2048, 4096>(A, B, C, 8); // 8 threads
 ```
 
 `gemm_sme` packs A and B; `gemm_sme_blocked` packs only A. Both overwrite C,
-then reload partial sums between K blocks. Defaults are unchanged: 2×2
+then reload partial sums between K blocks. The ZA shape and the blocks are
+template parameters with no defaults. The measured values, in
+[`benchmarks/sme_params.hpp`](../../benchmarks/sme_params.hpp) (`SmeParams<T>`), are 2×2
 FP32 / 2×4 FP64 ZA shapes and M/K/N blocks 1024/2048/4096 FP32,
-512/2048/4096 FP64. The original `gemm_sme_1tile` remains a fixed one-tile
-teaching step. [Why the defaults were chosen](sizing.md).
+512/2048/4096 FP64; fp16 / bf16 / INT8 keep FP32's blocks in k groups
+(TileK = 2048·G elements). The original `gemm_sme_1tile` remains a fixed
+one-tile teaching step. [Why these values](sizing.md).
 
 ## Shape units and limits
 
@@ -88,7 +92,7 @@ across six cases, within desktop run variation.
 unit belongs to a P-cluster, and the M4 Max has two clusters of six P-cores
 (`sysctl hw.perflevel0.cpusperl2` = 6). Each has its own unit. Accelerate
 with default threading uses both and measures about twice the single-core
-figure. `gemm_sme_mt<T, TileM>(A, B, C, threads = kSmeThreads)` is
+figure. `gemm_sme_mt<T, R, V, TileM, TileK, TileN>(A, B, C, threads)` is
 `gemm_sme`'s blocking spread over several threads, as in multi-threaded
 GotoBLAS:
 
@@ -129,12 +133,12 @@ median of 3 interleaved repetitions, wall-clock time, load average 3.9
   spilling onto the second cluster once the first is full. At N=4096 each
   call lasts tens of milliseconds, enough for the scheduler to spread even
   two threads, and two threads already reach 1.8× one.
-- 8 threads is the default (`kSmeThreads`): best or within 1.1% of the best everywhere.
+- 8 threads is the measured choice (`SmeParams::Threads`): best or within 1.1% of the best everywhere.
   12 threads, one per P-core, are no better at N=4096 and 5% worse at
   N=1024.
 - `TileM` makes no measurable difference, because chunks are smaller than
-  any of the three heights from N ≤ 4096 / (4 · 8). `kSmeMtMc` stays
-  `kSmeMc`.
+  any of the three heights from N ≤ 4096 / (4 · 8). `SmeParams::MtMc` stays
+  `gemm_sme`'s `Mc`.
 - From N=2048 up, `gemm_sme_mt` matches or beats Accelerate. At N=4096 it
   reaches 3.56 TFLOP/s f32, 113% of Accelerate and 91% of the two units'
   3.93 TFLOP/s peak, and 931 GFLOP/s f64 (118%, 93% of 1.00 TFLOP/s). At

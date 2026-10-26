@@ -6,7 +6,7 @@
  *   ./build/benchmarks/sme_b_stride_probe width  > width.csv
  *
  * FP32. A is packed once up front and B is laid out once, so only
- * sme_detail::macro_kernel is timed (over the kSmeMc-row blocks of an
+ * sme_detail::macro_kernel is timed (over the SmeParams<float>::Mc-row blocks of an
  * M = 4096 problem, one Kc block). Configurations are shuffled within each
  * of 9 repetitions; stdout gets one CSV row per sample, stderr a median table.
  *
@@ -14,12 +14,13 @@
  *           ldb = 4096 (rows 16 KiB apart) and ldb = 4128 (16,512 B), and
  *           packed. Where the two in-place strides part is how many rows
  *           16 KiB apart the conflicting cache holds.
- *   width   Kc = kSmeKc (2048), N = 1024 … 4224. B in place with
+ *   width   Kc = SmeParams<float>::Kc (2048), N = 1024 … 4224. B in place with
  *           ldb = N + 32 (one cache line of padding) against packed: what
  *           remains of the in-place cost once the stride is not a power
  *           of two.
  */
 
+#include "../sme_params.hpp"
 #include "gemm/sme.hpp"
 #include "hpc/matrix.hpp"
 
@@ -40,8 +41,9 @@ namespace {
 
 using hpc::Matrix;
 namespace sme = hpc::gemm::sme_detail;
+using P         = hpc::bench::SmeParams<float>;  // M4's measured shape and blocks
 
-constexpr std::size_t kM = 4096, kMc = hpc::gemm::kSmeMc<float>, kNr = 32;
+constexpr std::size_t kM = 4096, kMc = P::Mc, kNr = 32;
 
 /// One configuration: N columns, Kc rows, B packed (ldb = 0) or in place with ldb.
 struct Config {
@@ -71,7 +73,7 @@ struct Problem {
 
     void run(const Config& c) {
         for (std::size_t ic = 0; ic < kM; ic += kMc)
-            sme::macro_kernel<float>(a_pack.data() + ic * c.Kc, B.data(), b_step, b_ld,
+            sme::macro_kernel<float, P::R, P::V>(a_pack.data() + ic * c.Kc, B.data(), b_step, b_ld,
                                      C.data() + ic * c.N, std::int64_t(c.N), std::int64_t(kMc),
                                      std::int64_t(c.N), std::int64_t(c.Kc), false);
     }
@@ -94,7 +96,7 @@ int main(int argc, char** argv) {
     } else if (mode == "width") {
         for (std::size_t n : {1024, 2048, 3072, 3584, 3968, 4000, 4096, 4128, 4224})
             for (std::size_t ldb : {n + 32, std::size_t(0)})
-                configs.push_back({n, hpc::gemm::kSmeKc, ldb});
+                configs.push_back({n, P::Kc, ldb});
     } else {
         std::fprintf(stderr, "usage: %s height|width\n", argv[0]);
         return 2;

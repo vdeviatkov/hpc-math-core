@@ -22,11 +22,11 @@
 
 #include "gemm/simd.hpp"
 #include "gemm/sme.hpp"
-#include "gemm/sme_lowp.hpp"
 #include "hpc/isa.hpp"
 #include "hpc/lowp.hpp"
 #include "hpc/matrix.hpp"
 #include "simd_params.hpp"
+#include "sme_params.hpp"
 
 #include <benchmark/benchmark.h>
 
@@ -63,11 +63,13 @@ Matrix<T> random_matrix(std::size_t n, unsigned seed) {
 template <typename In>
 using Out = std::conditional_t<std::is_same_v<In, std::int8_t>, std::int32_t, float>;
 
+/// real_time: rate against wall-clock time, for kernels that run several
+/// threads (CPU time is the calling thread's only).
 template <typename In>
-void add(const std::string& name, const char* format, void (*kernel)(const Matrix<In>&, const Matrix<In>&,
-                                                                       Matrix<Out<In>>&)) {
+void add(const std::string& name, const char* format,
+         void (*kernel)(const Matrix<In>&, const Matrix<In>&, Matrix<Out<In>>&), bool real_time = false) {
     for (const std::size_t n : {256, 1024, 2048, 4096}) {
-        benchmark::RegisterBenchmark(name + "/" + format + "/N=" + std::to_string(n),
+        auto* b = benchmark::RegisterBenchmark(name + "/" + format + "/N=" + std::to_string(n),
                                      [=](benchmark::State& state) {
                                          const Matrix<In> A = random_matrix<In>(n, 1);
                                          const Matrix<In> B = random_matrix<In>(n, 2);
@@ -82,17 +84,25 @@ void add(const std::string& name, const char* format, void (*kernel)(const Matri
                                              2.0 * double(n) * double(n) * double(n),
                                              benchmark::Counter::kIsIterationInvariantRate,
                                              benchmark::Counter::OneK::kIs1000);
-                                     })
-            ->Unit(benchmark::kMillisecond);
+                                     });
+        b->Unit(benchmark::kMillisecond);
+        if (real_time)
+            b->UseRealTime();
     }
 }
 
 void register_all() {
 #if HPC_HAS_SME
-    add<float>("Sme", "f32", gemm_sme<float>);
-    add<fp16>("SmeWidening", "fp16", gemm_sme_widening<fp16>);
-    add<bf16>("SmeWidening", "bf16", gemm_sme_widening<bf16>);
-    add<std::int8_t>("SmeWidening", "int8", gemm_sme_widening<std::int8_t>);
+    using hpc::bench::sme, hpc::bench::sme_mt;
+    add<float>("Sme", "f32", sme);
+    add<fp16>("SmeWidening", "fp16", sme);
+    add<bf16>("SmeWidening", "bf16", sme);
+    add<std::int8_t>("SmeWidening", "int8", sme);
+    // Both SME units (SmeParams::Threads): docs/kernels/sme.md, "Several SME units".
+    add<float>("SmeMt", "f32", sme_mt, true);
+    add<fp16>("SmeWideningMt", "fp16", sme_mt, true);
+    add<bf16>("SmeWideningMt", "bf16", sme_mt, true);
+    add<std::int8_t>("SmeWideningMt", "int8", sme_mt, true);
 #endif
 #if HPC_HAS_NEON
     add<float>("NeonBlocked", "f32", hpc::bench::simd_blocked<Q>);

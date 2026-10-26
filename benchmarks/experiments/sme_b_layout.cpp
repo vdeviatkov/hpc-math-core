@@ -20,6 +20,7 @@
  * checked against the packed driver before timing starts.
  */
 
+#include "../sme_params.hpp"
 #include "gemm/sme.hpp"
 #include "hpc/matrix.hpp"
 
@@ -44,6 +45,7 @@ namespace {
 using hpc::Matrix;
 using Clock = std::chrono::steady_clock;
 namespace sme = hpc::gemm::sme_detail;
+using P         = hpc::bench::SmeParams<float>;  // M4's measured shape and blocks
 
 double ms_since(Clock::time_point t) {
     return std::chrono::duration<double, std::milli>(Clock::now() - t).count();
@@ -62,22 +64,21 @@ struct Phases {
 /// sme_detail::blocked_driver<float, PackB> with a clock around each phase.
 template <bool PackB>
 Phases timed_driver(const Matrix<float>& A, const float* B, std::size_t ldb, Matrix<float>& C) {
-    using hpc::gemm::kSmeKc, hpc::gemm::kSmeMc, hpc::gemm::kSmeNc;
     const std::size_t M = A.rows(), K = A.cols(), N = C.cols();
-    const std::size_t s = svcntsw(), mr = 2 * s, nr = sme::kCols<float> * s;
+    const std::size_t s = svcntsw(), mr = P::R * s, nr = P::V * s;
     auto round_up       = [](std::size_t x, std::size_t m) { return (x + m - 1) / m * m; };
-    const std::size_t kc_max = std::min(kSmeKc, K);
+    const std::size_t kc_max = std::min(P::Kc, K);
 
     Phases p;
     auto t = Clock::now();
-    Matrix<float> a_pack(round_up(std::min(kSmeMc<float>, M), mr), kc_max);
-    Matrix<float> b_pack(PackB ? kc_max : 0, PackB ? round_up(std::min(kSmeNc, N), nr) : 0);
+    Matrix<float> a_pack(round_up(std::min(P::Mc, M), mr), kc_max);
+    Matrix<float> b_pack(PackB ? kc_max : 0, PackB ? round_up(std::min(P::Nc, N), nr) : 0);
     p.scratch = ms_since(t);
 
-    for (std::size_t jc = 0; jc < N; jc += kSmeNc) {
-        const std::size_t nc = std::min(kSmeNc, N - jc);
-        for (std::size_t pc = 0; pc < K; pc += kSmeKc) {
-            const std::size_t kc = std::min(kSmeKc, K - pc);
+    for (std::size_t jc = 0; jc < N; jc += P::Nc) {
+        const std::size_t nc = std::min(P::Nc, N - jc);
+        for (std::size_t pc = 0; pc < K; pc += P::Kc) {
+            const std::size_t kc = std::min(P::Kc, K - pc);
             const float* b       = B + pc * ldb + jc;
             std::int64_t b_step = 1, b_ld = std::int64_t(ldb);
             if constexpr (PackB) {
@@ -88,13 +89,13 @@ Phases timed_driver(const Matrix<float>& A, const float* B, std::size_t ldb, Mat
                 b_step = std::int64_t(kc);
                 b_ld   = std::int64_t(nr);
             }
-            for (std::size_t ic = 0; ic < M; ic += kSmeMc<float>) {
-                const std::size_t mc = std::min(kSmeMc<float>, M - ic);
+            for (std::size_t ic = 0; ic < M; ic += P::Mc) {
+                const std::size_t mc = std::min(P::Mc, M - ic);
                 t                    = Clock::now();
                 sme::pack_a(A.data() + ic * K + pc, K, mc, kc, mr, a_pack.data());
                 p.pack_a += ms_since(t);
                 t = Clock::now();
-                sme::macro_kernel<float>(a_pack.data(), b, b_step, b_ld, C.data() + ic * N + jc,
+                sme::macro_kernel<float, P::R, P::V>(a_pack.data(), b, b_step, b_ld, C.data() + ic * N + jc,
                                          std::int64_t(N), std::int64_t(mc), std::int64_t(nc),
                                          std::int64_t(kc), pc > 0);
                 p.compute += ms_since(t);
@@ -162,13 +163,13 @@ int main(int argc, char** argv) {
             return c.packed ? timed_driver<true>(A, b_of(c), c.ldb, C)
                             : timed_driver<false>(A, b_of(c), c.ldb, C);
         if (c.packed)
-            sme::blocked_driver<float, true>(A, b_of(c), c.ldb, C);
+            sme::blocked_driver<float, true, P::R, P::V, P::Mc, P::Kc, P::Nc>(A, b_of(c), c.ldb, C);
         else
-            sme::blocked_driver<float, false>(A, b_of(c), c.ldb, C);
+            sme::blocked_driver<float, false, P::R, P::V, P::Mc, P::Kc, P::Nc>(A, b_of(c), c.ldb, C);
         return Phases{};
     };
 
-    sme::blocked_driver<float, true>(A, B[0].data(), N, ref);
+    sme::blocked_driver<float, true, P::R, P::V, P::Mc, P::Kc, P::Nc>(A, B[0].data(), N, ref);
     for (const Case& c : cases)
         for (const bool by_phase : {false, true}) {
             run(c, by_phase);

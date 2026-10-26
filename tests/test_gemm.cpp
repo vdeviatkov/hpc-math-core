@@ -116,6 +116,32 @@ TEST(GemmNaive, IdentityAndZero) {
 template <typename T>
 using KernelFn = void (*)(const Matrix<T>&, const Matrix<T>&, Matrix<T>&);
 
+#if HPC_HAS_SME
+// The SME kernels at M4's measured ZA shape and cache blocks
+// (benchmarks/sme_params.hpp); other shapes and blocks are tested below.
+template <typename T>
+constexpr int kSmeV = sizeof(T) == 4 ? 2 : 4;
+template <typename T>
+constexpr std::size_t kSmeMc = sizeof(T) == 4 ? 1024 : 512;
+constexpr std::size_t kSmeKc = 2048, kSmeNc = 4096;
+template <typename T>
+void sme_tiles_m4(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
+    gemm_sme_tiles<T, 2, kSmeV<T>>(A, B, C);
+}
+template <typename T>
+void sme_blocked_m4(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
+    gemm_sme_blocked<T, 2, kSmeV<T>, kSmeMc<T>, kSmeKc, kSmeNc>(A, B, C);
+}
+template <typename T>
+void sme_m4(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
+    gemm_sme<T, 2, kSmeV<T>, kSmeMc<T>, kSmeKc, kSmeNc>(A, B, C);
+}
+template <typename T, std::size_t Mc = kSmeMc<T>>
+void sme_mt_m4(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C, unsigned threads) {
+    gemm_sme_mt<T, 2, kSmeV<T>, Mc, kSmeKc, kSmeNc>(A, B, C, threads);
+}
+#endif
+
 struct Kernel {
     const char* name;
     KernelFn<float> f32;
@@ -205,23 +231,23 @@ const Kernel kKernels[] = {
 #endif
 #if HPC_HAS_SME
     HPC_BOTH("Sme1Tile", gemm_sme_1tile),
-    HPC_BOTH("SmeTiles", gemm_sme_tiles),
-    HPC_BOTH("SmeBlocked", gemm_sme_blocked),
-    HPC_BOTH("Sme", gemm_sme),
+    HPC_BOTH("SmeTiles", sme_tiles_m4),
+    HPC_BOTH("SmeBlocked", sme_blocked_m4),
+    HPC_BOTH("Sme", sme_m4),
     HPC_BLOCK("SmeOddBlocks", gemm_sme, 2, 2, 5, 7, 13),
     HPC_BLOCK("SmeBlockedOddBlocks", gemm_sme_blocked, 2, 2, 5, 7, 13),
-    // Several threads: the default, a thread count that does not divide the
+    // Several threads: the measured count, a thread count that does not divide the
     // micro-tile count, and odd A blocks with more threads than some shapes
     // have micro-tile rows (those use fewer threads).
     Kernel{"SmeMt",
-           +[](const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C) { gemm_sme_mt(A, B, C); },
-           +[](const Matrix<double>& A, const Matrix<double>& B, Matrix<double>& C) { gemm_sme_mt(A, B, C); }},
+           +[](const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C) { sme_mt_m4(A, B, C, 8); },
+           +[](const Matrix<double>& A, const Matrix<double>& B, Matrix<double>& C) { sme_mt_m4(A, B, C, 8); }},
     Kernel{"SmeMt3Threads",
-           +[](const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C) { gemm_sme_mt(A, B, C, 3); },
-           +[](const Matrix<double>& A, const Matrix<double>& B, Matrix<double>& C) { gemm_sme_mt(A, B, C, 3); }},
+           +[](const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C) { sme_mt_m4(A, B, C, 3); },
+           +[](const Matrix<double>& A, const Matrix<double>& B, Matrix<double>& C) { sme_mt_m4(A, B, C, 3); }},
     Kernel{"SmeMtOddBlocks8Threads",
-           +[](const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C) { gemm_sme_mt<float, 5>(A, B, C, 8); },
-           +[](const Matrix<double>& A, const Matrix<double>& B, Matrix<double>& C) { gemm_sme_mt<double, 5>(A, B, C, 8); }},
+           +[](const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C) { sme_mt_m4<float, 5>(A, B, C, 8); },
+           +[](const Matrix<double>& A, const Matrix<double>& B, Matrix<double>& C) { sme_mt_m4<double, 5>(A, B, C, 8); }},
 #endif
 #if HPC_HAS_AMX
     HPC_BOTH("Amx", gemm_amx),
@@ -322,25 +348,32 @@ TEST(GemmSve, BlockedVectorEdgesDouble) {
 #if HPC_HAS_SME
 
 // pack_a's NEON transpose must be a pure bit move: feed random bit patterns
-// (NaN payloads, denormals, -0) and compare bytes.
+// (NaN payloads, denormals, -0) and compare bytes. Word w of row i holds
+// A(i, G·w … G·w+G−1), zero past kc and past mc.
 template <typename T>
 void expect_pack_a_bit_exact() {
-    using Bits           = std::conditional_t<sizeof(T) == 4, std::uint32_t, std::uint64_t>;
-    const std::size_t mr = 2 * (sizeof(T) == 4 ? svcntsw() : svcntsd());
+    using W                 = sme_word_t<T>;
+    constexpr std::size_t G = kSmeG<T>;
+    const std::size_t mr    = 2 * (sizeof(W) == 4 ? svcntsw() : svcntsd());
     std::mt19937_64 rng(77);
     for (std::size_t mc : {1, 3, 4, 5, 31, 33}) {
-        for (std::size_t kc : {1, 3, 4, 7, 64}) {
-            const std::size_t lda = kc + 3, strips = (mc + mr - 1) / mr;
-            std::vector<T> A(mc * lda), got(strips * mr * kc), ref(strips * mr * kc);
+        for (std::size_t kc : {1, 3, 4, 7, 9, 64}) {
+            const std::size_t lda = kc + 3, strips = (mc + mr - 1) / mr, kw = (kc + G - 1) / G;
+            std::vector<T> A(mc * lda);
+            std::vector<W> got(strips * mr * kw), ref(strips * mr * kw);
             for (auto& x : A) {
-                const Bits b = static_cast<Bits>(rng());
+                const std::uint64_t b = rng();
                 std::memcpy(&x, &b, sizeof x);
             }
             sme_detail::pack_a(A.data(), lda, mc, kc, mr, got.data());
             for (std::size_t i = 0; i < strips * mr; ++i)
-                for (std::size_t k = 0; k < kc; ++k)
-                    ref[(i / mr) * mr * kc + k * mr + i % mr] = i < mc ? A[i * lda + k] : T{0};
-            EXPECT_EQ(std::memcmp(got.data(), ref.data(), got.size() * sizeof(T)), 0)
+                for (std::size_t w = 0; w < kw; ++w) {
+                    unsigned char g[sizeof(W)] = {};
+                    for (std::size_t e = 0; i < mc && e < G && w * G + e < kc; ++e)
+                        std::memcpy(g + e * sizeof(T), &A[i * lda + w * G + e], sizeof(T));
+                    std::memcpy(&ref[(i / mr) * mr * kw + w * mr + i % mr], g, sizeof(W));
+                }
+            EXPECT_EQ(std::memcmp(got.data(), ref.data(), got.size() * sizeof(W)), 0)
                 << "mc=" << mc << " kc=" << kc;
         }
     }
@@ -350,7 +383,8 @@ template <typename T, int R, int V>
 void expect_sme_shape() {
     // Odd blocks split all three dimensions, forcing packed padding, C reloads,
     // and partial ZA tiles for every legal shape at the current streaming VL.
-    const KernelFn<T> kernels[] = {&gemm_sme<T, R, V>, &gemm_sme_blocked<T, R, V>,
+    const KernelFn<T> kernels[] = {&gemm_sme<T, R, V, kSmeMc<T>, kSmeKc, kSmeNc>,
+                                   &gemm_sme_blocked<T, R, V, kSmeMc<T>, kSmeKc, kSmeNc>,
                                    &gemm_sme_tiles<T, R, V>, &gemm_sme<T, R, V, 5, 7, 13>,
                                    &gemm_sme_blocked<T, R, V, 5, 7, 13>};
     const std::size_t s         = sizeof(T) == 4 ? svcntsw() : svcntsd();
@@ -390,12 +424,14 @@ TEST(GemmSme, AllDoubleTileShapes) {
 // pc pass accumulates into C, with uneven chunks across 3 threads.
 TEST(GemmSme, MtSeveralPasses) {
     expect_matches_naive<float>(
-        +[](const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C) { gemm_sme_mt(A, B, C, 3); },
+        +[](const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C) { sme_mt_m4(A, B, C, 3); },
         Shape{97, kSmeKc + 1, kSmeNc + 1}, "SmeMt passes");
 }
 
 TEST(GemmSme, PackAIsBitExactFloat) { expect_pack_a_bit_exact<float>(); }
 TEST(GemmSme, PackAIsBitExactDouble) { expect_pack_a_bit_exact<double>(); }
+TEST(GemmSme, PackAIsBitExactFp16) { expect_pack_a_bit_exact<hpc::fp16>(); }
+TEST(GemmSme, PackAIsBitExactInt8) { expect_pack_a_bit_exact<std::int8_t>(); }
 
 // blocked_driver with B rows ldb > N apart, as the BStride benchmarks run it:
 // both B paths must ignore the padding columns.
@@ -409,10 +445,10 @@ void expect_padded_b_matches_naive(std::size_t M, std::size_t K, std::size_t N, 
             B(k, j) = Bpad(k, j);
     gemm_naive(A, B, C_ref);
     C.fill(T{123});
-    sme_detail::blocked_driver<T, false>(A, Bpad.data(), ldb, C);
+    sme_detail::blocked_driver<T, false, 2, kSmeV<T>, kSmeMc<T>, kSmeKc, kSmeNc>(A, Bpad.data(), ldb, C);
     expect_near(C, C_ref, "in place, ldb=" + std::to_string(ldb));
     C.fill(T{123});
-    sme_detail::blocked_driver<T, true>(A, Bpad.data(), ldb, C);
+    sme_detail::blocked_driver<T, true, 2, kSmeV<T>, kSmeMc<T>, kSmeKc, kSmeNc>(A, Bpad.data(), ldb, C);
     expect_near(C, C_ref, "packed, ldb=" + std::to_string(ldb));
 }
 
