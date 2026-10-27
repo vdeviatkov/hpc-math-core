@@ -94,8 +94,13 @@ struct Context {
             fail("no device");
         queue = [device newCommandQueue];
         MTLCompileOptions* options = [MTLCompileOptions new];
-        options.mathMode           = MTLMathModeFast;
-        NSError* error             = nil;
+        // mathMode exists from the macOS 15 SDK and OS on; before that,
+        // fast math is the default (fastMathEnabled defaults to YES).
+#if defined(__MAC_15_0) && __MAC_OS_X_VERSION_MAX_ALLOWED >= __MAC_15_0
+        if (@available(macOS 15.0, *))
+            options.mathMode = MTLMathModeFast;
+#endif
+        NSError* error = nil;
         library = [device newLibraryWithSource:[NSString stringWithUTF8String:kMetalSource]
                                        options:options
                                          error:&error];
