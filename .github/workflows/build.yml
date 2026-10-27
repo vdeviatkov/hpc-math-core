@@ -1,6 +1,6 @@
 # Build and test on three hosted runners. None has a GPU, an SME-capable CPU
 # or a CUDA toolkit, so every job builds the CUDA stub
-# (src/cuda/gemm_kernels_stub.cpp) and the SME / KleidiAI kernels are absent.
+# (src/cuda/gemm_stub.cpp) and the SME / KleidiAI kernels are absent.
 #
 #   linux-x86   GCC 14, HPC_MARCH=x86-64-v3   scalar, AVX2, prefetch
 #   linux-arm   GCC 14, -march=native         scalar, NEON, prefetch

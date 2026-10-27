@@ -229,8 +229,8 @@ column-contiguous strips using NEON 4x4 or 2x2 transposes plus scalar edges;
 `gemm_sme` and `gemm_sme_blocked` expose R/V and M/K/N cache sizes as
 template parameters with no defaults; the measured values are in
 `benchmarks/sme_params.hpp`. Every legal rectangular ZA shape has a benchmark
-registration and correctness tests. The all-tiles shapes (2x2 za32, 2x4 za64) retain paired SME2 loads;
-other shapes use expanded single-vector loads. See [SME tuning](kernels/sme.md)
+registration and correctness tests. Every shape loads its A and B vectors in
+SME2 pairs. See [SME tuning](kernels/sme.md)
 and [the sizing rationale for all CPU families](kernels/sizing.md).
 
 The measured Mc=1024 float / 512 double, Kc=2048 and Nc=4096 aim for an 8 MiB packed A

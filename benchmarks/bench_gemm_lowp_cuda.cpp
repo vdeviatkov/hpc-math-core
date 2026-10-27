@@ -1,7 +1,7 @@
 /**
  * @file bench_gemm_lowp_cuda.cpp
  * @brief Google Benchmark driver for the low-precision CUDA GEMMs
- *        (gemm/cuda_lowp.hpp) and their cuBLAS references.
+ *        (gemm/cuda.hpp) and their cuBLAS references.
  *
  *   ./build/benchmarks/bench_gemm_lowp_cuda --benchmark_filter=<regex>
  *
@@ -24,7 +24,6 @@
  */
 
 #include "gemm/cuda.hpp"
-#include "gemm/cuda_lowp.hpp"
 #include "hpc/lowp.hpp"
 
 #include <benchmark/benchmark.h>

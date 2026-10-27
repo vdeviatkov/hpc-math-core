@@ -33,13 +33,14 @@ shape still affects operand reuse. At a fixed product R·V, a balanced
 rectangle minimizes R+V operand vectors, but measured load scheduling,
 packing, edges and reuse can favor another shape.
 
-The default shapes preserve their paired SME2 loads and full-tile C
-transfer path. Other shapes use compile-time expansions with single-vector
-predicated loads, loading each B vector once per K step and reusing it
-across R A vectors. Thus a sweep compares the actual implementations,
-including these load schedules. A winning nondefault shape may warrant a
-paired-load specialization before changing the default. No runtime ZA-tile
-indexing is introduced: tile numbers are instruction immediates.
+Every shape runs the same code: per K step, its R A vectors and V B
+vectors are loaded two at a time with predicated SME2 loads (an odd last
+vector is the inactive half of a pair), each reused across its row or
+column of tiles, and whole micro-tiles of C move without edge predicates.
+The measured shapes compile to the same loop as before this was shared
+(2×2: two paired loads and four FMOPAs per K step). Sweeps of other shapes
+recorded before 2026-10-26 used single-vector loads for them. No runtime
+ZA-tile indexing is introduced: tile numbers are instruction immediates.
 
 A is zero-padded to R·S rows; packed B is zero-padded to V·S columns.
 Unpacked B uses predicates and clamped inactive-column pointers. C movement

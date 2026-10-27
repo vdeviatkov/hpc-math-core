@@ -358,7 +358,7 @@ void time_bstride(benchmark::State& state, std::size_t N, std::size_t ldb) {
     fill_random(B, 2);
     for (auto _ : state) {
         using P = SmeParams<T>;
-        hpc::gemm::sme_detail::blocked_driver<T, PackB, P::R, P::V, P::Mc, P::Kc, P::Nc>(A, B.data(), ldb, C);
+        hpc::gemm::sme_detail::blocked_driver<T, PackB, P::R, P::V, P::Mc, P::Kc, P::Nc>(A, B.data(), ldb, C, 1);
         benchmark::DoNotOptimize(C.data());
         benchmark::ClobberMemory();
     }

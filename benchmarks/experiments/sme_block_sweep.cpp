@@ -44,7 +44,7 @@ template <typename T>
 void gemm(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C, Blocks bl) {
     const std::size_t M = A.rows(), K = A.cols(), N = B.cols();
     using P              = hpc::bench::SmeParams<T>;
-    const std::size_t s  = sme::kF32<T> ? svcntsw() : svcntsd();
+    const std::size_t s  = std::size_t(sme::lanes<T>());
     const std::size_t mr = P::R * s, nr = P::V * s;
     auto round_up        = [](std::size_t x, std::size_t m) { return (x + m - 1) / m * m; };
     Matrix<T> a_pack(round_up(std::min(bl.mc, M), mr), std::min(bl.kc, K));

@@ -1,6 +1,6 @@
 /**
  * @file test_gemm_lowp_cuda.cpp
- * @brief Correctness tests for the low-precision CUDA GEMMs (gemm/cuda_lowp.hpp).
+ * @brief Correctness tests for the low-precision CUDA GEMMs (gemm/cuda.hpp).
  *
  * Each format runs through both hand-written kernels (the cp.async one and
  * Level 8, TMA) and through cuBLAS, and is compared with gemm_lowp_naive on the same converted
@@ -18,7 +18,6 @@
  * without the format's mma.sync (or a CPU-only build) skips.
  */
 #include "gemm/cuda.hpp"
-#include "gemm/cuda_lowp.hpp"
 #include "gemm/lowp_naive.hpp"
 #include "hpc/lowp.hpp"
 #include "hpc/matrix.hpp"

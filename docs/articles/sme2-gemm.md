@@ -232,7 +232,7 @@ dependent FMOPA chain allows: the kernel is entirely latency bound. Every
 FMOPA waits for the previous one on the same tile, while three quarters of
 the unit's issue slots stay empty.
 
-Code: [`gemm_sme_1tile` and `one_tile_kernel`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/sme.hpp).
+Code: [`gemm_sme_1tile`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/sme.hpp), now the 1×1 shape of the shared macro-kernel.
 
 ## Step 2: all four tiles — 1,447 GFLOP/s
 

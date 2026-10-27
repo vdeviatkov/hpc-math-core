@@ -380,10 +380,10 @@ void expect_padded_b_matches_naive(std::size_t M, std::size_t K, std::size_t N, 
             B(k, j) = Bpad(k, j);
     gemm_naive(A, B, C_ref);
     C.fill(T{123});
-    sme_detail::blocked_driver<T, false, 2, kSmeV<T>, kSmeMc<T>, kSmeKc, kSmeNc>(A, Bpad.data(), ldb, C);
+    sme_detail::blocked_driver<T, false, 2, kSmeV<T>, kSmeMc<T>, kSmeKc, kSmeNc>(A, Bpad.data(), ldb, C, 1);
     expect_near(C, C_ref, "in place, ldb=" + std::to_string(ldb));
     C.fill(T{123});
-    sme_detail::blocked_driver<T, true, 2, kSmeV<T>, kSmeMc<T>, kSmeKc, kSmeNc>(A, Bpad.data(), ldb, C);
+    sme_detail::blocked_driver<T, true, 2, kSmeV<T>, kSmeMc<T>, kSmeKc, kSmeNc>(A, Bpad.data(), ldb, C, 1);
     expect_near(C, C_ref, "packed, ldb=" + std::to_string(ldb));
 }
 

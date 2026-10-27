@@ -50,7 +50,11 @@
  *
  * All pack A, so each step changes one thing. Each is one template for f32
  * and f64 (gemm_sme and gemm_sme_mt also for fp16, bf16 and INT8: "Low
- * precision" below); all but gemm_sme_1tile share macro_kernel. The first four are
+ * precision" below), and all are one driver and one macro-kernel
+ * (sme_detail::blocked_driver, macro_kernel): gemm_sme_1tile is the 1×1
+ * shape of gemm_sme_tiles, which is gemm_sme_blocked with one block over
+ * the whole problem, and gemm_sme_mt is gemm_sme on several threads. The
+ * first four are
  * single-threaded: compare against Accelerate with VECLIB_MAXIMUM_THREADS=1
  * (1,600–1,720 GFLOP/s f32, 340–460 f64 on one M4 Max core, N = 256–4096).
  *
@@ -99,11 +103,12 @@
  *   f32: 2×2 tiles → 32×32 C block, per k: 2 A + 2 B vectors → 4 FMOPA
  *   f64: 2×4 tiles → 16×32 C block, per k: 2 A + 4 B vectors → 8 FMOPA
  *
- * Each loaded vector feeds 2 (or 4) FMOPAs. kCols<T> (2 or 4) is the only
- * shape difference between the types; a 2×2 layout for f64 too (4 of 8
- * tiles) measured 9% slower at N=4096. The A and B vectors of one k step
- * are each fetched with one SME2 svld1_x2 (LD1W/LD1D {z0-z1}), halving the
- * load count; SME2 is therefore required (HPC_HAS_SME checks
+ * Each loaded vector feeds 2 (or 4) FMOPAs. The tile columns (2 or 4) are
+ * the only shape difference between the types; a 2×2 layout for f64 too (4
+ * of 8 tiles) measured 9% slower at N=4096. The A and B vectors of one k
+ * step are fetched two at a time with SME2's svld1_x2 (LD1W/LD1D {z0-z1}),
+ * halving the load count, in every R×V shape (an odd last vector is the
+ * inactive half of a pair); SME2 is therefore required (HPC_HAS_SME checks
  * __ARM_FEATURE_SME2 too).
  *
  * Cache blocking, GotoBLAS-style (f32 sizes; f64 has Mc = 512):
@@ -179,7 +184,7 @@
  *   ┌ strip 0 ┬ strip 1 ┬ ... ┐   f32: kc = 2048 rows × 128 B = 256 KiB each
  *
  * Row widths follow the micro-tile, not cache tuning: mr = 2·SVL (128 B
- * for both types), nr = kCols·SVL (128 B f32, 256 B f64). Each k step reads
+ * for both types), nr = V·SVL (128 B f32, 256 B f64). Each k step reads
  * one row of each strip with svld1_x2.
  *
  * A must be packed: read in place, the column A(i0..i0+31, k) is 32 values
@@ -306,6 +311,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <optional>
 #include <thread>
 #include <type_traits>
 #include <utility>
@@ -319,8 +325,12 @@ namespace hpc::gemm {
 // 32-bit lane, into FP32 or INT32 ("Low precision" in the file header).
 // ============================================================================
 
+/// The input types of the SME kernels: FP32 and FP64, and the widening ones.
 template <typename T>
-inline constexpr bool kSmeWidening = !std::is_same_v<T, float> && !std::is_same_v<T, double>;
+inline constexpr bool kSmeFp = std::is_same_v<T, float> || std::is_same_v<T, double>;
+template <typename T>
+inline constexpr bool kSmeWidening =
+    std::is_same_v<T, fp16> || std::is_same_v<T, bf16> || std::is_same_v<T, std::int8_t>;
 /// What packing and the ZA loads move: one element of FP32 / FP64, else one
 /// 32-bit word of G elements consecutive in k.
 template <typename T>
@@ -354,7 +364,68 @@ void gemm_sme_mt(const Matrix<T>&, const Matrix<T>&, Matrix<sme_out_t<T>>&, unsi
 
 namespace sme_detail {
 
-/// One word, the G elements of In from p, at any alignment.
+// ============================================================================
+// Sizes, vector lengths and predicates
+// ============================================================================
+
+/// ⌈x / m⌉. Exact for any x, so blocks of SIZE_MAX ("no blocking") work.
+constexpr std::size_t div_up(std::size_t x, std::size_t m) { return x / m + (x % m != 0); }
+
+/// x rounded up to a multiple of m.
+constexpr std::size_t round_up(std::size_t x, std::size_t m) { return div_up(x, m) * m; }
+
+/// Words of W (4 or 8 bytes) per streaming vector: the rows and the columns
+/// of one ZA tile. RDSVL, so legal outside streaming mode too.
+template <typename W>
+inline std::int64_t lanes() __arm_streaming_compatible {
+    return std::int64_t(sizeof(W) == 4 ? svcntsw() : svcntsd());
+}
+
+/// All lanes of a vector of 4- or 8-byte elements W active.
+template <typename W>
+[[gnu::always_inline]] inline svbool_t ptrue() __arm_streaming {
+    return sizeof(W) == 4 ? svptrue_b32() : svptrue_b64();
+}
+
+/// Lanes i, i+1, … of a vector of W active while below n: the columns of a
+/// row of n that exist from column i on.
+template <typename W>
+[[gnu::always_inline]] inline svbool_t whilelt(std::int64_t i, std::int64_t n) __arm_streaming {
+    return sizeof(W) == 4 ? svwhilelt_b32(i, n) : svwhilelt_b64(i, n);
+}
+
+/// Count (1 or 2) vectors of a row of n words at p, from word `first` on:
+/// two with one SME2 load (LD1W / LD1D {z0-z1}) as a two-vector tuple, one
+/// as a plain vector. Words at n and past are inactive (zero). Predication
+/// suppresses accesses, not pointer arithmetic, so an entirely inactive load
+/// reads from the row's end, never past it.
+template <typename W, int Count>
+[[gnu::always_inline]] inline auto load_vectors(const W* p, std::int64_t first, std::int64_t n) __arm_streaming {
+    if constexpr (Count == 1)
+        return svld1(whilelt<W>(first, n), p + std::min(first, n));
+    else if constexpr (sizeof(W) == 4)
+        return svld1_x2(svwhilelt_c32(first, n, 2), p + std::min(first, n));
+    else
+        return svld1_x2(svwhilelt_c64(first, n, 2), p + std::min(first, n));
+}
+
+/// Vector J of a load_vectors result: half J of a two-vector tuple, or the
+/// single vector itself (J = 0).
+template <int J, typename Loaded>
+[[gnu::always_inline]] inline auto vector_of(Loaded v) __arm_streaming {
+    if constexpr (std::is_same_v<Loaded, svfloat32x2_t> || std::is_same_v<Loaded, svfloat64x2_t> ||
+                  std::is_same_v<Loaded, svuint32x2_t>)
+        return svget2(v, J);
+    else
+        return v;
+}
+
+// ============================================================================
+// Packing (normal mode). Strips hold one k-group word per (row or column, k
+// group); for FP32 / FP64 a word is one element.
+// ============================================================================
+
+/// One word: the G elements of In at p, at any alignment.
 template <typename In>
 inline sme_word_t<In> load_word(const In* p) noexcept {
     sme_word_t<In> w;
@@ -362,267 +433,250 @@ inline sme_word_t<In> load_word(const In* p) noexcept {
     return w;
 }
 
+/// One word from n ≤ G elements of In, `stride` elements apart from p; the
+/// rest of the group is zero (a partial last k group, or a column of B).
+template <typename In>
+inline sme_word_t<In> load_group(const In* p, std::size_t stride, std::size_t n) noexcept {
+    In g[kSmeG<In>] = {};
+    for (std::size_t e = 0; e < n; ++e)
+        g[e] = p[e * stride];
+    return load_word(g);
+}
+
+/// L×L words, L = 4 (32-bit) or 2 (64-bit), one NEON register per row:
+/// rows of src `src_row` bytes apart in, columns out as rows `out_row` bytes
+/// apart. Bytes in and out, so any bit pattern moves exactly.
+template <typename W>
+inline void transpose_words(const std::uint8_t* src, std::size_t src_row, std::uint8_t* out,
+                            std::size_t out_row) noexcept {
+    if constexpr (sizeof(W) == 4) {
+        // Swap single words, then 2-word halves.
+        const uint32x4_t r0 = vreinterpretq_u32_u8(vld1q_u8(src));                // a0 a1 a2 a3
+        const uint32x4_t r1 = vreinterpretq_u32_u8(vld1q_u8(src + src_row));      // b0 b1 b2 b3
+        const uint32x4_t r2 = vreinterpretq_u32_u8(vld1q_u8(src + 2 * src_row));  // c0 c1 c2 c3
+        const uint32x4_t r3 = vreinterpretq_u32_u8(vld1q_u8(src + 3 * src_row));  // d0 d1 d2 d3
+        const uint32x4_t t0 = vtrn1q_u32(r0, r1);                                 // a0 b0 a2 b2
+        const uint32x4_t t1 = vtrn2q_u32(r0, r1);                                 // a1 b1 a3 b3
+        const uint32x4_t t2 = vtrn1q_u32(r2, r3);                                 // c0 d0 c2 d2
+        const uint32x4_t t3 = vtrn2q_u32(r2, r3);                                 // c1 d1 c3 d3
+        vst1q_u8(out, vreinterpretq_u8_u32(vcombine_u32(vget_low_u32(t0), vget_low_u32(t2))));  // a0 b0 c0 d0
+        vst1q_u8(out + out_row, vreinterpretq_u8_u32(vcombine_u32(vget_low_u32(t1), vget_low_u32(t3))));
+        vst1q_u8(out + 2 * out_row, vreinterpretq_u8_u32(vcombine_u32(vget_high_u32(t0), vget_high_u32(t2))));
+        vst1q_u8(out + 3 * out_row, vreinterpretq_u8_u32(vcombine_u32(vget_high_u32(t1), vget_high_u32(t3))));
+    } else {
+        const uint64x2_t r0 = vreinterpretq_u64_u8(vld1q_u8(src));
+        const uint64x2_t r1 = vreinterpretq_u64_u8(vld1q_u8(src + src_row));
+        vst1q_u8(out, vreinterpretq_u8_u64(vtrn1q_u64(r0, r1)));
+        vst1q_u8(out + out_row, vreinterpretq_u8_u64(vtrn2q_u64(r0, r1)));
+    }
+}
+
 /// Pack an mc×kc block of row-major A (lda elements) into mr-row strips of
 /// k-group words, column-major within each strip:
 /// dst[s·mr·kw + w·mr + r] = A(s·mr + r, G·w … G·w+G−1), kw = ⌈kc / G⌉,
-/// zero-padded to mr rows and to a whole last group. For FP32 / FP64 a word
-/// is one element, so row w of a strip is column k = w of A.
+/// zero-padded to mr rows and to a whole last group. L×L blocks go through
+/// NEON transposes (~2× the scalar strided stores), the rest word by word.
 template <typename In>
 inline void pack_a(const In* A, std::size_t lda, std::size_t mc, std::size_t kc, std::size_t mr,
                    sme_word_t<In>* dst) {
     using W                 = sme_word_t<In>;
-    constexpr std::size_t G = kSmeG<In>;
-    // NEON in-register transpose of words: L×L tiles (L = 4 32-bit or 2
-    // 64-bit words), ~2× faster than the scalar strided-store loop below.
-    // Bytes in and out, so the move is exact for any bit pattern.
-    constexpr std::size_t L = 16 / sizeof(W);
-    const std::size_t kw = (kc + G - 1) / G, full = kc / G;  // full: whole k groups
-    const std::size_t row_bytes = lda * sizeof(In);
+    constexpr std::size_t G = kSmeG<In>, L = 16 / sizeof(W);
+    const std::size_t kw = div_up(kc, G), full = kc / G;  // full: whole k groups
     for (std::size_t i0 = 0; i0 < mc; i0 += mr) {
-        const std::size_t rows = std::min(mr, mc - i0);
+        const std::size_t rows = std::min(mr, mc - i0), rows_v = rows / L * L, full_v = full / L * L;
+        const In* src          = A + i0 * lda;
         W* strip               = dst + i0 * kw;
-        std::size_t r          = 0;
-        for (; r + L <= rows; r += L) {
-            const In* src = A + (i0 + r) * lda;
-            std::size_t w = 0;
-            for (; w + L <= full; w += L) {
-                const auto* p = reinterpret_cast<const std::uint8_t*>(src + w * G);
-                auto* out     = reinterpret_cast<std::uint8_t*>(strip + w * mr + r);
-                const std::size_t out_row = mr * sizeof(W);
-                if constexpr (L == 4) {
-                    // 4×4 transpose: swap single words, then 2-word halves.
-                    const uint32x4_t r0 = vreinterpretq_u32_u8(vld1q_u8(p));                  // a0 a1 a2 a3
-                    const uint32x4_t r1 = vreinterpretq_u32_u8(vld1q_u8(p + row_bytes));      // b0 b1 b2 b3
-                    const uint32x4_t r2 = vreinterpretq_u32_u8(vld1q_u8(p + 2 * row_bytes));  // c0 c1 c2 c3
-                    const uint32x4_t r3 = vreinterpretq_u32_u8(vld1q_u8(p + 3 * row_bytes));  // d0 d1 d2 d3
-                    const uint32x4_t t0 = vtrn1q_u32(r0, r1);                                 // a0 b0 a2 b2
-                    const uint32x4_t t1 = vtrn2q_u32(r0, r1);                                 // a1 b1 a3 b3
-                    const uint32x4_t t2 = vtrn1q_u32(r2, r3);                                 // c0 d0 c2 d2
-                    const uint32x4_t t3 = vtrn2q_u32(r2, r3);                                 // c1 d1 c3 d3
-                    vst1q_u8(out, vreinterpretq_u8_u32(vcombine_u32(vget_low_u32(t0), vget_low_u32(t2))));    // a0 b0 c0 d0
-                    vst1q_u8(out + out_row, vreinterpretq_u8_u32(vcombine_u32(vget_low_u32(t1), vget_low_u32(t3))));
-                    vst1q_u8(out + 2 * out_row,
-                             vreinterpretq_u8_u32(vcombine_u32(vget_high_u32(t0), vget_high_u32(t2))));
-                    vst1q_u8(out + 3 * out_row,
-                             vreinterpretq_u8_u32(vcombine_u32(vget_high_u32(t1), vget_high_u32(t3))));
-                } else {
-                    const uint64x2_t r0 = vreinterpretq_u64_u8(vld1q_u8(p));
-                    const uint64x2_t r1 = vreinterpretq_u64_u8(vld1q_u8(p + row_bytes));
-                    vst1q_u8(out, vreinterpretq_u8_u64(vtrn1q_u64(r0, r1)));
-                    vst1q_u8(out + out_row, vreinterpretq_u8_u64(vtrn2q_u64(r0, r1)));
-                }
+        for (std::size_t r = 0; r < rows_v; r += L)
+            for (std::size_t w = 0; w < full_v; w += L)
+                transpose_words<W>(reinterpret_cast<const std::uint8_t*>(src + r * lda + w * G), lda * sizeof(In),
+                                   reinterpret_cast<std::uint8_t*>(strip + w * mr + r), mr * sizeof(W));
+        for (std::size_t r = 0; r < rows; ++r)
+            for (std::size_t w = r < rows_v ? full_v : 0; w < kw; ++w) {
+                const In* group   = src + r * lda + w * G;
+                strip[w * mr + r] = w < full ? load_word(group) : load_group(group, 1, kc - full * G);
             }
-            for (; w < full; ++w)
-                for (std::size_t rr = 0; rr < L; ++rr)
-                    strip[w * mr + r + rr] = load_word(src + rr * lda + w * G);
-        }
-        for (; r < rows; ++r)
-            for (std::size_t w = 0; w < full; ++w)
-                strip[w * mr + r] = load_word(A + (i0 + r) * lda + w * G);
-        if constexpr (G > 1)
-            if (full < kw)  // the last, partial k group: what exists, then zeros
-                for (std::size_t rr = 0; rr < rows; ++rr) {
-                    In g[G] = {};
-                    std::memcpy(g, A + (i0 + rr) * lda + full * G, (kc - full * G) * sizeof(In));
-                    strip[full * mr + rr] = load_word(g);
-                }
-        if (rows < mr)
-            for (std::size_t w = 0; w < kw; ++w)
-                std::fill(strip + w * mr + rows, strip + (w + 1) * mr, W{0});
+        for (std::size_t w = 0; w < kw; ++w)  // rows past mc
+            std::fill(strip + w * mr + rows, strip + (w + 1) * mr, W{0});
     }
+}
+
+/// The first columns of one strip row of widening B, by NEON zips: G rows of
+/// B (ldb elements apart, a whole k group) interleaved into words, 8 (16-bit)
+/// or 16 (INT8) columns per step. Returns how many of `cols` it packed.
+template <typename In>
+inline std::size_t zip_group(const In* row, std::size_t ldb, std::size_t cols, sme_word_t<In>* out) noexcept {
+    const auto* p           = reinterpret_cast<const std::uint8_t*>(row);
+    auto* o                 = reinterpret_cast<std::uint8_t*>(out);
+    const std::size_t bytes = ldb * sizeof(In);  // from one row of B to the next
+    std::size_t c           = 0;
+    if constexpr (kSmeG<In> == 2) {
+        for (; c + 8 <= cols; c += 8) {
+            const uint16x8_t r0 = vreinterpretq_u16_u8(vld1q_u8(p + 2 * c));
+            const uint16x8_t r1 = vreinterpretq_u16_u8(vld1q_u8(p + bytes + 2 * c));
+            vst1q_u8(o + 4 * c, vreinterpretq_u8_u16(vzip1q_u16(r0, r1)));
+            vst1q_u8(o + 4 * c + 16, vreinterpretq_u8_u16(vzip2q_u16(r0, r1)));
+        }
+    } else {
+        for (; c + 16 <= cols; c += 16) {
+            const uint8x16_t r0 = vld1q_u8(p + c), r1 = vld1q_u8(p + bytes + c);
+            const uint8x16_t r2 = vld1q_u8(p + 2 * bytes + c), r3 = vld1q_u8(p + 3 * bytes + c);
+            const uint16x8_t lo01 = vreinterpretq_u16_u8(vzip1q_u8(r0, r1));
+            const uint16x8_t hi01 = vreinterpretq_u16_u8(vzip2q_u8(r0, r1));
+            const uint16x8_t lo23 = vreinterpretq_u16_u8(vzip1q_u8(r2, r3));
+            const uint16x8_t hi23 = vreinterpretq_u16_u8(vzip2q_u8(r2, r3));
+            vst1q_u8(o + 4 * c, vreinterpretq_u8_u16(vzip1q_u16(lo01, lo23)));
+            vst1q_u8(o + 4 * c + 16, vreinterpretq_u8_u16(vzip2q_u16(lo01, lo23)));
+            vst1q_u8(o + 4 * c + 32, vreinterpretq_u8_u16(vzip1q_u16(hi01, hi23)));
+            vst1q_u8(o + 4 * c + 48, vreinterpretq_u8_u16(vzip2q_u16(hi01, hi23)));
+        }
+    }
+    return c;
 }
 
 /// Pack a kc×nc panel of row-major B (ldb elements) into nr-column strips of
 /// k-group words, row-major within each strip:
 /// dst[s·nr·kw + w·nr + c] = B(G·w … G·w+G−1, s·nr + c), zero-padded to nr
-/// columns and to a whole last group. For FP32 / FP64 a strip row is a row
-/// of B; otherwise G rows of B are interleaved with NEON zips.
+/// columns and to a whole last group. For FP32 / FP64 a strip row is a copy
+/// of a row of B.
 template <typename In>
 inline void pack_b(const In* B, std::size_t ldb, std::size_t kc, std::size_t nc, std::size_t nr,
                    sme_word_t<In>* dst) {
     using W                 = sme_word_t<In>;
     constexpr std::size_t G = kSmeG<In>;
-    const std::size_t kw    = (kc + G - 1) / G;
+    const std::size_t kw    = div_up(kc, G);
     for (std::size_t j0 = 0; j0 < nc; j0 += nr) {
         const std::size_t cols = std::min(nr, nc - j0);
-        W* strip               = dst + j0 * kw;
         for (std::size_t w = 0; w < kw; ++w) {
-            W* out        = strip + w * nr;
+            W* out        = dst + j0 * kw + w * nr;
             const In* row = B + w * G * ldb + j0;
             std::size_t c = 0;
             if constexpr (G == 1) {
                 std::memcpy(out, row, cols * sizeof(W));
                 c = cols;
-            } else if ((w + 1) * G <= kc) {  // a whole k group
-                const auto* p               = reinterpret_cast<const std::uint8_t*>(row);
-                auto* o                     = reinterpret_cast<std::uint8_t*>(out);
-                const std::size_t row_bytes = ldb * sizeof(In);
-                if constexpr (G == 2) {  // zip two rows of 16-bit elements: 8 columns per step
-                    for (; c + 8 <= cols; c += 8) {
-                        const uint16x8_t r0 = vreinterpretq_u16_u8(vld1q_u8(p + 2 * c));
-                        const uint16x8_t r1 = vreinterpretq_u16_u8(vld1q_u8(p + row_bytes + 2 * c));
-                        vst1q_u8(o + 4 * c, vreinterpretq_u8_u16(vzip1q_u16(r0, r1)));
-                        vst1q_u8(o + 4 * c + 16, vreinterpretq_u8_u16(vzip2q_u16(r0, r1)));
-                    }
-                } else {  // interleave four rows of bytes: 16 columns per step
-                    for (; c + 16 <= cols; c += 16) {
-                        const uint8x16_t r0 = vld1q_u8(p + c), r1 = vld1q_u8(p + row_bytes + c);
-                        const uint8x16_t r2 = vld1q_u8(p + 2 * row_bytes + c), r3 = vld1q_u8(p + 3 * row_bytes + c);
-                        const uint16x8_t lo01 = vreinterpretq_u16_u8(vzip1q_u8(r0, r1));
-                        const uint16x8_t hi01 = vreinterpretq_u16_u8(vzip2q_u8(r0, r1));
-                        const uint16x8_t lo23 = vreinterpretq_u16_u8(vzip1q_u8(r2, r3));
-                        const uint16x8_t hi23 = vreinterpretq_u16_u8(vzip2q_u8(r2, r3));
-                        vst1q_u8(o + 4 * c, vreinterpretq_u8_u16(vzip1q_u16(lo01, lo23)));
-                        vst1q_u8(o + 4 * c + 16, vreinterpretq_u8_u16(vzip2q_u16(lo01, lo23)));
-                        vst1q_u8(o + 4 * c + 32, vreinterpretq_u8_u16(vzip1q_u16(hi01, hi23)));
-                        vst1q_u8(o + 4 * c + 48, vreinterpretq_u8_u16(vzip2q_u16(hi01, hi23)));
-                    }
-                }
+            } else if ((w + 1) * G <= kc) {
+                c = zip_group(row, ldb, cols, out);
             }
-            if constexpr (G > 1)
-                for (; c < cols; ++c) {  // columns left over, or a partial last group
-                    In g[G] = {};
-                    for (std::size_t e = 0; e < G && w * G + e < kc; ++e)
-                        g[e] = row[e * ldb + c];
-                    out[c] = load_word(g);
-                }
+            for (; c < cols; ++c)  // columns the zips left, or a partial last group
+                out[c] = load_group(row + c, ldb, std::min(G, kc - w * G));
             std::fill(out + cols, out + nr, W{0});
         }
     }
 }
 
-template <typename T>
-inline constexpr bool kF32 = sizeof(T) == 4;
+// ============================================================================
+// The macro-kernel (streaming mode). Every helper it calls must share its ZA
+// state (__arm_inout("za")): a private-ZA helper is not inlined and each call
+// gets a lazy ZA save (file header, "Pitfall").
+// ============================================================================
 
-/// ZA tiles per row when two rows of tiles use them all: 2×2 za32 (FP32 and
-/// widening) or 2×4 za64 (FP64). macro_kernel has a fast path for that shape.
-template <typename T>
-inline constexpr int kCols = int(sizeof(sme_word_t<T>)) / 2;
-
-/// ZA[Tile] += a ⊗ b, the outer product of In: FMOPA for FP32 / FP64 (pt
-/// all-true); for fp16, bf16 and INT8, a and b hold k-group words and the
-/// widening FMOPA / SMOPA adds a G-long dot product into each 32-bit lane
-/// (predicates over all 16- or 8-bit elements).
-template <typename In, int Tile, typename V>
-[[gnu::always_inline]] inline void mopa(svbool_t pt, V a, V b) __arm_streaming __arm_inout("za") {
-    if constexpr (std::is_same_v<In, float>)
-        svmopa_za32_m(Tile, pt, pt, a, b);
-    else if constexpr (std::is_same_v<In, double>)
-        svmopa_za64_m(Tile, pt, pt, a, b);
-    else if constexpr (std::is_same_v<In, fp16>)
+/// ZA[Tile] += a ⊗ b. FMOPA for FP32 / FP64; for fp16, bf16 and INT8, a and
+/// b hold k-group words and the widening FMOPA / SMOPA adds a G-long dot
+/// product into each 32-bit lane.
+template <typename T, int Tile, typename Vec>
+[[gnu::always_inline]] inline void mopa(Vec a, Vec b) __arm_streaming __arm_inout("za") {
+    if constexpr (std::is_same_v<T, float>)
+        svmopa_za32_m(Tile, svptrue_b32(), svptrue_b32(), a, b);
+    else if constexpr (std::is_same_v<T, double>)
+        svmopa_za64_m(Tile, svptrue_b64(), svptrue_b64(), a, b);
+    else if constexpr (std::is_same_v<T, fp16>)
         svmopa_za32_f16_m(Tile, svptrue_b16(), svptrue_b16(), svreinterpret_f16(a), svreinterpret_f16(b));
-    else if constexpr (std::is_same_v<In, bf16>)
+    else if constexpr (std::is_same_v<T, bf16>)
         svmopa_za32_bf16_m(Tile, svptrue_b16(), svptrue_b16(), svreinterpret_bf16(a), svreinterpret_bf16(b));
     else
         svmopa_za32_s8_m(Tile, svptrue_b8(), svptrue_b8(), svreinterpret_s8(a), svreinterpret_s8(b));
 }
 
-/// Copy rows [0, rows) of ZA tile `Tile` to C (Load=false) or from C (Load=true).
-template <typename T, int Tile, bool Load>
-[[gnu::always_inline]] inline void move_tile(T* c, std::int64_t ldc, std::int64_t rows,
-                                             svbool_t pg) __arm_streaming __arm_inout("za") {
+/// Element I of a parameter pack. Sizeless vectors and tuples cannot be
+/// array elements, so the operands of one k step travel as a pack.
+template <std::size_t I, typename First, typename... Rest>
+[[gnu::always_inline]] inline auto& at(First& first, Rest&... rest) __arm_streaming_compatible {
+    if constexpr (I == 0)
+        return first;
+    else
+        return at<I - 1>(rest...);
+}
+
+/// Every tile of the R×V shape: ZA tile r·V + c += A vector r ⊗ B vector c.
+/// `loaded` holds the A vectors, two per load_vectors result (⌈R/2⌉ of
+/// them), then B's (⌈V/2⌉).
+template <typename T, int R, int V, std::size_t... Tile, typename... Loaded>
+[[gnu::always_inline]] inline void mopa_tiles(std::index_sequence<Tile...>, Loaded... loaded) __arm_streaming
+    __arm_inout("za") {
+    constexpr std::size_t a_loads = (R + 1) / 2;
+    (mopa<T, int(Tile)>(vector_of<Tile / V % 2>(at<Tile / V / 2>(loaded...)),
+                        vector_of<Tile % V % 2>(at<a_loads + Tile % V / 2>(loaded...))),
+     ...);
+}
+
+/// One k step: the R vectors of a row of the A strip and the V of a row of
+/// the B strip (of which `cols` words exist), two per load (an odd last one
+/// alone), each reused by every tile of its row or column, then R·V outer
+/// products.
+template <typename T, int R, int V, std::size_t... A, std::size_t... B>
+[[gnu::always_inline]] inline void outer_step(const sme_word_t<T>* a, const sme_word_t<T>* b, std::int64_t s,
+                                              std::int64_t cols, std::index_sequence<A...>,
+                                              std::index_sequence<B...>) __arm_streaming __arm_inout("za") {
+    using W = sme_word_t<T>;
+    mopa_tiles<T, R, V>(std::make_index_sequence<R * V>{},
+                        load_vectors<W, std::min(2, R - 2 * int(A))>(a, std::int64_t(2 * A) * s, R * s)...,
+                        load_vectors<W, std::min(2, V - 2 * int(B))>(b, std::int64_t(2 * B) * s, cols)...);
+}
+
+/// Rows [0, rows) of ZA tile Tile from C (Load) or to C; row r is at
+/// c + r·ldc, its columns in pg.
+template <typename Out, int Tile, bool Load>
+[[gnu::always_inline]] inline void move_rows(Out* c, std::int64_t ldc, std::int64_t rows, svbool_t pg) __arm_streaming
+    __arm_inout("za") {
     for (std::int64_t r = 0; r < rows; ++r) {
         const auto slice = static_cast<std::uint32_t>(r);
-        if constexpr (kF32<T> && Load)  svld1_hor_za32(Tile, slice, pg, c + r * ldc);
-        if constexpr (kF32<T> && !Load) svst1_hor_za32(Tile, slice, pg, c + r * ldc);
-        if constexpr (!kF32<T> && Load)  svld1_hor_za64(Tile, slice, pg, c + r * ldc);
-        if constexpr (!kF32<T> && !Load) svst1_hor_za64(Tile, slice, pg, c + r * ldc);
+        if constexpr (sizeof(Out) == 4 && Load)  svld1_hor_za32(Tile, slice, pg, c + r * ldc);
+        if constexpr (sizeof(Out) == 4 && !Load) svst1_hor_za32(Tile, slice, pg, c + r * ldc);
+        if constexpr (sizeof(Out) == 8 && Load)  svld1_hor_za64(Tile, slice, pg, c + r * ldc);
+        if constexpr (sizeof(Out) == 8 && !Load) svst1_hor_za64(Tile, slice, pg, c + r * ldc);
     }
 }
 
-/// Move one column of tiles (top tile Col, bottom tile kCols+Col) between ZA and C.
-template <typename T, int Col, bool Load, bool Full>
-[[gnu::always_inline]] inline void move_column(T* c, std::int64_t ldc, std::int64_t s,
-                                               std::int64_t rows, std::int64_t cols) __arm_streaming
-    __arm_inout("za") {
-    if constexpr (Full) {
-        const svbool_t pg = kF32<T> ? svptrue_b32() : svptrue_b64();
-        move_tile<T, Col, Load>(c + Col * s, ldc, s, pg);
-        move_tile<T, kCols<T> + Col, Load>(c + s * ldc + Col * s, ldc, s, pg);
-        return;
-    }
-    const std::int64_t top = std::min(rows, s);
-    // Predication suppresses accesses, not C++ pointer arithmetic. Clamp
-    // entirely inactive columns and do not form a nonexistent bottom row.
-    const std::int64_t offset = std::min<std::int64_t>(Col * s, cols);
-    const svbool_t pg      = kF32<T> ? svwhilelt_b32(Col * s, cols) : svwhilelt_b64(Col * s, cols);
-    move_tile<T, Col, Load>(c + offset, ldc, top, pg);
-    const std::int64_t bottom = rows > top ? s * ldc + offset : 0;
-    move_tile<T, kCols<T> + Col, Load>(c + bottom, ldc, rows - top, pg);
-}
-
-/// Load (Load=true) or store the whole micro-tile accumulator.
-template <typename T, bool Load, bool Full>
-[[gnu::always_inline]] inline void move_c_columns(T* c, std::int64_t ldc, std::int64_t s, std::int64_t rows,
-                                          std::int64_t cols) __arm_streaming __arm_inout("za") {
-    move_column<T, 0, Load, Full>(c, ldc, s, rows, cols);
-    move_column<T, 1, Load, Full>(c, ldc, s, rows, cols);
-    if constexpr (kCols<T> == 4) {
-        move_column<T, 2, Load, Full>(c, ldc, s, rows, cols);
-        move_column<T, 3, Load, Full>(c, ldc, s, rows, cols);
-    }
-}
-
-// Each tile number is an instruction immediate. Expand at compile time.
-template <typename T, int V, bool Load, int Tile>
-[[gnu::always_inline]] inline void move_shaped_tile(
-    T* c, std::int64_t ldc, std::int64_t s, std::int64_t rows,
-    std::int64_t cols) __arm_streaming __arm_inout("za") {
+/// ZA tile Tile, at row Tile / V and column Tile % V of the R×V shape, from C
+/// (Load) or to C, where the micro-tile's rows × cols of C start at c. Full:
+/// the whole micro-tile exists. Otherwise rows past `rows` are skipped and
+/// columns past `cols` masked; a tile entirely past either is skipped, its
+/// column offset clamped so no pointer past the row is formed.
+template <typename Out, int V, bool Load, bool Full, int Tile>
+[[gnu::always_inline]] inline void move_tile(Out* c, std::int64_t ldc, std::int64_t s, std::int64_t rows,
+                                             std::int64_t cols) __arm_streaming __arm_inout("za") {
     constexpr int row = Tile / V, col = Tile % V;
-    if (rows <= row * s)
-        return;
-    const auto offset = std::min<std::int64_t>(col * s, cols);
-    const svbool_t pg = kF32<T> ? svwhilelt_b32(col * s, cols) : svwhilelt_b64(col * s, cols);
-    move_tile<T, Tile, Load>(c + row * s * ldc + offset, ldc, std::min(s, rows - row * s), pg);
-}
-
-template <typename T, int V, bool Load, std::size_t... I>
-[[gnu::always_inline]] inline void move_shape(
-    T* c, std::int64_t ldc, std::int64_t s, std::int64_t rows, std::int64_t cols,
-    std::index_sequence<I...>) __arm_streaming __arm_inout("za") {
-    (move_shaped_tile<T, V, Load, I>(c, ldc, s, rows, cols), ...);
-}
-
-// Keep the common full-tile transfers free of edge-address bookkeeping.
-// Both paths remain inlined into the ZA owner, without mode switches.
-template <typename T, bool Load, int R = 2, int V = kCols<T>>
-[[gnu::always_inline]] inline void move_c(T* c, std::int64_t ldc, std::int64_t s, std::int64_t rows,
-                                          std::int64_t cols) __arm_streaming __arm_inout("za") {
-    if constexpr (R == 2 && V == kCols<T>) {
-        if (rows == 2 * s && cols == kCols<T> * s)
-            move_c_columns<T, Load, true>(c, ldc, s, rows, cols);
-        else
-            move_c_columns<T, Load, false>(c, ldc, s, rows, cols);
-    } else {
-        move_shape<T, V, Load>(c, ldc, s, rows, cols, std::make_index_sequence<R * V>{});
+    Out* tile_rows    = c + row * s * ldc;
+    if constexpr (Full) {
+        move_rows<Out, Tile, Load>(tile_rows + col * s, ldc, s, ptrue<Out>());
+    } else if (rows > row * s) {
+        move_rows<Out, Tile, Load>(tile_rows + std::min(col * s, cols), ldc, std::min(s, rows - row * s),
+                                   whilelt<Out>(col * s, cols));
     }
 }
 
-template <typename T, int Row, int V, typename A, std::size_t... Col, typename... B>
-[[gnu::always_inline]] inline void outer_row(svbool_t pt, A a, std::index_sequence<Col...>,
-                                             B... b) __arm_streaming __arm_inout("za") {
-    (mopa<T, Row * V + Col>(pt, a, b), ...);
+/// move_tile for every tile of the R×V shape (tile numbers are instruction
+/// immediates, so the loop is expanded at compile time).
+template <typename Out, int V, bool Load, bool Full, std::size_t... Tile>
+[[gnu::always_inline]] inline void move_tiles(Out* c, std::int64_t ldc, std::int64_t s, std::int64_t rows,
+                                              std::int64_t cols, std::index_sequence<Tile...>) __arm_streaming
+    __arm_inout("za") {
+    (move_tile<Out, V, Load, Full, int(Tile)>(c, ldc, s, rows, cols), ...);
 }
 
-template <typename T, int V, std::size_t... Row, typename... B>
-[[gnu::always_inline]] inline void outer_rows(svbool_t pt, const sme_word_t<T>* a, std::int64_t s,
-                                              std::index_sequence<Row...>,
-                                              B... b) __arm_streaming __arm_inout("za") {
-    (outer_row<T, Row, V>(pt, svld1(pt, a + Row * s), std::make_index_sequence<V>{}, b...), ...);
+/// The R×V-tile accumulator from C (Load) or to C: the rows × cols of C at
+/// c (ldc apart). Whole micro-tiles, the common case, skip the edge
+/// bookkeeping.
+template <typename Out, int R, int V, bool Load>
+[[gnu::always_inline]] inline void move_c(Out* c, std::int64_t ldc, std::int64_t s, std::int64_t rows,
+                                          std::int64_t cols) __arm_streaming __arm_inout("za") {
+    if (rows == R * s && cols == V * s)
+        move_tiles<Out, V, Load, true>(c, ldc, s, rows, cols, std::make_index_sequence<R * V>{});
+    else
+        move_tiles<Out, V, Load, false>(c, ldc, s, rows, cols, std::make_index_sequence<R * V>{});
 }
 
-// Sizeless vectors travel as a parameter pack: V B loads reused by R rows.
-// Clamp inactive B columns before forming pointers, even with false predicates.
-template <typename T, int R, int V, std::size_t... Col>
-[[gnu::always_inline]] inline void outer_step(
-    svbool_t pt, const sme_word_t<T>* a, const sme_word_t<T>* b, std::int64_t s, std::int64_t cols,
-    std::index_sequence<Col...>) __arm_streaming __arm_inout("za") {
-    outer_rows<T, V>(pt, a, s, std::make_index_sequence<R>{},
-                     svld1(kF32<sme_word_t<T>> ? svwhilelt_b32(std::int64_t(Col) * s, cols)
-                                               : svwhilelt_b64(std::int64_t(Col) * s, cols),
-                           b + std::min<std::int64_t>(Col * s, cols))...);
-}
-
+/// Rejects ZA shapes that do not fit ZA: 4 32-bit tiles (FP32 and the
+/// widening types) or 8 64-bit tiles (FP64).
 template <typename T, int R, int V>
 constexpr bool check_shape() {
     static_assert(R > 0 && V > 0, "SME tile dimensions must be positive");
@@ -632,13 +686,13 @@ constexpr bool check_shape() {
 }
 
 /// Macro-kernel (streaming): C[mc×nc] (+)= Apack · B over kw k groups (kw =
-/// kc for FP32 / FP64), R×V ZA tiles. A is packed
-/// (pack_a). Row w of the B strip starting at column jr is at B + jr·b_step +
-/// w·ldb: packed strips (b_step = kw, ldb = nr) for gemm_sme, or B in place
-/// (b_step = 1, ldb = N; FP32 / FP64 only) for gemm_sme_tiles and
-/// gemm_sme_blocked. B loads are predicated to the strip's real columns, so
-/// reading B in place never runs past the end of a row. C is T, or FP32 /
-/// INT32 for the widening types; ZA moves are bit copies.
+/// kc for FP32 / FP64) with an R×V-tile accumulator, B strip by B strip and,
+/// within one, A strip by A strip. A is packed (pack_a). Row w of the B strip
+/// starting at column jr is at B + jr·b_step + w·ldb: packed strips (b_step =
+/// kw, ldb = nr), or B in place (b_step = 1, ldb = N; FP32 / FP64 only). B
+/// loads are predicated to the strip's real columns, so reading B in place
+/// never runs past a row. accumulate: add to C (a later k block), else
+/// overwrite it. C is T, or FP32 / INT32 for the widening types.
 template <typename T, int R, int V>
 __arm_locally_streaming __arm_new("za")
 void macro_kernel(const sme_word_t<T>* __restrict Ap, const sme_word_t<T>* __restrict B, std::int64_t b_step,
@@ -647,159 +701,54 @@ void macro_kernel(const sme_word_t<T>* __restrict Ap, const sme_word_t<T>* __res
     using W   = sme_word_t<T>;
     using Out = sme_out_t<T>;
     static_assert(check_shape<T, R, V>());
-    constexpr int kC      = V;
-    const std::int64_t s  = kF32<W> ? svcntsw() : svcntsd();
-    const std::int64_t mr = R * s, nr = kC * s;
-    const svbool_t pt     = kF32<W> ? svptrue_b32() : svptrue_b64();
-    const svcount_t pn    = kF32<W> ? svptrue_c32() : svptrue_c64();
-
+    const std::int64_t s = lanes<W>(), mr = R * s, nr = V * s;
     for (std::int64_t jr = 0; jr < nc; jr += nr) {
         const std::int64_t cols = std::min(nr, nc - jr);
         const W* b_strip        = B + jr * b_step;
-        // Columns [0, 2s) and, for f64, [2s, 4s) of the strip.
-        const svcount_t pb0 = kF32<W> ? svwhilelt_c32(std::int64_t{0}, cols, 2)
-                                      : svwhilelt_c64(std::int64_t{0}, cols, 2);
-        const svcount_t pb1 = svwhilelt_c64(2 * s, cols, 2);
-
         for (std::int64_t ir = 0; ir < mc; ir += mr) {
             const std::int64_t rows = std::min(mr, mc - ir);
             const W* a_strip        = Ap + ir * kw;
             Out* c                  = C + ir * ldc + jr;
-
             if (accumulate)
-                move_c<Out, true, R, V>(c, ldc, s, rows, cols);
+                move_c<Out, R, V, true>(c, ldc, s, rows, cols);
             else
                 svzero_za();
-
-            for (std::int64_t k = 0; k < kw; ++k) {
-                if constexpr (R == 2 && V == kCols<T>) {
-                    // SME2 multi-vector loads: one instruction fetches 2 vectors.
-                    const auto a  = svld1_x2(pn, a_strip + k * mr);
-                    const auto b  = svld1_x2(pb0, b_strip + k * ldb);
-                    const auto a0 = svget2(a, 0), a1 = svget2(a, 1);
-                    mopa<T, 0>(pt, a0, svget2(b, 0));
-                    mopa<T, 1>(pt, a0, svget2(b, 1));
-                    mopa<T, kC + 0>(pt, a1, svget2(b, 0));
-                    mopa<T, kC + 1>(pt, a1, svget2(b, 1));
-                    if constexpr (kC == 4) {  // f64: columns 2–3 use the other 4 za64 tiles
-                        const auto b2 = svld1_x2(pb1, b_strip + k * ldb + (cols > 2 * s ? 2 * s : 0));
-                        mopa<T, 2>(pt, a0, svget2(b2, 0));
-                        mopa<T, 3>(pt, a0, svget2(b2, 1));
-                        mopa<T, 6>(pt, a1, svget2(b2, 0));
-                        mopa<T, 7>(pt, a1, svget2(b2, 1));
-                    }
-                } else {
-                    outer_step<T, R, V>(pt, a_strip + k * mr, b_strip + k * ldb,
-                                       s, cols, std::make_index_sequence<V>{});
-                }
-            }
-
-            move_c<Out, false, R, V>(c, ldc, s, rows, cols);
+            for (std::int64_t k = 0; k < kw; ++k)
+                outer_step<T, R, V>(a_strip + k * mr, b_strip + k * ldb, s, cols,
+                                    std::make_index_sequence<(R + 1) / 2>{}, std::make_index_sequence<(V + 1) / 2>{});
+            move_c<Out, R, V, false>(c, ldc, s, rows, cols);
         }
     }
 }
 
-/// One-tile kernel (streaming): C[M×N] = Apack[M×K] · B[K×N] with only ZA
-/// tile 0 (s×s). Apack holds s-row strips; B is read in place.
-template <typename T>
-__arm_locally_streaming __arm_new("za")
-void one_tile_kernel(const T* __restrict Ap, const T* __restrict B, T* __restrict C,
-                     std::int64_t M, std::int64_t N, std::int64_t K) {
-    const std::int64_t s = kF32<T> ? svcntsw() : svcntsd();
-    const svbool_t pt    = kF32<T> ? svptrue_b32() : svptrue_b64();
+// ============================================================================
+// The driver (normal mode)
+// ============================================================================
 
-    for (std::int64_t j0 = 0; j0 < N; j0 += s) {
-        const svbool_t pg = kF32<T> ? svwhilelt_b32(j0, N) : svwhilelt_b64(j0, N);
-        for (std::int64_t i0 = 0; i0 < M; i0 += s) {
-            const T* a_strip = Ap + i0 * K;
-            svzero_za();
-            // Every FMOPA accumulates into the same tile, so each one waits
-            // for the previous one's result: this loop runs at FMOPA latency.
-            for (std::int64_t k = 0; k < K; ++k) {
-                const auto a = svld1(pt, a_strip + k * s);
-                const auto b = svld1(pg, B + k * N + j0);
-                mopa<T, 0>(pt, a, b);
-            }
-            move_tile<T, 0, false>(C + i0 * N + j0, N, std::min(s, M - i0), pg);
-        }
-    }
-}
-
-/// Pack all of A (M×K) into mr-row strips, for the kernels without blocking.
-template <typename T>
-Matrix<T> pack_all_a(const Matrix<T>& A, std::size_t mr) {
-    const std::size_t M = A.rows(), K = A.cols();
-    Matrix<T> a_pack((M + mr - 1) / mr * mr, K);
-    pack_a(A.data(), K, M, K, mr, a_pack.data());
-    return a_pack;
-}
-
-}  // namespace sme_detail
-
-/**
- * @brief C = A · B on ARM SME, step 1 of 4: one ZA tile, A packed into
- *        SVL-row strips, B read in place, no cache blocking. FMOPA latency
- *        bound; see the file header.
- */
-template <typename T>
-void gemm_sme_1tile(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
-    static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>,
-                  "gemm_sme_1tile: T must be float or double");
-    const std::size_t M = A.rows(), K = A.cols(), N = B.cols();
-    assert(B.rows() == K && C.rows() == M && C.cols() == N);
-    if (K == 0)
-        C.zero();
-    if (M == 0 || N == 0 || K == 0)
-        return;
-    const std::size_t s = sme_detail::kF32<T> ? svcntsw() : svcntsd();
-    const Matrix<T> a_pack = sme_detail::pack_all_a(A, s);
-    sme_detail::one_tile_kernel<T>(a_pack.data(), B.data(), C.data(),
-                                   static_cast<std::int64_t>(M), static_cast<std::int64_t>(N),
-                                   static_cast<std::int64_t>(K));
-}
-
-/**
- * @brief C = A · B on ARM SME, step 2 of 4: R×V ZA tiles (gemm_sme's
- *        macro_kernel run once over the whole problem), A packed into
- *        R·SVL-row strips, B read in place, no cache blocking. See the file
- *        header.
- */
-template <typename T, int R, int V>
-void gemm_sme_tiles(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
-    static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>,
-                  "gemm_sme_tiles: T must be float or double");
-    const std::size_t M = A.rows(), K = A.cols(), N = B.cols();
-    assert(B.rows() == K && C.rows() == M && C.cols() == N);
-    if (K == 0)
-        C.zero();
-    if (M == 0 || N == 0 || K == 0)
-        return;
-    const std::size_t s = sme_detail::kF32<T> ? svcntsw() : svcntsd();
-    static_assert(sme_detail::check_shape<T, R, V>());
-    const Matrix<T> a_pack = sme_detail::pack_all_a(A, R * s);
-    const auto n = static_cast<std::int64_t>(N);
-    sme_detail::macro_kernel<T, R, V>(a_pack.data(), B.data(), 1, n, C.data(), n,
-                                static_cast<std::int64_t>(M), n, static_cast<std::int64_t>(K),
-                                false);
-}
-
-namespace sme_detail {
-
-/// GotoBLAS driver shared by gemm_sme_blocked (PackB = false) and gemm_sme
-/// (PackB = true); the only difference is where the macro-kernel reads B.
-/// B is K×N with rows ldb ≥ N elements apart (B(k, j) = B[k·ldb + j]); the
-/// public kernels pass ldb = N, the BStride benchmarks pad it. T is any of
-/// the five input types; TileK is in elements, a whole number of k groups.
-/// B in place is FP32 / FP64 only: the widening instructions need B's k
-/// groups contiguous, which only packing gives.
+/// The GotoBLAS loops behind every kernel here, on `threads` threads:
+///
+///   for jc, pc (TileN columns, TileK k)
+///     PackB: every thread packs every team-th B strip → one shared panel
+///     each thread takes the next chunk of rows (atomic counter), packs it
+///     (pack_a) and runs macro_kernel on it, until no chunk is left
+///     barrier: the panel is repacked, and C rows accumulated, next pass
+///
+/// Chunks are TileM rows on one thread; on several, fewer, about four per
+/// thread (at least one micro-tile), so that a unit with more threads takes
+/// more (gemm_sme_mt). B is K×N with rows ldb ≥ N elements apart, read in
+/// place unless PackB (FP32 / FP64 only: the widening instructions need B's
+/// k groups contiguous); the public kernels pass ldb = N, the BStride
+/// benchmarks pad it. TileK is in elements, a whole number of k groups;
+/// SIZE_MAX blocks mean no blocking.
 template <typename T, bool PackB, int R, int V, std::size_t TileM, std::size_t TileK, std::size_t TileN>
-void blocked_driver(const Matrix<T>& A, const T* B, std::size_t ldb, Matrix<sme_out_t<T>>& C) {
+void blocked_driver(const Matrix<T>& A, const T* B, std::size_t ldb, Matrix<sme_out_t<T>>& C, unsigned threads) {
     using W                 = sme_word_t<T>;
     constexpr std::size_t G = kSmeG<T>;
+    static_assert(kSmeFp<T> || kSmeWidening<T>, "SME kernels: T must be float, double, fp16, bf16 or std::int8_t");
+    static_assert(PackB || kSmeFp<T>, "B in place (gemm_sme_tiles, gemm_sme_blocked): T must be float or double");
     static_assert(check_shape<T, R, V>());
     static_assert(TileM > 0 && TileK > 0 && TileN > 0, "SME cache blocks must be positive");
     static_assert(TileK % G == 0, "TileK must be a whole number of k groups");
-    static_assert(PackB || G == 1, "the widening kernels need B packed");
     const std::size_t M = A.rows(), K = A.cols(), N = C.cols();
     assert(C.rows() == M && ldb >= N);
     if (K == 0)
@@ -807,132 +756,25 @@ void blocked_driver(const Matrix<T>& A, const T* B, std::size_t ldb, Matrix<sme_
     if (M == 0 || N == 0 || K == 0)
         return;
 
-    // Micro-tile is mr × nr; RDSVL (svcnts*) is legal outside streaming mode.
-    const std::size_t s  = kF32<W> ? svcntsw() : svcntsd();
-    const std::size_t mr = R * s, nr = V * s;
-    auto round_up        = [](std::size_t x, std::size_t m) { return (x + m - 1) / m * m; };
-    const std::size_t kw_max = (std::min(TileK, K) + G - 1) / G;
-    Matrix<W> a_pack(round_up(std::min(TileM, M), mr), kw_max);  // 64-byte aligned scratch
-    Matrix<W> b_pack(PackB ? kw_max : 0, PackB ? round_up(std::min(TileN, N), nr) : 0);
-
-    for (std::size_t jc = 0; jc < N; jc += TileN) {
-        const std::size_t nc = std::min(TileN, N - jc);
-        for (std::size_t pc = 0; pc < K; pc += TileK) {
-            const std::size_t kc = std::min(TileK, K - pc), kw = (kc + G - 1) / G;
-            // B strip rows: packed, nr apart (b_step = kw); in place, ldb apart.
-            const W* b;
-            std::int64_t b_step = 1, b_ld = static_cast<std::int64_t>(ldb);
-            if constexpr (PackB) {
-                pack_b(B + pc * ldb + jc, ldb, kc, nc, nr, b_pack.data());
-                b      = b_pack.data();
-                b_step = static_cast<std::int64_t>(kw);
-                b_ld   = static_cast<std::int64_t>(nr);
-            } else {
-                b = B + pc * ldb + jc;  // G = 1: a word is an element
-            }
-            for (std::size_t ic = 0; ic < M; ic += TileM) {
-                const std::size_t mc = std::min(TileM, M - ic);
-                pack_a(A.data() + ic * K + pc, K, mc, kc, mr, a_pack.data());
-                macro_kernel<T, R, V>(a_pack.data(), b, b_step, b_ld, C.data() + ic * N + jc,
-                                static_cast<std::int64_t>(N), static_cast<std::int64_t>(mc),
-                                static_cast<std::int64_t>(nc), static_cast<std::int64_t>(kw),
-                                pc > 0);
-            }
-        }
-    }
-}
-
-
-}  // namespace sme_detail
-
-/**
- * @brief C = A · B on ARM SME, step 3 of 4: gemm_sme without pack_b (R×V ZA
- *        tiles, cache blocking, B read in place). See the file header,
- *        "Packing", for what that costs at power-of-two N.
- */
-template <typename T, int R, int V, std::size_t TileM, std::size_t TileK, std::size_t TileN>
-void gemm_sme_blocked(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
-    static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>,
-                  "gemm_sme_blocked: T must be float or double");
-    assert(B.rows() == A.cols() && B.cols() == C.cols());
-    sme_detail::blocked_driver<T, false, R, V, TileM, TileK, TileN>(A, B.data(), B.cols(), C);
-}
-
-/**
- * @brief C = A · B on ARM SME, step 4 of 4: R×V ZA tiles, cache blocking,
- *        A and B packed. See the file header, "gemm_sme". T is float or
- *        double, or fp16, bf16, int8_t with the widening outer products
- *        (FP32 / INT32 C; "Low precision" in the file header).
- */
-template <typename T, int R, int V, std::size_t TileM, std::size_t TileK, std::size_t TileN>
-void gemm_sme(const Matrix<T>& A, const Matrix<T>& B, Matrix<sme_out_t<T>>& C) {
-    static_assert(std::is_same_v<T, float> || std::is_same_v<T, double> || std::is_same_v<T, fp16> ||
-                      std::is_same_v<T, bf16> || std::is_same_v<T, std::int8_t>,
-                  "gemm_sme: T must be float, double, fp16, bf16 or std::int8_t");
-    assert(B.rows() == A.cols() && B.cols() == C.cols());
-    sme_detail::blocked_driver<T, true, R, V, TileM, TileK, TileN>(A, B.data(), B.cols(), C);
-}
-
-/**
- * @brief C = A · B on several SME units at once: gemm_sme's blocking with
- *        the B panel packed once and shared, and A blocks handed out to
- *        `threads` threads on demand.
- *
- * An SME unit belongs to a P-cluster, not to a core: the cores of a cluster
- * share it, and M4 Max has two P-clusters, so one thread reaches at most one
- * unit's throughput (gemm_sme). macOS has no API to pin a thread to a
- * cluster, and the scheduler tends to keep a few busy threads on one
- * cluster (so on one unit) until it is full; with equal static shares, the
- * unit that got more threads then finishes last. So the work is split
- * dynamically, as in multi-threaded GotoBLAS:
- *
- *   for jc, pc (as gemm_sme)
- *     every thread packs every team-th B strip  → one shared B panel
- *     barrier
- *     each thread takes the next chunk of rows (atomic counter), packs its
- *     A block and runs macro_kernel on it, until no chunk is left
- *     barrier                                    (B panel reused next pass)
- *
- * A unit with more threads simply takes more chunks. Chunks are TileM rows
- * or fewer, so that every thread gets about four (at least one micro-tile,
- * 2·SVL rows, each); each thread has its own A buffer, and chunks write
- * disjoint rows of C. Workers run at user-interactive QoS, which keeps them
- * on P-cores. Threads are created per call (tens of µs), so small products
- * should use gemm_sme. M4's measured thread count and A block height
- * (8, and gemm_sme's TileM): docs/kernels/sme.md, "Several SME units".
- * T, R, V and the blocks: as gemm_sme.
- */
-template <typename T, int R, int V, std::size_t TileM, std::size_t TileK, std::size_t TileN>
-void gemm_sme_mt(const Matrix<T>& A, const Matrix<T>& B, Matrix<sme_out_t<T>>& C, unsigned threads) {
-    static_assert(std::is_same_v<T, float> || std::is_same_v<T, double> || std::is_same_v<T, fp16> ||
-                      std::is_same_v<T, bf16> || std::is_same_v<T, std::int8_t>,
-                  "gemm_sme_mt: T must be float, double, fp16, bf16 or std::int8_t");
-    using W                 = sme_word_t<T>;
-    constexpr std::size_t G = kSmeG<T>;
-    static_assert(sme_detail::check_shape<T, R, V>());
-    static_assert(TileM > 0 && TileK > 0 && TileN > 0, "SME cache blocks must be positive");
-    static_assert(TileK % G == 0, "TileK must be a whole number of k groups");
-    const std::size_t M = A.rows(), K = A.cols(), N = B.cols();
-    assert(B.rows() == K && C.rows() == M && C.cols() == N);
-    if (K == 0)
-        C.zero();
-    if (M == 0 || N == 0 || K == 0)
-        return;
-
-    const std::size_t s  = sme_detail::kF32<W> ? svcntsw() : svcntsd();
-    const std::size_t mr = R * s, nr = V * s;
-    auto round_up        = [](std::size_t x, std::size_t m) { return (x + m - 1) / m * m; };
-    const std::size_t want   = std::max<std::size_t>(threads, 1);
-    const std::size_t chunk  = std::clamp(round_up((M + 4 * want - 1) / (4 * want), mr), mr,
-                                          round_up(TileM, mr));
-    const std::size_t chunks = (M + chunk - 1) / chunk;
+    const std::size_t s = std::size_t(lanes<W>()), mr = R * s, nr = V * s;
+    const std::size_t want   = std::max(threads, 1u);
+    const std::size_t chunk  = want == 1 ? std::min(TileM, M)
+                                         : std::clamp(round_up(div_up(M, 4 * want), mr), mr,
+                                                      round_up(std::min(TileM, M), mr));
+    const std::size_t chunks = div_up(M, chunk);
     const std::size_t team   = std::min(want, chunks);
-    const std::size_t kw_max = (std::min(TileK, K) + G - 1) / G;
-    const std::size_t passes = ((N + TileN - 1) / TileN) * ((K + TileK - 1) / TileK);
-
-    Matrix<W> b_pack(kw_max, round_up(std::min(TileN, N), nr));
-    std::vector<std::atomic<std::size_t>> next(passes);  // chunk counter per (jc, pc) pass
-    std::barrier sync(static_cast<std::ptrdiff_t>(team));
+    const std::size_t kw_max = div_up(std::min(TileK, K), G);
+    Matrix<W> b_pack(PackB ? kw_max : 0, PackB ? round_up(std::min(TileN, N), nr) : 0);  // 64-byte aligned
+    // Chunk counter per (jc, pc) pass, and the barrier between passes; one
+    // thread needs neither, and building them costs ~10% at N = 64.
+    std::vector<std::atomic<std::size_t>> next(team > 1 ? div_up(N, TileN) * div_up(K, TileK) : 0);
+    std::optional<std::barrier<>> sync;
+    if (team > 1)
+        sync.emplace(static_cast<std::ptrdiff_t>(team));
+    const auto wait_all = [&] {
+        if (sync)
+            sync->arrive_and_wait();
+    };
 
     auto worker = [&](std::size_t t) {
 #if defined(__APPLE__)
@@ -941,26 +783,37 @@ void gemm_sme_mt(const Matrix<T>& A, const Matrix<T>& B, Matrix<sme_out_t<T>>& C
         if (t > 0)
             pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
 #endif
-        Matrix<W> a_pack(chunk, kw_max);
+        Matrix<W> a_pack(round_up(chunk, mr), kw_max);
         std::size_t pass = 0;
         for (std::size_t jc = 0; jc < N; jc += TileN) {
             const std::size_t nc = std::min(TileN, N - jc);
             for (std::size_t pc = 0; pc < K; pc += TileK, ++pass) {
-                const std::size_t kc = std::min(TileK, K - pc), kw = (kc + G - 1) / G;
-                for (std::size_t j0 = t * nr; j0 < nc; j0 += team * nr)
-                    sme_detail::pack_b(B.data() + pc * N + jc + j0, N, kc, std::min(nr, nc - j0), nr,
-                                       b_pack.data() + j0 * kw);
-                sync.arrive_and_wait();
-                for (std::size_t c; (c = next[pass].fetch_add(1, std::memory_order_relaxed)) < chunks;) {
-                    const std::size_t ic = c * chunk, mc = std::min(chunk, M - ic);
-                    sme_detail::pack_a(A.data() + ic * K + pc, K, mc, kc, mr, a_pack.data());
-                    sme_detail::macro_kernel<T, R, V>(
-                        a_pack.data(), b_pack.data(), static_cast<std::int64_t>(kw),
-                        static_cast<std::int64_t>(nr), C.data() + ic * N + jc, static_cast<std::int64_t>(N),
-                        static_cast<std::int64_t>(mc), static_cast<std::int64_t>(nc),
-                        static_cast<std::int64_t>(kw), pc > 0);
+                const std::size_t kc = std::min(TileK, K - pc), kw = div_up(kc, G);
+                const T* b_block     = B + pc * ldb + jc;
+                const W* b;
+                std::size_t b_step, b_ld;
+                if constexpr (PackB) {
+                    for (std::size_t j0 = t * nr; j0 < nc; j0 += team * nr)
+                        pack_b(b_block + j0, ldb, kc, std::min(nr, nc - j0), nr, b_pack.data() + j0 * kw);
+                    wait_all();
+                    b      = b_pack.data();
+                    b_step = kw;
+                    b_ld   = nr;
+                } else {  // FP32 / FP64: a word is an element
+                    b      = b_block;
+                    b_step = 1;
+                    b_ld   = ldb;
                 }
-                sync.arrive_and_wait();
+                // The next chunk: from the shared counter, or in order on one thread.
+                for (std::size_t mine = 0, c;
+                     (c = team > 1 ? next[pass].fetch_add(1, std::memory_order_relaxed) : mine++) < chunks;) {
+                    const std::size_t ic = c * chunk, mc = std::min(chunk, M - ic);
+                    pack_a(A.data() + ic * K + pc, K, mc, kc, mr, a_pack.data());
+                    macro_kernel<T, R, V>(a_pack.data(), b, std::int64_t(b_step), std::int64_t(b_ld),
+                                          C.data() + ic * N + jc, std::int64_t(N), std::int64_t(mc),
+                                          std::int64_t(nc), std::int64_t(kw), pc > 0);
+                }
+                wait_all();
             }
         }
     };
@@ -971,6 +824,91 @@ void gemm_sme_mt(const Matrix<T>& A, const Matrix<T>& B, Matrix<sme_out_t<T>>& C
     worker(0);
     for (std::thread& th : pool)
         th.join();
+}
+
+/// blocked_driver over all of B (ldb = N), after checking the shapes.
+template <typename T, bool PackB, int R, int V, std::size_t TileM, std::size_t TileK, std::size_t TileN>
+void run(const Matrix<T>& A, const Matrix<T>& B, Matrix<sme_out_t<T>>& C, unsigned threads) {
+    assert(B.rows() == A.cols() && B.cols() == C.cols());
+    blocked_driver<T, PackB, R, V, TileM, TileK, TileN>(A, B.data(), B.cols(), C, threads);
+}
+
+/// Block size meaning "no blocking": one block spans the whole matrix.
+inline constexpr std::size_t kWhole = SIZE_MAX;
+
+}  // namespace sme_detail
+
+// ============================================================================
+// The kernels. One driver and one macro-kernel; each step of the ladder
+// changes one thing ("The kernels" in the file header).
+// ============================================================================
+
+/**
+ * @brief C = A · B on ARM SME, step 1 of 4: one ZA tile (gemm_sme_tiles with
+ *        a 1×1 shape), A packed into SVL-row strips, B read in place, no
+ *        cache blocking. FMOPA latency bound: every outer product waits for
+ *        the previous one. T is float or double.
+ */
+template <typename T>
+void gemm_sme_1tile(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
+    sme_detail::run<T, false, 1, 1, sme_detail::kWhole, sme_detail::kWhole, sme_detail::kWhole>(A, B, C, 1);
+}
+
+/**
+ * @brief C = A · B on ARM SME, step 2 of 4: R×V ZA tiles (the macro-kernel
+ *        run once over the whole problem), A packed into R·SVL-row strips,
+ *        B read in place, no cache blocking. T is float or double.
+ */
+template <typename T, int R, int V>
+void gemm_sme_tiles(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
+    sme_detail::run<T, false, R, V, sme_detail::kWhole, sme_detail::kWhole, sme_detail::kWhole>(A, B, C, 1);
+}
+
+/**
+ * @brief C = A · B on ARM SME, step 3 of 4: gemm_sme without pack_b (R×V ZA
+ *        tiles, cache blocking, B read in place). See the file header,
+ *        "Packing", for what that costs at power-of-two N. T is float or
+ *        double.
+ */
+template <typename T, int R, int V, std::size_t TileM, std::size_t TileK, std::size_t TileN>
+void gemm_sme_blocked(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C) {
+    sme_detail::run<T, false, R, V, TileM, TileK, TileN>(A, B, C, 1);
+}
+
+/**
+ * @brief C = A · B on ARM SME, step 4 of 4: R×V ZA tiles, cache blocking,
+ *        A and B packed. See the file header, "gemm_sme". T is float or
+ *        double, or fp16, bf16, int8_t with the widening outer products
+ *        (FP32 / INT32 C; "Low precision" in the file header).
+ */
+template <typename T, int R, int V, std::size_t TileM, std::size_t TileK, std::size_t TileN>
+void gemm_sme(const Matrix<T>& A, const Matrix<T>& B, Matrix<sme_out_t<T>>& C) {
+    sme_detail::run<T, true, R, V, TileM, TileK, TileN>(A, B, C, 1);
+}
+
+/**
+ * @brief C = A · B on several SME units at once: gemm_sme on `threads`
+ *        threads, the B panel packed once per pass and shared, rows of A
+ *        handed out in chunks on demand.
+ *
+ * An SME unit belongs to a P-cluster, not to a core: the cores of a cluster
+ * share it, and M4 Max has two P-clusters, so one thread reaches at most one
+ * unit's throughput (gemm_sme). macOS has no API to pin a thread to a
+ * cluster, and the scheduler tends to keep a few busy threads on one
+ * cluster (so on one unit) until it is full; with equal static shares, the
+ * unit that got more threads then finishes last. So the work is split
+ * dynamically, as in multi-threaded GotoBLAS (sme_detail::blocked_driver):
+ * a unit with more threads simply takes more chunks. Each thread has its
+ * own A buffer, and chunks write disjoint rows of C. Workers run at
+ * user-interactive QoS, which keeps them on P-cores. Threads are created
+ * per call (tens of µs), so small products should use gemm_sme. M4's
+ * measured thread count and A block height (8, and gemm_sme's TileM):
+ * docs/kernels/sme.md, "Several SME units". T, R, V and the blocks: as
+ * gemm_sme.
+ */
+template <typename T, int R, int V, std::size_t TileM, std::size_t TileK, std::size_t TileN>
+void gemm_sme_mt(const Matrix<T>& A, const Matrix<T>& B, Matrix<sme_out_t<T>>& C, unsigned threads) {
+    sme_detail::run<T, true, R, V, TileM, TileK, TileN>(A, B, C, threads);
 }
 
 #endif  // HPC_HAS_SME

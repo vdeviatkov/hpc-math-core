@@ -163,13 +163,13 @@ int main(int argc, char** argv) {
             return c.packed ? timed_driver<true>(A, b_of(c), c.ldb, C)
                             : timed_driver<false>(A, b_of(c), c.ldb, C);
         if (c.packed)
-            sme::blocked_driver<float, true, P::R, P::V, P::Mc, P::Kc, P::Nc>(A, b_of(c), c.ldb, C);
+            sme::blocked_driver<float, true, P::R, P::V, P::Mc, P::Kc, P::Nc>(A, b_of(c), c.ldb, C, 1);
         else
-            sme::blocked_driver<float, false, P::R, P::V, P::Mc, P::Kc, P::Nc>(A, b_of(c), c.ldb, C);
+            sme::blocked_driver<float, false, P::R, P::V, P::Mc, P::Kc, P::Nc>(A, b_of(c), c.ldb, C, 1);
         return Phases{};
     };
 
-    sme::blocked_driver<float, true, P::R, P::V, P::Mc, P::Kc, P::Nc>(A, B[0].data(), N, ref);
+    sme::blocked_driver<float, true, P::R, P::V, P::Mc, P::Kc, P::Nc>(A, B[0].data(), N, ref, 1);
     for (const Case& c : cases)
         for (const bool by_phase : {false, true}) {
             run(c, by_phase);
