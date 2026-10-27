@@ -325,8 +325,8 @@ arithmetic and keeps the same efficiency: 2.3× the FP32 kernel at N = 2,048.
 
 ## The GPU kernel
 
-Code: [`kernel_lowp`, `kernel_tma` and the five `mma` formats](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/cuda/gemm_lowp.cu),
-API in [`cuda_lowp.hpp`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/cuda_lowp.hpp).
+Code: [`kernel_lowp`, `kernel_tma` and the five `mma` formats](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/cuda/gemm.cu),
+API in [`cuda.hpp`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/cuda.hpp).
 
 On the GPU the k grouping is inside the instruction: an `mma.sync` fragment
 of an 8-bit operand holds 4 consecutive k per 32-bit register, of a 16-bit

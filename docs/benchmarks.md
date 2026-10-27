@@ -553,7 +553,7 @@ TFLOP/s, ascending:
 Without padding its shared-memory tiles, `gemm_cuda_wmma_pipelined` measured
 80.8 TFLOP/s, 68% of cuBLAS. Padding each row by 8 halves (why 8, and why
 not a swizzle: the `kPipeAsLd` comment in
-[gemm_kernels.cu](../src/cuda/gemm_kernels.cu)) changed, per Nsight Compute
+[gemm.cu](../src/cuda/gemm.cu)) changed, per Nsight Compute
 at N=4096 compute-only:
 
 | Metric | Unpadded | Padded (+8) |

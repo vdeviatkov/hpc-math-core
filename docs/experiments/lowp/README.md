@@ -71,7 +71,7 @@ benchmarks report GPU-event time of the GEMM alone, as in part 4.
   128 × 128 tiles with 4, 5, 6 stages and 128 × 256 tiles with 3, 4
   stages (`tuning_level8.csv`). 128 × 256 makes the GEMM 3–11% faster; the stage count changes
   little from 3 on. With one block per SM the tile is chosen by how full
-  the last wave of blocks is (see `launch_tma` in `gemm_lowp.cu`).
+  the last wave of blocks is (see `launch_tma` in `gemm.cu`).
 - **cuBLAS FP8.** Nsight Compute shows cuBLASLt's FP8 kernel executing
   `QMMA.SF.16832.F32.E4M3.E4M3.E8`, the block-scaled MMA, the same number
   of times as the hand-written kernels' `mma` (16.8 M at N = 4096). At

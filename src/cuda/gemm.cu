@@ -90,39 +90,47 @@ __device__ __forceinline__ unsigned smem_addr(const void* p) {
     return static_cast<unsigned>(__cvta_generic_to_shared(p));
 }
 
-/// Copy BYTES (4, 8 or 16) from global `src` to shared `dst`, or write zeros
-/// when !valid (`src` must still be a readable address). On sm_80+ this is an
-/// asynchronous cp.async, finished by cp_async_wait; older GPUs copy
-/// synchronously.
+/// Copy one 4- or 8-byte element from global `src` to shared `dst`, or write
+/// zeros when !valid (`src` must still be a readable address). On sm_80+
+/// this is an asynchronous cp.async, finished by cp_async_wait; older GPUs
+/// copy synchronously.
 template <int BYTES>
-__device__ __forceinline__ void cp_async(void* dst, const void* src, bool valid = true) {
-    static_assert(BYTES == 4 || BYTES == 8 || BYTES == 16, "cp.async copies 4, 8 or 16 bytes");
+__device__ __forceinline__ void cp_async_or_zero(void* dst, const void* src, bool valid) {
+    static_assert(BYTES == 4 || BYTES == 8, "an element is 4 or 8 bytes");
 #ifdef HPC_SM80
-    const int src_bytes = valid ? BYTES : 0;
-    if constexpr (BYTES == 16)  // .cg: bypass L1; a block reads each tile once
-        asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" ::"r"(smem_addr(dst)), "l"(src),
-                     "r"(src_bytes));
-    else
-        asm volatile("cp.async.ca.shared.global [%0], [%1], %2, %3;\n" ::"r"(smem_addr(dst)), "l"(src),
-                     "n"(BYTES), "r"(src_bytes));
+    asm volatile("cp.async.ca.shared.global [%0], [%1], %2, %3;\n" ::"r"(smem_addr(dst)), "l"(src), "n"(BYTES),
+                 "r"(valid ? BYTES : 0));
 #else
-    using Word = std::conditional_t<BYTES == 4, unsigned, std::conditional_t<BYTES == 8, uint2, uint4>>;
+    using Word = std::conditional_t<BYTES == 4, unsigned, uint2>;
     *static_cast<Word*>(dst) = valid ? *static_cast<const Word*>(src) : Word{};
+#endif
+}
+
+/// Copy one 16-byte chunk from global `src` to shared `dst`, both 16-byte
+/// aligned: cp.async on sm_80+ (.cg bypasses L1; a block reads each tile
+/// once), a synchronous copy on older GPUs.
+__device__ __forceinline__ void cp_async_16(void* dst, const void* src) {
+#ifdef HPC_SM80
+    asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" ::"r"(smem_addr(dst)), "l"(src));
+#else
+    *static_cast<uint4*>(dst) = *static_cast<const uint4*>(src);
 #endif
 }
 
 /// Close the group of cp.async copies this thread issued since the last commit.
 __device__ __forceinline__ void cp_async_commit() {
 #ifdef HPC_SM80
-    asm volatile("cp.async.commit_group;\n" ::: "memory");
+    asm volatile("cp.async.commit_group;\n");
 #endif
 }
 
-/// Wait until at most PENDING of this thread's committed groups are in flight.
+/// Wait until at most PENDING of this thread's committed groups are in
+/// flight. Not a compiler memory barrier: follow it with __syncthreads(),
+/// as cp_async_pipeline does, before reading the copied tile.
 template <int PENDING>
 __device__ __forceinline__ void cp_async_wait() {
 #ifdef HPC_SM80
-    asm volatile("cp.async.wait_group %0;\n" ::"n"(PENDING) : "memory");
+    asm volatile("cp.async.wait_group %0;\n" ::"n"(PENDING));
 #endif
 }
 
@@ -231,7 +239,7 @@ __device__ __forceinline__ void load_tile(D* dst, int dst_ld, const S* src, int 
         D* d = dst + (TRANSPOSED ? c * dst_ld + r : r * dst_ld + c);
         if constexpr (ASYNC) {
             static_assert(std::is_same_v<D, S>, "cp.async copies bytes, it cannot convert");
-            cp_async<sizeof(D)>(d, src + (inside ? r * ld + c : 0), inside);
+            cp_async_or_zero<sizeof(D)>(d, src + (inside ? r * ld + c : 0), inside);
         } else {
             *d = static_cast<D>(inside ? src[r * ld + c] : S{0});
         }
@@ -249,7 +257,7 @@ __device__ __forceinline__ void copy_tile_16B(void* dst, int dst_ld, const void*
     #pragma unroll
     for (int i = threadIdx.x; i < ROWS * kChunks; i += THREADS) {
         const int r = i / kChunks, c = i % kChunks * 16;
-        cp_async<16>(d + r * dst_ld + c, s + r * src_ld + c);
+        cp_async_16(d + r * dst_ld + c, s + r * src_ld + c);
     }
 }
 
@@ -428,9 +436,13 @@ kernel_reg_tile(const T* __restrict__ A, const T* __restrict__ B, T* __restrict_
 template <typename T>
 constexpr int kDBufTile = sizeof(T) == 8 ? 64 : 128;  // block tile edge, BM = BN
 
-/// Level 2 with a two-stage cp.async pipeline.
+/// Level 2 with a two-stage cp.async pipeline. For float, (256, 2): two
+/// blocks per SM, so at most 128 registers per thread; one more (registers
+/// are allocated in steps of 8) would leave room for only one block, ~4%
+/// slower at N = 4096. Double's 64-thread blocks need no bound, and 128
+/// registers would make it spill.
 template <typename T>
-__global__ void __launch_bounds__(kRegTileThreads)
+__global__ void __launch_bounds__(kRegTileThreads, sizeof(T) == 4 ? 2 : 1)
 kernel_double_buf(const T* __restrict__ A, const T* __restrict__ B, T* __restrict__ C, int M, int K, int N) {
     constexpr int BT = kDBufTile<T>;
     __shared__ T As[2][kBK][BT + 1];
@@ -1415,7 +1427,7 @@ void launch_tma(const void* A, const void* Bt, void* C, int M, int K, int N) {
 }
 
 // ############################################################################
-// Part 4 (helpers). cuBLAS and the Matrix wrappers
+// Part 4. cuBLAS reference and Matrix-wrapper internals
 // ############################################################################
 
 /// Lazily created, process-lifetime cuBLAS handle, bound to the device

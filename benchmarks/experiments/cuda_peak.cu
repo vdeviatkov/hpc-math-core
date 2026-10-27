@@ -14,7 +14,7 @@
  *                      accumulate, the Tensor Core path of the GEMM kernels)
  *                      on kChains independent accumulators held in registers.
  *   mma_<in>_<acc>     the same for each low-precision mma.sync of
- *                      src/cuda/gemm_lowp.cu: bf16, fp16 with an fp16
+ *                      src/cuda/gemm.cu: bf16, fp16 with an fp16
  *                      accumulator, int8, FP8 e4m3 with fp32 and fp16
  *                      accumulators, and (built for sm_120a) the block-scaled
  *                      FP8 form. Inputs are constants: the rate does not
