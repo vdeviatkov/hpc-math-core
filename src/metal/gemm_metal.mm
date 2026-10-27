@@ -30,7 +30,9 @@ struct Geometry {
     bool f16;             ///< reads the fp16 copies of A and B
 };
 
-/// Every tiled kernel and variant in gemm.metal. Levels 0 and 1 are
+/// Every tiled kernel and variant in gemm.metal, with the sizes of its
+/// template arguments there (HPC_REG_TILE, HPC_SIMD, HPC_SIMD_TG): the two
+/// lists must agree, which the MetalVariants test checks. Levels 0 and 1 are
 /// dispatched separately (any shape).
 const std::map<std::string, Geometry>& geometries() {
     static const std::map<std::string, Geometry> table = {
@@ -54,6 +56,7 @@ const std::map<std::string, Geometry>& geometries() {
     return table;
 }
 
+/// The gemm.metal function of a hand-written level; nullptr for the MPS reference.
 const char* function_name(MetalKernel k) {
     switch (k) {
     case MetalKernel::kNaive: return "gemm_naive";
@@ -68,6 +71,7 @@ const char* function_name(MetalKernel k) {
     return nullptr;
 }
 
+/// Throw a runtime_error naming what failed, with the NSError's text if any.
 [[noreturn]] void fail(const std::string& what, NSError* error = nil) {
     std::string msg = "Metal: " + what;
     if (error)
@@ -83,6 +87,7 @@ struct Context {
     std::map<std::string, id<MTLComputePipelineState>> pipelines;
     std::mutex mutex;
 
+    /// Open the default device and compile gemm.metal (fast-math).
     Context() {
         device = MTLCreateSystemDefaultDevice();
         if (!device)
@@ -98,6 +103,7 @@ struct Context {
             fail("compiling gemm.metal", error);
     }
 
+    /// The pipeline of function `name`, built on first use and cached.
     id<MTLComputePipelineState> pipeline(const std::string& name) {
         std::lock_guard lock(mutex);
         auto it = pipelines.find(name);
@@ -114,11 +120,13 @@ struct Context {
     }
 };
 
+/// The process-lifetime Context, created on first use.
 Context& context() {
     static Context ctx;
     return ctx;
 }
 
+/// The GEMM shape as the kernels read it (gemm.metal's Dims).
 struct Dims {
     uint32_t M, K, N;
 };
@@ -160,13 +168,26 @@ struct MetalGemm::Impl {
     MPSMatrixMultiplication* mps = nil;
     MPSMatrixMultiplication* mps16 = nil;
 
+    /// True when the shape is a multiple of the kernel's tile and k step.
     bool fits(const Geometry& g) const {
         return M % g.bm == 0 && N % g.bn == 0 && K % g.bk == 0;
     }
 
+    /// Nothing to launch: M or N is 0, or K is 0 after clearing C.
+    bool empty_product() const {
+        if (M == 0 || N == 0)
+            return true;
+        if (K != 0)
+            return false;
+        std::memset(C.contents, 0, M * N * 4);
+        return true;
+    }
+
     /// Encode `reps` dispatches of `name` into one compute encoder; the
-    /// default serial dispatch type orders them.
+    /// default serial dispatch type orders them. Returns ms per GEMM.
     double run_function(const std::string& name, int reps) {
+        if (empty_product())
+            return 0.0;
         Context& ctx = context();
         id<MTLComputePipelineState> pso = ctx.pipeline(name);
         const Dims d{uint32_t(M), uint32_t(K), uint32_t(N)};
@@ -198,7 +219,11 @@ struct MetalGemm::Impl {
         return gpu_seconds(cb) * 1e3 / reps;
     }
 
+    /// MPSMatrixMultiplication, f32 or fp16 inputs, `reps` times in one
+    /// command buffer. Returns ms per GEMM.
     double run_mps(bool f16, int reps) {
+        if (empty_product())
+            return 0.0;
         Context& ctx = context();
         MPSMatrixMultiplication* __strong& op = f16 ? mps16 : mps;
         if (!op)
@@ -274,13 +299,6 @@ MetalKernel MetalGemm::effective(MetalKernel kernel) const noexcept {
 
 double MetalGemm::run_ms(MetalKernel kernel, int reps) {
     @autoreleasepool {
-        // Empty products: nothing to launch; K = 0 clears C.
-        if (impl_->M == 0 || impl_->N == 0)
-            return 0.0;
-        if (impl_->K == 0) {
-            std::memset(impl_->C.contents, 0, impl_->M * impl_->N * 4);
-            return 0.0;
-        }
         if (kernel == MetalKernel::kMps || kernel == MetalKernel::kMpsF16)
             return impl_->run_mps(kernel == MetalKernel::kMpsF16, reps);
         return impl_->run_function(function_name(effective(kernel)), reps);

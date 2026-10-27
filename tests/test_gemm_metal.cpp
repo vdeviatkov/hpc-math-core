@@ -95,14 +95,15 @@ TEST_P(Metal, MatchesNaive) {
 INSTANTIATE_TEST_SUITE_P(Kernels, Metal, ::testing::ValuesIn(kCases),
                          [](const auto& info) { return std::string(info.param.name); });
 
-// Every tile variant on shapes that are multiples of all their tiles.
+// Every tile variant on shapes that are multiples of all their tiles, and
+// empty products.
 TEST(MetalVariants, MatchNaive) {
     if (!metal_available())
         GTEST_SKIP() << "Metal not available";
     for (const std::string& fn : metal_kernel_variants()) {
         SCOPED_TRACE(fn);
         check([&fn](MetalGemm& g) { g.run_variant_ms(fn, 2); }, fn.find("f16") != std::string::npos,
-              {{128, 64, 128}, {256, 160, 384}});
+              {{128, 64, 128}, {256, 160, 384}, {128, 0, 128}, {0, 64, 128}});
     }
 }
 

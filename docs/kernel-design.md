@@ -401,8 +401,12 @@ fragments straight from device memory, Level 4 stages padded tiles in
 threadgroup memory first, Level 5 is Level 4 on half inputs with float
 accumulators. Fixed-trip loops carry `clang loop unroll(full)`: left rolled,
 the accumulator arrays are indexed dynamically and spill, which measured
-5–10× slower. `fma_peak` runs eight independent 4-wide FMA chains per
-thread to measure the arithmetic peak.
+5–10× slower. Shared helpers keep the levels short: `load_tile` copies a
+tile into threadgroup memory as 4-wide vectors (Level 2's B, Level 4's A
+and B); `zero_acc`, `simd_mma` (load FM×FN fragments from device or
+threadgroup memory and multiply-accumulate) and `store_acc` are the whole
+simdgroup inner loop of Levels 3–5. `fma_peak` runs eight independent
+4-wide FMA chains per thread to measure the arithmetic peak.
 
 ### `src/metal/gemm_metal.mm`, `src/metal/gemm_metal_stub.cpp`
 
