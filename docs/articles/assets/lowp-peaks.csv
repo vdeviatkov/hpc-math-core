@@ -1,14 +1,14 @@
 label,value,group
-"M4 NEON · fp16 → fp32 (FMLAL)",1.05,m4neon
+"M4 NEON · fp16 → FP32 (FMLAL)",1.05,m4neon
 "M4 NEON · bf16 (BFDOT, BFMMLA)",0.53,m4neon
 "M4 NEON · fp16 → fp16 (FMLA .8h)",1.99,m4neon
-"M4 NEON · int8 (SMMLA; SDOT 3.84×)",3.78,m4neon
+"M4 NEON · INT8 (SMMLA; SDOT 3.84×)",3.78,m4neon
 "M4 SME · fp16, bf16 (widening FMOPA)",1.00,m4sme
-"M4 SME · int8 (SMOPA)",2.00,m4sme
+"M4 SME · INT8 (SMOPA)",2.00,m4sme
 "Zen 5 AVX-512 · bf16 (VDPBF16PS)",1.99,zen5
-"Zen 5 AVX-512 · int8 (VPDPBUSD)",4.01,zen5
-"RTX 5080 · fp16, bf16 → fp32",2.08,gpu
+"Zen 5 AVX-512 · INT8 (VPDPBUSD)",4.01,zen5
+"RTX 5080 · fp16, bf16 → FP32",2.08,gpu
 "RTX 5080 · fp16 → fp16",4.16,gpu
-"RTX 5080 · FP8 → fp32, sm_89 form",4.17,gpu
-"RTX 5080 · FP8 → fp32, block-scaled",8.32,gpu
-"RTX 5080 · int8 → int32",8.33,gpu
+"RTX 5080 · FP8 → FP32, sm_89 form",4.17,gpu
+"RTX 5080 · FP8 → FP32, block-scaled",8.32,gpu
+"RTX 5080 · INT8 → INT32",8.33,gpu

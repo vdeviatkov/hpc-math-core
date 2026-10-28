@@ -37,7 +37,8 @@ CUDA row report SKIPPED here: no NVIDIA GPU.
 
 ## CPU results
 
-GFLOP/s, median of 5 measurements of ≥ 0.2 s. The load average was 26 at
+GFLOP/s, median of 5 measurements of ~0.2 s (at most 10,000 calls, so
+shorter at N=64). The load average was 26 at
 the end of the run (an IDE was indexing), so the all-core rows in
 particular are lower bounds.
 
@@ -57,7 +58,8 @@ particular are lower bounds.
 - NumPy and PyTorch both call Accelerate (`numpy.show_config()`:
   `blas: accelerate`; `torch.__config__.show()`: `BLAS_INFO=accelerate`), and
   match each other and `gemm_amx` within the noise: 1-thread f32 ~1.7
-  TFLOP/s, the single-core Accelerate figure in benchmarks.md.
+  TFLOP/s, the single-core Accelerate figure in
+  [benchmarks.md](../../benchmarks.md#matrix-engines-single-core).
 - JAX f32 with all cores: 1.9–2.0 TFLOP/s in this run, ~3.2 in the
   mislabelled 1-thread run and in a standalone check. It keeps every core
   busy, E-cores included, so it is the most sensitive to other load. jaxlib
@@ -72,8 +74,8 @@ particular are lower bounds.
 
 GFLOP/s. The Metal rows of the same session measured `MetalMps` f32 at
 7,273 / 6,593 (before / after) at N=4096 and the FMA peak at 9.7 / 8.4
-TFLOP/s, about two thirds of the published run, so compare within this
-table only.
+TFLOP/s, 59–68% of the published run (11,087 GFLOP/s and 14.2 TFLOP/s),
+so compare within this table only.
 
 | Call | dtype | max rel. err (N=256) | N=256 | N=1024 | N=2048 | N=4096 | N=8192 |
 |---|---|--:|--:|--:|--:|--:|--:|

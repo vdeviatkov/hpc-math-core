@@ -7,7 +7,7 @@
  * inputs, so input rounding is identical on both sides.
  *
  *   INT8 → INT32: exact equality.
- *   fp32 accumulation: |C − C_ref| ≤ 2·K·u·Σ_k |A(i,k)·B(k,j)| + 1e-30,
+ *   FP32 accumulation: |C − C_ref| ≤ 2·K·u·Σ_k |A(i,k)·B(k,j)| + 1e-30,
  *   u = 2^-24, the bound the CPU kernels meet. Tensor Cores do not add in
  *   IEEE FP32 order, so this is checked, not assumed; the test prints the
  *   worst error in units of u·Σ|ab|.

@@ -5,7 +5,10 @@
 `gemm_simd_blocked<Ymm>`, `gemm_simd_blocked<Zmm>` and `gemm_simd_blocked<Q>` share
 one driver ([`simd.hpp`](../../src/gemm/simd.hpp)) and
 take their register tile, R rows × V vectors of C, as template parameters:
-`gemm_simd_blocked<Ops, R, V, …>`. `bench_gemm` runs each family with every
+`gemm_simd_blocked<Ops, R, V, …>`. They have no defaults; "default" on these
+pages means the measured value the benchmarks use
+([`benchmarks/simd_params.hpp`](../../benchmarks/simd_params.hpp),
+[`benchmarks/sme_params.hpp`](../../benchmarks/sme_params.hpp)). `bench_gemm` runs each family with every
 listed shape (`<Isa>Tile<R>x<V>`), and these pages compare them and explain
 the measured choices:
 

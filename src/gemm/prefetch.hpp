@@ -35,18 +35,18 @@
  *  Prefetch distance
  * ============================================================
  *
- * Distance D = register-tile strips ahead of the current one (D · R rows).
- * D is exposed as template parameter PfDist (default = 4).
- * The benchmark sweeps PfDist in {2, 4, 8, 16} per ISA family.
+ * The distance is the template parameter PfDist. gemm_blocked_prefetch
+ * prefetches the A and C rows PfDist rows ahead of the current one (default
+ * 4); gemm_simd_blocked prefetches PfDist register-tile strips (PfDist · R
+ * rows) ahead. bench_gemm sweeps PfDist in {2, 4, 8, 16} for the scalar,
+ * AVX2, AVX-512 and NEON blocked kernels.
  *
  *
  * ============================================================
  *  Design
  * ============================================================
  *
- * gemm_simd_blocked<Ops, …, PfDist> (simd.hpp) adds the same hints with
- * PfDist > 0. The scalar variant repeats its base kernel's loop with hints
- * added.
+ * gemm_blocked_prefetch repeats gemm_blocked's loop with the hints added.
  */
 
 #include "gemm/blocked.hpp"
@@ -60,7 +60,7 @@
 
 namespace hpc::gemm {
 
-/// Default prefetch distance in micro-kernel rows.
+/// Default prefetch distance of gemm_blocked_prefetch, in rows.
 inline constexpr std::size_t kDefaultPrefetchDist = 4;
 
 using detail::pf;  // software prefetch helper, simd.hpp

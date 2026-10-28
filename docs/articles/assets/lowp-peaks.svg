@@ -24,7 +24,7 @@
 <text x="863.3333333333334" y="536" font-size="12" text-anchor="middle">8</text>
 <path d="M 930.0 92 V 516" stroke="#dce2e8"/>
 <text x="930.0" y="536" font-size="12" text-anchor="middle">9</text>
-<text x="318" y="120" font-size="14" text-anchor="end">M4 NEON · fp16 → fp32 (FMLAL)</text>
+<text x="318" y="120" font-size="14" text-anchor="end">M4 NEON · fp16 → FP32 (FMLAL)</text>
 <rect x="330" y="106" width="70.0" height="20" fill="#8c96a3"/>
 <text x="408.0" y="121" font-size="13" text-anchor="start">1.05×</text>
 <text x="318" y="152" font-size="14" text-anchor="end">M4 NEON · bf16 (BFDOT, BFMMLA)</text>
@@ -33,34 +33,34 @@
 <text x="318" y="184" font-size="14" text-anchor="end">M4 NEON · fp16 → fp16 (FMLA .8h)</text>
 <rect x="330" y="170" width="132.7" height="20" fill="#8c96a3"/>
 <text x="470.6666666666667" y="185" font-size="13" text-anchor="start">1.99×</text>
-<text x="318" y="216" font-size="14" text-anchor="end">M4 NEON · int8 (SMMLA; SDOT 3.84×)</text>
+<text x="318" y="216" font-size="14" text-anchor="end">M4 NEON · INT8 (SMMLA; SDOT 3.84×)</text>
 <rect x="330" y="202" width="252.0" height="20" fill="#8c96a3"/>
 <text x="590.0" y="217" font-size="13" text-anchor="start">3.78×</text>
 <text x="318" y="248" font-size="14" text-anchor="end">M4 SME · fp16, bf16 (widening FMOPA)</text>
 <rect x="330" y="234" width="66.7" height="20" fill="#2f9e6e"/>
 <text x="404.6666666666667" y="249" font-size="13" text-anchor="start">1.00×</text>
-<text x="318" y="280" font-size="14" text-anchor="end">M4 SME · int8 (SMOPA)</text>
+<text x="318" y="280" font-size="14" text-anchor="end">M4 SME · INT8 (SMOPA)</text>
 <rect x="330" y="266" width="133.3" height="20" fill="#2f9e6e"/>
 <text x="471.33333333333337" y="281" font-size="13" text-anchor="start">2.00×</text>
 <text x="318" y="312" font-size="14" text-anchor="end">Zen 5 AVX-512 · bf16 (VDPBF16PS)</text>
 <rect x="330" y="298" width="132.7" height="20" fill="#245ea8"/>
 <text x="470.6666666666667" y="313" font-size="13" text-anchor="start">1.99×</text>
-<text x="318" y="344" font-size="14" text-anchor="end">Zen 5 AVX-512 · int8 (VPDPBUSD)</text>
+<text x="318" y="344" font-size="14" text-anchor="end">Zen 5 AVX-512 · INT8 (VPDPBUSD)</text>
 <rect x="330" y="330" width="267.3" height="20" fill="#245ea8"/>
 <text x="605.3333333333333" y="345" font-size="13" text-anchor="start">4.01×</text>
-<text x="318" y="376" font-size="14" text-anchor="end">RTX 5080 · fp16, bf16 → fp32</text>
+<text x="318" y="376" font-size="14" text-anchor="end">RTX 5080 · fp16, bf16 → FP32</text>
 <rect x="330" y="362" width="138.7" height="20" fill="#be4d14"/>
 <text x="476.6666666666667" y="377" font-size="13" text-anchor="start">2.08×</text>
 <text x="318" y="408" font-size="14" text-anchor="end">RTX 5080 · fp16 → fp16</text>
 <rect x="330" y="394" width="277.3" height="20" fill="#be4d14"/>
 <text x="615.3333333333334" y="409" font-size="13" text-anchor="start">4.16×</text>
-<text x="318" y="440" font-size="14" text-anchor="end">RTX 5080 · FP8 → fp32, sm_89 form</text>
+<text x="318" y="440" font-size="14" text-anchor="end">RTX 5080 · FP8 → FP32, sm_89 form</text>
 <rect x="330" y="426" width="278.0" height="20" fill="#be4d14"/>
 <text x="616.0" y="441" font-size="13" text-anchor="start">4.17×</text>
-<text x="318" y="472" font-size="14" text-anchor="end">RTX 5080 · FP8 → fp32, block-scaled</text>
+<text x="318" y="472" font-size="14" text-anchor="end">RTX 5080 · FP8 → FP32, block-scaled</text>
 <rect x="330" y="458" width="554.7" height="20" fill="#be4d14"/>
 <text x="892.6666666666667" y="473" font-size="13" text-anchor="start">8.32×</text>
-<text x="318" y="504" font-size="14" text-anchor="end">RTX 5080 · int8 → int32</text>
+<text x="318" y="504" font-size="14" text-anchor="end">RTX 5080 · INT8 → INT32</text>
 <rect x="330" y="490" width="555.3" height="20" fill="#be4d14"/>
 <text x="893.3333333333334" y="505" font-size="13" text-anchor="start">8.33×</text>
 <path d="M 396.6666666666667 92 V 516" stroke="#7a8794" stroke-dasharray="6 5"/>

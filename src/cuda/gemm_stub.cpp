@@ -3,9 +3,10 @@
  * @brief The API of gemm/cuda.hpp for builds without a CUDA toolkit.
  *
  * cuda_device_count() returns 0 and no low-precision format is supported,
- * so tests and benchmarks skip before calling a kernel. The other queries
- * return false and free is a no-op; compute, allocation, copies,
- * synchronization and timing throw if reached anyway.
+ * so tests and benchmarks skip before calling a kernel. The other boolean
+ * queries return false, cuda_lowp_k_multiple returns the format's K multiple
+ * and free is a no-op; compute, allocation, copies, synchronization and
+ * timing throw if reached anyway.
  */
 
 #include "gemm/cuda.hpp"

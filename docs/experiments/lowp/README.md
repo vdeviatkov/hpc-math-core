@@ -1,9 +1,9 @@
-# Low-precision GEMM: bf16, fp16, int8 and FP8
+# Low-precision GEMM: bf16, fp16, INT8 and FP8
 
 Data behind [part 5](../../articles/lowp-gemm.md). Measured on 2026-10-16.
-Part 5's M4 NEON table and the FP32 row of its Zen 5 table were re-measured
+Part 5's M4 NEON table and the Zen 5 FP32 kernel were re-measured
 on 2026-10-22, after part 1's FP32 kernels changed register tile and cache
-block:
+block (part 5's Zen 5 table now quotes the 2026-10-23 run below):
 [`block-sweeps/lowp_m4_defaults.csv`](../block-sweeps/lowp_m4_defaults.csv)
 (all NEON kernels, one session) and
 [`block-sweeps/lowp_zen5_defaults.csv`](../block-sweeps/lowp_zen5_defaults.csv).

@@ -35,14 +35,14 @@ and AMD Zen 5), on Apple's SME2 matrix unit, and on an NVIDIA GPU, then in
 
 [hpc-math-core](https://github.com/vdeviatkov/hpc-math-core) is a set of
 GEMM implementations, each one optimisation step apart: scalar C++, AVX2,
-AVX-512, NEON, ARM SME2, Apple's Accelerate, and CUDA from naive
+AVX-512, NEON, ARM SME2, Apple's Accelerate, Metal, and CUDA from naive
 kernels to pipelined Tensor Cores, every one tested against a reference and
 benchmarked with Google Benchmark.
 
 | Best kernel per family | Hardware | FP32 |
 |---|---|--:|
 | Scalar, cache-blocked | Apple M4 Max | 83 GFLOP/s |
-| AVX-512, register-tiled | AMD Ryzen 9 9950X (Zen 5) | 333 GFLOP/s |
+| AVX-512, register-tiled | AMD Ryzen 9 9950X (Zen 5) | 328 GFLOP/s |
 | ARM SME2, packed and blocked, one core | Apple M4 Max | 1.53 TFLOP/s |
 | CUDA Tensor Cores, TMA + warp specialisation (fp16) | NVIDIA RTX 5080 | 120 TFLOP/s |
 

@@ -10,8 +10,8 @@
  * assembly by Arm.
  *
  * Kernel used: kai_matmul_clamp_f32_f32p2vlx1_f32p2vlx1biasf32_sme2_mopa
- *   - 2VL×2VL output block per step: all four f32 ZA tiles (2×2), the same
- *     micro-tile shape gemm_sme uses
+ *   - 2VL×2VL output block per step: all four f32 ZA tiles (2×2), the
+ *     shape gemm_sme runs with R = V = 2, its measured f32 tile
  *   - LHS packed by kai_lhs_pack_f32p2vlx1_f32_sme (2VL-row strips)
  *   - RHS packed by kai_rhs_pack_kxn_f32p2vlx1biasf32_f32_f32_sme
  *     (2VL-column strips plus a bias vector; bias = 0 here)

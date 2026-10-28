@@ -13,8 +13,9 @@
  *   fp32        FP32 inputs, FP32 accumulation in k order (the FP32 kernels)
  *   bf16, fp16  rounded inputs, exact products, FP32 accumulation
  *   fp16_acc16  rounded inputs, every partial sum rounded to fp16
- *               (FMLA .8h; mma.sync .f16 accumulates 16 or 32 products
- *               per rounding, so this is the pessimistic end)
+ *               (FMLA .8h; mma.sync .f16 adds 16 products per instruction
+ *               and presumably rounds less often, so this is the
+ *               pessimistic end)
  *   fp8_e4m3    rounded inputs (values in [-1, 1) need no scaling), FP32
  *               accumulation
  *   int8        symmetric quantisation with one scale per row of A and per
@@ -63,7 +64,7 @@ std::vector<double> multiply(const Mat& A, const Mat& B, int M, int K, int N) {
         for (int j = 0; j < N; ++j) {
             float acc = 0;
             for (int k = 0; k < K; ++k) {
-                acc += A[i * K + k] * B[k * N + j];  // the product of two ≤11-bit significands is exact in FP32
+                acc += A[i * K + k] * B[k * N + j];  // rounded inputs: two ≤11-bit significands multiply exactly in FP32
                 if constexpr (Acc16)
                     acc = hpc::to_float(hpc::to_fp16(acc));
             }

@@ -26,9 +26,10 @@
  * The stride-1 inner loop also lets the compiler auto-vectorise it at -O3,
  * which is a large part of the gain.
  *
- * Measured speedup over gemm_naive: 6–13× at N=256–1024 and 25–65× at
- * N=4096 (Apple M4 Max and AMD Zen 5; f32 gains more than f64, with twice the
- * elements per cache line). See docs/benchmarks.md.
+ * Measured speedup over gemm_naive at N=256–1024: 7–16× on Apple M4 Max and
+ * 24–123× on AMD Zen 5, whose naive kernel degrades faster; at N=4096,
+ * 25–73× on both (f32 gains more than f64, with twice the elements per cache
+ * line). See docs/benchmarks.md.
  */
 
 #include "hpc/matrix.hpp"

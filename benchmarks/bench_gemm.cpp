@@ -13,8 +13,9 @@
  * A family whose ISA is absent from the build is registered anyway and
  * reports SKIPPED: its primitive struct (Ymm, Zmm, Q) is only declared and
  * its SME kernels are `= delete` there, so the kernel lambda is only
- * instantiated when the family is available (time_gemm's `if constexpr`). The full kernel list therefore always appears in the
- * output, and nothing times a substitute kernel.
+ * instantiated when the family is available (time_gemm's `if constexpr`).
+ * The full kernel list therefore always appears in the output, and nothing
+ * times a substitute kernel.
  *
  * The AVX2, AVX-512 and NEON rows run gemm_simd_* (gemm/simd.hpp) with
  * Ops = Ymm, Zmm and Q at the parameters in simd_params.hpp.
@@ -305,8 +306,9 @@ void add_sme_sweeps() {
 }
 
 // ---------------------------------------------------------------------------
-// Software prefetch: <Family>BlockedPf<D>, distance D micro-kernel rows
-// ahead, at N = 256, 512, 1024. Only the blocked kernels get a variant: the
+// Software prefetch: <Family>BlockedPf<D>, distance D ahead (rows for the
+// scalar kernel, R-row register-tile strips for the SIMD ones), at
+// N = 256, 512, 1024. Only the blocked kernels get a variant: the
 // naive ones are bound by misses prefetch cannot hide, and the reordered
 // ones stream data the hardware prefetcher already follows.
 // ---------------------------------------------------------------------------

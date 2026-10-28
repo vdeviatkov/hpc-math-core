@@ -78,8 +78,9 @@ std::vector<Shape> operator+(std::vector<Shape> a, const std::vector<Shape>& b) 
 const std::vector<Shape> kEdges = {{17, 33, 65}, {129, 37, 131}, {132, 68, 260}};
 
 // Every kernel with bounds checks also runs kEdges. Sizes that are not
-// multiples of 16 check WMMA's staged edge-tile store; N=99/100 check
-// gemm_cuda_vectorized's fallback (K, N not multiples of the vector width);
+// multiples of 16 check WMMA's staged edge-tile store; 100x50x200 (f32) and
+// N=99 (f64) check gemm_cuda_vectorized's fallback (K or N not a multiple of
+// the vector width);
 // N=192 checks gemm_cuda_wmma_pipelined's fallback (not a multiple of 128)
 // and 384x160x256 its fast path with M, K, N all different.
 const std::vector<Case<float>> kF32 = {

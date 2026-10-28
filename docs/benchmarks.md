@@ -17,7 +17,7 @@ Contents
 - [NVIDIA RTX 5080](#nvidia-rtx-5080--cuda) — CUDA Levels 0-8 · cuBLAS reference
 - [Low precision](#low-precision-bf16-fp16-int8-fp8) — bf16 · fp16 · INT8 · FP8 on all three machines
 
-Each machine section has the same shape: build metadata, GFLOP/s by kernel
+Each CPU section has the same shape: build metadata, GFLOP/s by kernel
 and size, speedup against the naive baseline, then key observations.
 
 ---
@@ -42,7 +42,7 @@ In `bench_gemm`, N is a compile-time constant, as at a fixed-size call site. The
 > **Load Average:** 5–7 on 16 cores during the scalar and NEON runs (2026-10-15), including two unrelated processes at 100% each — treat ±5% as noise
 
 Five families run here: scalar, NEON, SME2 (opt-in), AMX via Accelerate,
-and the KleidiAI reference (built when SME is on). AVX2, AVX-512 and SVE are
+and the KleidiAI reference (built when SME is on). AVX2 and AVX-512 are
 absent and report `SKIPPED`.
 
 ### GFLOP/s by kernel and size
@@ -100,7 +100,7 @@ GotoBLAS cache blocking and SME2 multi-vector loads; `gemm_sme_1tile`,
 | `gemm_sme` f32 | 267 | 839 | 1,332 | 1,385 | 1,465 | **1,504** |
 
 - f64 is ~¼ of f32, which matches the hardware: an f64 FMOPA covers 8×8 elements against 16×16 for f32.
-- One compiler pitfall costs ~5×. A streaming helper without a ZA attribute (`__arm_inout("za")` etc.) is "private-ZA": Clang won't inline it into a ZA-owning caller and wraps every call in a lazy ZA save (`TPIDR2` + `smstart za`). Inside the k loop that dropped throughput from ~1,290 to ~270 G/s f32.
+- One compiler pitfall costs ~5×. A streaming helper without a ZA attribute (`__arm_inout("za")` etc.) is "private-ZA": Clang won't inline it into a ZA-owning caller and wraps every call in a lazy ZA save (`TPIDR2` + `smstart za`). Inside the k loop that dropped throughput from ~1,290 to ~270 GFLOP/s f32.
 
 #### The four SME steps
 
@@ -178,7 +178,7 @@ Same machine and run as above. Every row uses one core, so this is the like-for-
 
 - f64: `gemm_sme` is within ~6% of Accelerate at N=512 and ahead from N=1024 up. Those gaps are close to the noise level of this run; Accelerate's dip at N=1024 appeared in two runs. Below N=512 Accelerate is far ahead (4× at N=64), because `gemm_sme` pays fixed per-call costs: allocating and packing A and B, plus a streaming-mode switch per block.
 - f32: `gemm_sme` reaches 85–94% of Accelerate for N ≥ 1024. It ties KleidiAI at N=2048 and beats it at N=4096 (1,504 vs 1,019); KleidiAI uses the same 2×2-tile micro-kernel but no cache blocking, so it drops at large N.
-- With all cores (default threading, wall-clock time): Accelerate 3,124 G/s f32 / 785 G/s f64 at N=4096 in this run (3,115 / 787 in the run part 2 quotes). Roughly double the single-core figure, consistent with M4 Max's two performance clusters each having their own matrix unit.
+- With all cores (default threading, wall-clock time): Accelerate 3,124 GFLOP/s f32 / 785 GFLOP/s f64 at N=4096 in this run (3,115 / 787 in the run part 2 quotes). Roughly double the single-core figure, consistent with M4 Max's two performance clusters each having their own matrix unit.
 
 ### Apple AMX (via Accelerate.framework)
 
@@ -233,11 +233,13 @@ on (macOS cannot pin threads). Design and the thread sweep:
 
 ### Prefetch distance sweep
 
-Benchmarks named `<Family>BlockedPf<D>/<prec>/N=<size>` sweep prefetch distance D ∈ {2, 4, 8, 16} (rows ahead), with three `__builtin_prefetch` sites per kernel:
+Benchmarks named `<Family>BlockedPf<D>/<prec>/N=<size>` sweep prefetch distance D ∈ {2, 4, 8, 16} (rows ahead for the scalar `BlockedPf`, R-row register-tile strips ahead for the SIMD families), with three `__builtin_prefetch` sites per kernel:
 
-- [PF-A] `A(i + D×kRegRows, k_blk)` → L2 (read)
+- [PF-A] `A(i + D×R, k_blk)` → L2 (read)
 - [PF-B] `B(k_blk + TileK, 0)` → L2 (read), at the k-tile boundary
-- [PF-C] `C(i + D×kRegRows, j_blk)` → L1 (write)
+- [PF-C] `C(i + D×R, j_blk)` → L1 (write)
+
+R is the register-tile height (1 for the scalar kernel).
 
 GFLOP/s against the same kernel without prefetch, same run as the tables above (the `NeonBlockedPf` rows from the run with the current tile and block, [`bench_m4_defaults.csv`](experiments/block-sweeps/bench_m4_defaults.csv)):
 
@@ -310,8 +312,8 @@ Peak per family on this machine:
 > **Date:** 2026-10-15; `gemm_simd_blocked<Zmm>` re-measured the same night after its micro-kernel change (below)
 
 Zen 5 has a full-width 512-bit AVX-512 datapath (unlike Zen 4's double-pumped
-256-bit), so this is the first machine in this repo where `gemm_avx512_*`
-runs on native-width hardware. NEON, SVE, SME and AMX are absent and report
+256-bit), so this is the first machine in this repo where the AVX-512 kernels
+run on native-width hardware. NEON, SME and AMX are absent and report
 `SKIPPED`; the scalar, AVX2 and AVX-512 tests all pass.
 
 ### GFLOP/s by kernel and size
@@ -387,8 +389,8 @@ Blocking earns its keep only at large N. At N≤512 `gemm_blocked` looks
 like a regression against `gemm_reordered` (47.82 vs 93.89 GFLOP/s f32 at
 N=256) — the untiled kernel still fits cache there, and tiling the j-loop to
 64 columns costs the vectoriser more than the cache saves. The ranking
-inverts where it matters: at N=4096, blocked reaches 42.48 vs 30.48 G/s
-(f32, 1.4×) and 33.02 vs 13.04 G/s (f64, 2.5×).
+inverts where it matters: at N=4096, blocked reaches 42.48 vs 30.48 GFLOP/s
+(f32, 1.4×) and 33.02 vs 13.04 GFLOP/s (f64, 2.5×).
 
 The register tile needs enough accumulators and register-only FMAs. Zen 5
 retires 2 FMAs per cycle with a 4-cycle latency (`fma_peak`,
@@ -419,7 +421,8 @@ the same sizes: 327.9 → 284.6 f32 at N=1024, 161.5 → 105.2 f64 at N=512.
 The current AVX-512 kernel drops less: 327.9 → 312.8 f32, and its f64
 rows lost the drop with the smaller B block (157.7 at N=512); AVX2 still
 drops (169.7 → 126.9 f32, 81.9 → 62.3 f64).
-Packing B into contiguous strips, as `gemm_sme` does, would remove it.
+Packing B into contiguous strips (`gemm_simd_packed`) removes it:
+[experiments/packed-b](experiments/packed-b/README.md).
 
 Software prefetch has almost no effect on Zen 5, and the distance is
 irrelevant. Across every family, precision and size, all four distances
@@ -584,8 +587,8 @@ are possible experiments, not measured fixes for the remaining gap.
 
 > **Machine:** Apple M4 Max, 40-core GPU, macOS 26.3.1, Apple Clang 17, Metal shaders compiled at run time with fast math
 > **Build:** default (`HPC_ENABLE_METAL` is on on Apple); `cmake -B build -DCMAKE_BUILD_TYPE=Release`
-> **Command:** `./build/benchmarks/bench_gemm_metal --benchmark_repetitions=5 --benchmark_min_time=1s --benchmark_enable_random_interleaving=true`
-> **Date:** 2026-10-24, AC power, load average 1.5–3.6. Median of 5 interleaved repetitions; cv up to 17% per row. Data and method: [experiments/metal-m4](experiments/metal-m4/README.md)
+> **Command:** `./build/benchmarks/bench_gemm_metal --benchmark_repetitions=5 --benchmark_min_time=1s --benchmark_enable_random_interleaving=true --benchmark_report_aggregates_only=true`
+> **Date:** 2026-10-24, AC power, load average 1.5–3.9. Median of 5 interleaved repetitions; cv up to 17% per row. Data and method: [experiments/metal-m4](experiments/metal-m4/README.md)
 
 What each level adds: [src/gemm/metal.hpp](../src/gemm/metal.hpp). Apple
 GPUs have no FP64, so every row is f32 in and out; the F16 rows multiply
@@ -593,7 +596,7 @@ fp16 copies of A and B, converted once before timing, like the CUDA fp16
 rows. **What is timed** is the GEMM alone, as for CUDA: inputs sit in
 GPU-visible memory before timing, and the time is GPU time from the command
 buffer's start and end timestamps. Each command buffer holds enough GEMMs
-to last ≥ ~5 ms (256 at N=256), since at small N one GEMM is shorter than the
+to last ≥ ~5 ms (93–256 at N=256), since at small N one GEMM is shorter than the
 command buffer's fixed cost.
 
 **Read across rows, not across sessions.** On this laptop the absolute GPU
@@ -631,7 +634,7 @@ f16 (15.5–15.8 alone). fp16 FMA runs at the f32 rate.
   runs at the f32 rate). Each 8×8 fragment load feeds 8 multiply-adds per
   element instead of one, so fewer instructions are spent on operands.
 - Staging A and B in threadgroup memory (Level 4) gains nothing over loading
-  fragments straight from device memory (Level 3) up to N=4096 (−11% to +2%,
+  fragments straight from device memory (Level 3) from N=1024 to 4096 (−11% to +2%,
   within noise at N=2048); the GPU's
   caches already serve the reuse between simdgroups. It wins at N=8192
   (9.4 against 5.6 TFLOP/s), where the operands no longer stay cached.
@@ -680,7 +683,7 @@ kernels,
 |---|---|--:|--:|--:|--:|
 | `Avx512Blocked` | f32 | 325 | 311 | 302 | 295 |
 | `Avx512Dpbf16` | bf16 | 619 | 638 | 606 | 574 |
-| `Avx512Vnni` | int8 | 824 | 1,139 | 1,138 | 1,038 |
+| `Avx512Vnni` | int8 | 824 | 1,138 | 1,138 | 1,038 |
 
 RTX 5080, TFLOP/s or TOP/s, GPU time of the GEMM alone
 (`bench_gemm_lowp_cuda`, `CMAKE_CUDA_ARCHITECTURES=120a`; fp16_acc16 sums in

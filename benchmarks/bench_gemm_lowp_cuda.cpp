@@ -16,8 +16,8 @@
  * "err" is the accuracy at the benchmarked size: after timing, 256 sampled
  * C(i,j) are recomputed on the host in double from the same inputs, and the
  * counter is max |C − C_ref| / Σ_k |A(i,k)·B(k,j)| over the samples (0 for
- * exact INT8 results). FP32 accumulation shows up as ~1e-7 or below, fp16
- * accumulation as ~1e-4 to 1e-3.
+ * exact INT8 results). FP32 accumulation shows up as ~1e-7 to 1e-6 (growing
+ * with K; below 1e-8 for FP8), fp16 accumulation as ~2e-4.
  *
  * Every benchmark reports SKIPPED without a CUDA device or when the device
  * lacks the format (sm_80+, FP8 sm_89+).

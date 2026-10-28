@@ -120,8 +120,8 @@ row stride `ldb` changes. The padding columns are never read
 | 4160 | 16,640 B | 1,498 | 1,532 |
 
 One extra cache line per row (`ldb = 4128`) makes B 0.5 MiB larger and the
-in-place kernel **3.1× faster**. The arithmetic and useful data are unchanged; the allocation and page
-footprint grow by about 0.8%.
+in-place kernel **3.1× faster**. The arithmetic and useful data are
+unchanged; the allocation and page footprint grow by about 0.8%.
 `ldb = 4097` recovers less because its 128-byte row segments no longer
 start on a cache-line boundary, so each one spans two lines.
 
@@ -154,8 +154,8 @@ this model all of them compete for the few ways of a single set, and the
 rest of the cache cannot help this strip. (The model has the 128 sets of
 the 128 KiB L1. In the 16 MiB L2 the same stride would leave a fraction
 of about 1/128 of the cache to these rows: roughly a thousand lines, not
-8; the measurements below find about 450–640.) Packed rows walk through the sets one
-by one. Padding B by one line per row (16,512 B, 129 lines) also spreads
+8; the measurements below find about 450–640.) Packed rows walk through
+the sets one by one. Padding B by one line per row (16,512 B, 129 lines) also spreads
 the rows: each one moves one set further.
 
 More generally, rows `s` bytes apart, with `s` a multiple of the 128-byte
@@ -251,7 +251,8 @@ fix, for two reasons:
 
 - The caller owns B's layout. A library receiving a matrix with a 16 KiB
   stride cannot pad it without copying it, and a copy is what packing is.
-- Even padded, B in place trails packed B by 4–8% (7–8% from N = 3072 up). Macro-kernel only, `ldb = N + 32`:
+- Even padded, B in place trails packed B by 4–8% (6–8% from N = 3072
+  up). Macro-kernel only, `ldb = N + 32`:
 
 | N | 1024 | 2048 | 3072 | 3584 | 4096 | 4224 |
 |---|--:|--:|--:|--:|--:|--:|

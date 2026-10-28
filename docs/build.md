@@ -77,7 +77,7 @@ ctest --test-dir build --build-config Release --output-on-failure
 | `CMAKE_BUILD_TYPE` | `Release` for single-config generators | Use `Release` for benchmark numbers (single-config generators only). |
 | `HPC_MARCH` | `native` | Value passed to `-march=`. Set to `x86-64-v3` for a portable AVX2 build (used by CI); empty string disables the flag. Ignored by MSVC. |
 | `HPC_ENABLE_AVX512` | `OFF` | Adds AVX-512 compile flags (`-mavx512f…` / MSVC `/arch:AVX512`). Not needed with the default `-march=native` on an AVX-512 CPU, which already enables AVX-512; use it for MSVC or a non-native `HPC_MARCH`. ⚠ SIGILL on CPUs without AVX-512. |
-| `HPC_ENABLE_SME` | `OFF` | ARM SME2 kernels. Runs a compile-*and-execute* probe for SME2 loads and FP32/FP64 FMOPA at configure time; supersedes `HPC_MARCH` with `-mcpu=apple-m4`. See below. |
+| `HPC_ENABLE_SME` | `OFF` | ARM SME2 kernels. Runs a compile-*and-execute* probe for SME2 loads and FP32/FP64 FMOPA at configure time; when an `-mcpu` flag wins (`-mcpu=apple-m4` on Apple Silicon), it replaces `HPC_MARCH`. See below. |
 | `HPC_ENABLE_AMX` | `ON` on Apple, `OFF` elsewhere | Apple AMX via Accelerate.framework (`cblas_sgemm`/`cblas_dgemm`). See below. |
 | `HPC_ENABLE_KLEIDIAI` | `ON` when the SME probe passed, else `OFF` | Fetches Arm KleidiAI v1.31.0 (FetchContent) for its SME2 f32 reference GEMM. |
 | `HPC_ENABLE_METAL` | `ON` on Apple, `OFF` elsewhere | Metal GEMM kernels on the Apple GPU (`bench_gemm_metal`, `hpc_tests_metal`). The shaders in `src/metal/gemm.metal` are embedded into the binary at configure time and compiled when first used, so no offline Metal toolchain is needed. Elsewhere a stub is built and the Metal rows skip. |
@@ -199,7 +199,7 @@ takes a regular expression:
 ./build/benchmarks/bench_gemm --benchmark_filter="^SmeMt/"             # several SME units
 ./build/benchmarks/bench_gemm --benchmark_filter="BStride"             # SME B-stride experiment
 ./build/benchmarks/bench_gemm_cuda --benchmark_filter="N=4096"         # GPU, every kernel at one size
-./build/benchmarks/bench_gemm_metal --benchmark_filter="-Variant"       # Metal ladder, MPS and peaks, no tile variants
+./build/benchmarks/bench_gemm_metal --benchmark_filter="-Variant"      # Metal ladder, MPS and peaks, no tile variants
 ```
 
 A full `bench_gemm` run includes the naive kernels at N=4096, which alone

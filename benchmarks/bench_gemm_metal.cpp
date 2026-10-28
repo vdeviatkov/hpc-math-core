@@ -11,8 +11,8 @@
  * the CUDA driver, each iteration encodes `reps` GEMMs into one command
  * buffer, with reps chosen so a command buffer runs for at least ~5 ms: at
  * N=256 a single GEMM is shorter than the command buffer's own fixed cost.
- * The reported time is per command buffer; GFLOP/s counts all reps GEMMs. One untimed call precedes the
- * loop, so shader compilation is not counted.
+ * The reported time is per command buffer; GFLOP/s counts all reps GEMMs.
+ * One untimed call precedes the loop, so shader compilation is not counted.
  *
  * The "precision" counter is the bits of the multiply inputs (16 for the
  * F16 rows, which accumulate in fp32); "reps" the GEMMs per command buffer.

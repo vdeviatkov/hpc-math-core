@@ -31,8 +31,9 @@ namespace hpc::bench {
 template <template <typename> class Ops>
 struct SimdParams;
 
-// Zen 5. Six rows give the 12 independent FMA chains Zen 5 needs (2 FMAs per
-// cycle × 4 cycles) and still fit the 16 YMM registers: 12 accumulators,
+// Zen 5. Six rows give 12 independent FMA chains, the count at which Zen 5
+// reaches its full FMA rate (latency × pipes = 4 × 2 = 8 is the minimum),
+// and still fit the 16 YMM registers: 12 accumulators,
 // 2 B vectors, 1–2 broadcasts of A; seven rows spill. The B block is 256 KiB
 // in either type (docs/kernels/avx2.md, blocks.md).
 template <>

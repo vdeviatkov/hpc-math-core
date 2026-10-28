@@ -14,7 +14,7 @@
  * AArch64 has 32 × 128-bit Q registers (4 f32 / 2 f64). Apple M4 P-core
  * (measured with fma_peak, docs/experiments/cpu-simd): up to 4 FMAs per
  * cycle, ~3-cycle latency.
- *   f32: 4 pipes × 4 lanes × 2 FLOP = 32 FLOP/cycle → ~143 GFLOP/s at 4.49 GHz
+ *   f32: 4 pipes × 4 lanes × 2 FLOP = 32 FLOP/cycle → ~144 GFLOP/s at 4.49 GHz
  *   f64: 4 pipes × 2 lanes × 2 FLOP = 16 FLOP/cycle →  ~72 GFLOP/s
  * NEON is half the width of AVX2, but twice the FMA pipes give the same
  * FLOP/cycle.
@@ -22,7 +22,7 @@
  * HPC_HAS_NEON (hpc/isa.hpp) requires AArch64: Q<double> uses f64 lanes
  * and vfmaq_f64, which 32-bit ARMv7 NEON lacks. Q<T> is declared on every
  * target and defined only where HPC_HAS_NEON is 1; the low-precision structs
- * need the BF16, I8MM and FP16 extensions too (HPC_HAS_NEON_LOWP).
+ * need the BF16, I8MM, FP16 and FP16 FML extensions too (HPC_HAS_NEON_LOWP).
  */
 
 #include "hpc/isa.hpp"

@@ -43,7 +43,7 @@ FMAs per cycle (f32; f64 within 0.1 of these):
   file (365 / 182 in an identical earlier run the same day); AVX2 182 / 91.
 - M4: one accumulator takes 3.3–3.5 cycles per FMA, and throughput rises to
   ~4 FMAs per cycle (3.97 measured, f64, 20 accumulators). Peak at 4.05 GHz:
-  ~130 GFLOP/s f32, ~65 f64; the best measured were 111 and 63. With 20 or
+  ~130 GFLOP/s f32, ~65 f64; the best measured were 110 and 63. With 20 or
   24 accumulators f32 falls back: the two `dup` per round compete for the
   same four pipes.
 
@@ -90,7 +90,8 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release          # add -DHPC_ENABLE_AVX512=ON 
 cmake --build build --target fma_peak simd_microkernel bench_gemm
 ./build/benchmarks/fma_peak > fma.csv
 ./build/benchmarks/simd_microkernel > microkernel.csv
-./build/benchmarks/bench_gemm --benchmark_format=csv > bench.csv
+./build/benchmarks/bench_gemm --benchmark_format=csv \
+    --benchmark_filter='^(Naive|Reordered|Blocked|Avx2|Avx512|Neon)(Reordered|Blocked)?(Pf[0-9]+)?/' > bench.csv
 ```
 
 ## AVX2 register tile: 4 × 2 → 6 × 2 (2026-10-21)

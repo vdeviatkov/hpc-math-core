@@ -33,7 +33,7 @@
 <text x="238" y="248" font-size="14" text-anchor="end">NEON, 6 × 4 tile + blocks (2026-10-22)</text>
 <rect x="250" y="234" width="561.1" height="20" fill="#245ea8"/>
 <text x="819.136" y="249" font-size="13" text-anchor="start">124</text>
-<path d="M 898.2666666666667 92 V 260" stroke="#7a8794" stroke-dasharray="6 5"/>
-<text x="892.2666666666667" y="86" font-size="12" text-anchor="end">NEON peak ~143 at 4.49 GHz</text>
+<path d="M 902.8 92 V 260" stroke="#7a8794" stroke-dasharray="6 5"/>
+<text x="896.8" y="86" font-size="12" text-anchor="end">NEON peak ~144 at 4.49 GHz</text>
 <text x="590.0" y="305" font-size="14" text-anchor="middle">GFLOP/s</text>
 </g></svg>

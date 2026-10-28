@@ -10,7 +10,7 @@
  * optimisation step apart:
  *
  *  gemm_simd_reordered<Ops>   i → k → j: A(i, k) broadcast, FMA against
- *                             stride-1 B and C rows. About the same as
+ *                             stride-1 B and C rows. No faster than
  *                             scalar gemm_reordered, which the compiler
  *                             auto-vectorises; no blocking, so it degrades
  *                             once C row i no longer stays in L1.

@@ -209,8 +209,8 @@ A Tensor Core multiplies small matrix tiles in one instruction. A warp
 issues `mma.sync.m16n8k16`: a 16 × 16 fp16 tile of A times a 16 × 8 fp16
 tile of B, accumulated in fp32, 4,096 flops per instruction. The measured `mma.sync` path sustains about 512 flops per SM per cycle,
 twice the 256-flop theoretical rate of its FMA lanes. This is the measured
-rate of this instruction path, not a bound on every Blackwell Tensor Core API. Tensor Cores multiply fp16 inputs (10-bit mantissa), so results
-introduce input rounding at roughly the 1e-3 scale. Output relative
+rate of this instruction path, not a bound on every Blackwell Tensor Core API. Tensor Cores multiply fp16 inputs (10-bit mantissa), so rounding
+the inputs alone introduces errors at roughly the 1e-3 scale. Output relative
 error can be much larger near cancellation; fp16 also has a smaller range.
 
 ### Level 5: WMMA — 14.6 TFLOP/s, below the FMA kernels
@@ -271,11 +271,12 @@ times the whole call, 96.7 TFLOP/s):
 Today's profile of the kernel: Tensor pipe busy 86%, 1% bank conflicts,
 DRAM traffic 116 MB for the whole multiplication (below the 134 MB
 compulsory minimum: part of C is still in the 64 MiB L2 when the kernel
-ends, so its write-back is not counted), and occupancy 32%, limited by 118 registers per thread. It
-reaches **100.7 TFLOP/s at N = 8192: 81% of the measured Tensor Core peak
+ends, so its write-back is not counted), and occupancy 32%: two blocks per
+SM, the limit set both by 118 registers per thread and by 37 KiB of shared
+memory per block. It reaches **100.7 TFLOP/s at N = 8192: 81% of the measured Tensor Core peak
 and 85% of cuBLAS FP16** at the same size (83% at N = 16384).
 
-### Level 8: TMA and warp specialisation — 117 TFLOP/s
+### Level 8: TMA and warp specialisation — 117.3 TFLOP/s
 
 Code: [`kernel_tma`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/cuda/gemm.cu), shared with the
 low-precision formats of [part 5](lowp-gemm.md).
@@ -309,7 +310,8 @@ and later) can take that work off the warps:
 5. **Tile shape by wave.** With one block per SM, the grid runs in waves of
    84 blocks. A 128 × 256 tile with eight consumer warps makes the whole
    GEMM 3–4% faster than 128 × 128 with four in fp16 (3–11% across part
-   5's formats; measured at N = 2048 and 8192, `tuning_level8.csv`), but at N = 4096 its 512 blocks make 6.1 waves, the seventh
+   5's formats; measured at N = 2048 and 8192,
+   [`tuning_level8.csv`](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/experiments/lowp/tuning_level8.csv)), but at N = 4096 its 512 blocks make 6.1 waves, the seventh
    almost empty (87% of the waves used), where 1,024 smaller blocks fill
    12.2 waves (94%). The host uses 128 × 256 unless 128 × 128 fills the
    waves more than 5% better: 128 × 128 at N = 1024 and 4096, 128 × 256 at
@@ -350,7 +352,7 @@ the sizes where Level 8's grid uses only 76–94% of its wave slots.
 ![CUDA GEMM levels at N = 4096 against the measured peaks](assets/cuda-ladder.svg)
 
 TFLOP/s, GPU event time of the GEMM, FP32 outputs. Levels 5–6 convert
-FP32 inputs inside the kernel; levels 7–8 receive preconverted FP16 inputs
+FP32 inputs inside the kernel; Levels 7–8 receive preconverted FP16 inputs
 (Level 8 with B as N × K):
 
 | Level | Kernel | N = 1024 | 4096 | 8192 | Occupancy | Registers | Pipe busy | Shared-load conflicts |
@@ -426,8 +428,8 @@ at least twice around its stage ring) and 2688 × 96 × 1024 (84 blocks: the
   mantissas; their TFLOP/s are not comparable with the FP32 rows.
 - **No autotuning.** Tile sizes are fixed by hand for this GPU; the Matrix wrappers
   handle rectangular and empty shapes within their 32-bit indexing limit,
-  but are tuned for large square ones. The raw pipelined device entry point
-  requires exact tile multiples.
+  but are tuned for large square ones. The raw device entry points of Levels
+  7 and 8 require exact tile multiples.
 - **The FP64 microbenchmark reads lower than the FP64 GEMMs** (0.82 vs
   0.96 TFLOP/s). Its loop compiles with padding instructions between
   dependent FMAs; the GEMM kernels are the better measure of the FP64 rate.
@@ -454,7 +456,7 @@ at least twice around its stage ring) and 2688 × 96 × 1024 (84 blocks: the
 ## The series
 
 The same multiplication, four times: one CPU core with vector FMAs reaches
-333 GFLOP/s ([part 1](simd-gemm.md)), Apple's SME2 matrix unit 1.5 TFLOP/s
+328 GFLOP/s ([part 1](simd-gemm.md)), Apple's SME2 matrix unit 1.5 TFLOP/s
 ([part 2](sme2-gemm.md)), and this GPU 27.5 TFLOP/s on its FMA cores and
 120 on its Tensor Cores. Every one of those kernels is built the same way:
 a block of C held in registers or accumulator tiles, enough independent

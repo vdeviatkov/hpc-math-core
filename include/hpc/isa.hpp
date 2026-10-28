@@ -9,9 +9,10 @@
  * tests the feature value. `#ifdef` would also accept a macro defined to 0.
  *
  * No silent fallback: where an ISA is absent, its primitive structs (Ymm,
- * ZmmDot, …) are only declared and its other gemm_* functions are declared
- * `= delete`, so calling gemm_simd_blocked<Ymm> on an ARM build is a
- * compile-time error rather than a scalar kernel under an AVX2 name. Benchmarks report such families as
+ * ZmmDot, …) are only declared and its own gemm_* functions (gemm_sme*,
+ * gemm_amx, gemm_kleidiai) are declared `= delete`, so calling
+ * gemm_simd_blocked<Ymm> on an ARM build is a compile-time error rather
+ * than a scalar kernel under an AVX2 name. Benchmarks report such families as
  * SKIPPED without instantiating them, and their tests are not compiled, so a
  * machine's test count is exactly the set of kernels that ran there.
  *

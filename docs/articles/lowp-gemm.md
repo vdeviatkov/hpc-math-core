@@ -152,24 +152,24 @@ compare directly:
 
 | Unit | Instruction | Inputs → accumulator | Latency, cycles | Peak | × FP32 |
 |---|---|---|--:|--:|--:|
-| M4 P-core, NEON | `FMLA .4s` | fp32 → fp32 | 3.4 | 135 GFLOP/s | 1 |
-| | `FMLAL` | fp16 → fp32 | 4.0 | 143 | 1.05 |
-| | `BFDOT` / `BFMMLA` | bf16 → fp32 | 2.8 / 4.9 | 71 | **0.53** |
+| M4 P-core, NEON | `FMLA .4s` | FP32 → FP32 | 3.4 | 135 GFLOP/s | 1 |
+| | `FMLAL` | fp16 → FP32 | 4.0 | 143 | 1.05 |
+| | `BFDOT` / `BFMMLA` | bf16 → FP32 | 2.8 / 4.9 | 71 | **0.53** |
 | | `FMLA .8h` | fp16 → fp16 | 3.4 | 268 | 2.0 |
-| | `SDOT` / `SMMLA` | int8 → int32 | 3.0 / 6.0 | 519 / 511 GOP/s | 3.8 |
-| M4 SME2 unit | `FMOPA` (4 tiles) | fp32 → fp32 | 4.5 | 2,018 GFLOP/s | 1 |
-| | widening `FMOPA`, `BFMOPA` | fp16, bf16 → fp32 | 9.1 | 2,014–2,018 | **1.0** |
-| | `SMOPA` | int8 → int32 | 4.5 | 4,029 GOP/s | 2.0 |
-| Zen 5 core, AVX-512 | `VFMADD231PS` | fp32 → fp32 | 4.0 | 358 GFLOP/s | 1 |
-| | `VDPBF16PS` | bf16 → fp32 | 6.0 | 713 | 2.0 |
-| | `VPDPBUSD` | u8 × s8 → int32 | 4.0 | 1,435 GOP/s | 4.0 |
-| RTX 5080, `mma.sync` | FMA cores (part 4) | fp32 → fp32 | | 59.7 TFLOP/s | 1 |
-| | `m16n8k16` | fp16, bf16 → fp32 | | 124 | 2.1 |
+| | `SDOT` / `SMMLA` | INT8 → INT32 | 3.0 / 6.0 | 519 / 511 GOP/s | 3.8 |
+| M4 SME2 unit | `FMOPA` (4 tiles) | FP32 → FP32 | 4.5 | 2,018 GFLOP/s | 1 |
+| | widening `FMOPA`, `BFMOPA` | fp16, bf16 → FP32 | 9.1 | 2,014–2,018 | **1.0** |
+| | `SMOPA` | INT8 → INT32 | 4.5 | 4,029 GOP/s | 2.0 |
+| Zen 5 core, AVX-512 | `VFMADD231PS` | FP32 → FP32 | 4.0 | 358 GFLOP/s | 1 |
+| | `VDPBF16PS` | bf16 → FP32 | 6.0 | 713 | 2.0 |
+| | `VPDPBUSD` | u8 × s8 → INT32 | 4.0 | 1,435 GOP/s | 4.0 |
+| RTX 5080, `mma.sync` | FMA cores (part 4) | FP32 → FP32 | | 59.7 TFLOP/s | 1 |
+| | `m16n8k16` | fp16, bf16 → FP32 | | 124 | 2.1 |
 | | `m16n8k16` | fp16 → fp16 | | 249 | 4.2 |
-| | `m16n8k32` | e4m3 → fp32 | | 249 | 4.2 |
-| | `m16n8k32 kind::mxf8f6f4.block_scale` | e4m3 → fp32 | | **497** | 8.3 |
-| | `m16n8k32` | e4m3 → fp16 | | 497 | 8.3 |
-| | `m16n8k32` | int8 → int32 | | 497 TOP/s | 8.3 |
+| | `m16n8k32` | E4M3 → FP32 | | 249 | 4.2 |
+| | `m16n8k32 kind::mxf8f6f4.block_scale` | E4M3 → FP32 | | **497** | 8.3 |
+| | `m16n8k32` | E4M3 → fp16 | | 497 | 8.3 |
+| | `m16n8k32` | INT8 → INT32 | | 497 TOP/s | 8.3 |
 
 (Latency is per instruction with one accumulator; on SME2, with one ZA
 tile. The FP32 rows differ from earlier parts because the sessions and
@@ -250,7 +250,7 @@ All three kernels in one session, the current versions:
 |---|--:|--:|--:|--:|--:|
 | FP32, `gemm_simd_blocked<Zmm>` | **325** | 311 | 302 | 295 | 91% |
 | bf16 | 619 | **638** | 606 | 574 | 90% |
-| INT8 | 824 | **1,139** | 1,138 | 1,038 | 79% |
+| INT8 | 824 | **1,138** | 1,138 | 1,038 | 79% |
 
 At N = 4,096 bf16 is 1.9× and INT8 3.5× faster than FP32; best size
 against best size, 2.0× and 3.5×, against peak ratios of 2.0 and 4.0.
@@ -360,7 +360,7 @@ chosen by measurement on all formats at N = 4,096 to 16,384
 
 - **Two pipeline stages, not three or four.** Three stages need 60 KiB of
   shared memory per block, so only one block fits in an SM's 100 KiB; two
-  stages (40 KiB) fit two blocks, and measured 8–17% faster for every
+  stages (40 KiB) fit two blocks, and measured 8–18% faster for every
   format.
 - **Grouped block order.** Blocks are numbered so that consecutive blocks
   walk down 8 rows of tiles before moving right; the blocks resident at one
@@ -436,7 +436,7 @@ far coarser than bf16's.
 
 ### What Level 8 removes
 
-The cp.async kernel reaches 87% of the peak and 91% of cuBLAS in bf16 and
+The cp.async kernel reaches 87% of the peak and 90–91% of cuBLAS in bf16 and
 fp16 with FP32 accumulation, but the three formats whose instruction is
 twice as fast (fp16 → fp16 at 249, INT8 and FP8 at 497) reach 150, 298 and
 291, 71–74% of cuBLAS. They perform the same `mma` instructions
@@ -477,7 +477,7 @@ comparison isolates the kernel from the input rounding measured above
 - **FP32 accumulation:** |C − C_ref| ≤ 2 · K · u · Σₖ |A(i,k) · B(k,j)|
   with u = 2⁻²⁴, the standard bound for a sum of K terms in any order.
   Tensor Cores do not add in IEEE FP32 order, so this is checked rather
-  than assumed; in the test's shapes (K ≤ 8,195) the worst GPU element
+  than assumed; in the GPU test's shapes (K ≤ 4,100) the worst element
   used 7.5 · 2⁻²⁴ · Σ|ab|, and the benchmark's sampled error at
   K = 16,384 is about 13 · 2⁻²⁴ · Σ|ab|: both far inside the bound.
 - **fp16 accumulation:** the same bound with u = 2⁻¹¹.
@@ -530,7 +530,7 @@ because all three accumulate the same `mma` instructions in the same k order.
    kernels run 12–17% faster than FP32 on an equally fast instruction,
    because loads and packing shrink.
 5. **The faster the arithmetic, the more the rest costs.** The cp.async
-   kernel reaches 91% of cuBLAS where the instruction is slow and 71–74%
+   kernel reaches 90–91% of cuBLAS where the instruction is slow and 71–74%
    where it is fast: issue overhead hidden behind the math is not any
    more. Level 8 moves tiles with TMA and leaves the compute warps nothing
    but `mma`: 97–102% of cuBLAS for every format at N = 8,192.

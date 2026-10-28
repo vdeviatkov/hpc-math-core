@@ -10,7 +10,7 @@
  *
  *   fma_f32 / fma_f64  each thread runs kChains independent FMA chains on
  *                      registers; no memory traffic.
- *   mma_f16            each warp issues mma.sync.m16n8k16 (fp16 in, fp32
+ *   mma_f16_f32acc     each warp issues mma.sync.m16n8k16 (fp16 in, fp32
  *                      accumulate, the Tensor Core path of the GEMM kernels)
  *                      on kChains independent accumulators held in registers.
  *   mma_<in>_<acc>     the same for each low-precision mma.sync of
@@ -26,7 +26,8 @@
  * limits), so it is sampled externally under each load: `cuda_peak hold
  * <test> <seconds>` runs one test back to back for that long, while
  * nvidia-smi reads the SM clock (docs/experiments/cuda-machine/README.md).
- * Kernels launch exactly one wave, every SM filled to its thread limit.
+ * The compute kernels launch exactly one wave, every SM filled to its thread
+ * limit; copy runs a grid-stride loop over 16 blocks per SM.
  * stdout gets CSV rows, stderr the device properties.
  */
 

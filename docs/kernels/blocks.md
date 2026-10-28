@@ -48,7 +48,7 @@ for each block of TileM rows of A            (i-block)
 its default register tile with every block in a grid of 7 TileM values
 (AVX2, NEON: 48, 64, 96, 192, 384, 768, 1536; AVX-512: 32 … 2048) × TileK
 and TileN ∈ {128, 256, 512, 1024}, at N = 512, 1024 and 4096, both types:
-1,344 measurements per family. Stage 1 ran the grid once; stage 2 re-ran
+672 measurements per family. Stage 1 ran the grid once; stage 2 re-ran
 the best candidates and the old default three times, in interleaved order
 ([data](../experiments/block-sweeps/README.md)). GFLOP/s.
 

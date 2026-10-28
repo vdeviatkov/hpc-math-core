@@ -124,7 +124,7 @@ the loop.
   against 8 × 3 and 12 × 2 (24 accumulators each), 4 × 4 against 8 × 2
   (16). The sweep shows this; it does not isolate why. The wide but short
   2 × 8 is fast only at N = 64, where all of B fits in L1; past that it
-  reads 8 bytes of B per FMA and falls to 62–79 GFLOP/s.
+  reads 8 bytes of B per FMA and falls to 53–79 GFLOP/s.
 - **Enough rows.** From 4 × 4 to 5 × 4 to 6 × 4, B's bytes per FMA drop
   from 4 to 2.7, and the kernel gains 11–21% FP32 and 13–23% FP64 at
   N ≥ 256. 7 × 4 would need 33 registers.

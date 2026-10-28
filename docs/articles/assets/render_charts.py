@@ -5,6 +5,8 @@ section "SME: B row stride": `bench_gemm --benchmark_filter=BStride/f32`,
 Apple M4 Max, median of 3 interleaved repetitions. The strip-height chart
 reads the raw samples in docs/experiments/sme-b-stride/height.csv, and the
 ladder chart sme2-ladder.csv (docs/benchmarks.md, "The four SME steps").
+lowp-peaks.csv holds the "× FP32" ratios of part 5's peak table
+(docs/experiments/lowp: lowp_peak_*.csv, cuda_peak_sm120a.csv).
 
     python3 render_charts.py    # rewrites every SVG file in this directory
 """
@@ -167,7 +169,7 @@ def main():
     bars("simd-m4.svg", "FP32 GEMM on one Apple M4 P-core",
          "Apple M4 Max · N = 512 · Apple Clang 17 · one thread",
          load_bars("simd-m4.csv"), "GFLOP/s", 150, 25,
-         references=[(143, "NEON peak ~143 at 4.49 GHz")], colors=simd)
+         references=[(144, "NEON peak ~144 at 4.49 GHz")], colors=simd)
     bars("lowp-peaks.svg", "Peak multiply-add rate by input format",
          "Measured instruction throughput ÷ FP32 peak of the same unit (RTX 5080: FP32 FMA cores)",
          load_bars("lowp-peaks.csv"), "× the FP32 peak", 9, 1,

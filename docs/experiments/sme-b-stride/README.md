@@ -20,8 +20,8 @@ against the packed driver before timing.
 
 ## Phases: where the time goes
 
-`sme_b_layout 4096 15 3`, with the library's block sizes (Mc = 1024,
-Kc = 2048, Nc = 4096). Each of 15 repetitions runs six cases (three `ldb`
+`sme_b_layout 4096 15 3`, with M4's measured block sizes
+(`SmeParams<float>`: Mc = 1024, Kc = 2048, Nc = 4096). Each of 15 repetitions runs six cases (three `ldb`
 × B in place or packed) end to end (the driver, mean of 3 calls) and by
 phase (the same loop nest with a clock around each phase), in shuffled
 order. Medians, ms; interquartile range in brackets.
@@ -116,7 +116,8 @@ on, against 3, are first-level TLB misses, as every line sits on its own
 
 A desktop machine with other work running (load average 4–6 during the
 chase, 5–10 during the other runs). Results are medians of interleaved,
-shuffled repetitions; the interquartile ranges show the noise. Inputs stay warm in cache between calls; nothing is flushed.
+shuffled repetitions; the interquartile ranges show the noise. Inputs stay
+warm in cache between calls; nothing is flushed.
 
 ## Reproduce
 

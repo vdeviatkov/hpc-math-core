@@ -21,10 +21,11 @@
  * kMps and kMpsF16 are the vendor reference, MPSMatrixMultiplication (f32,
  * and fp16 inputs with an fp32 result), as cuBLAS is for the CUDA kernels.
  *
- * Levels 2-5 need M and N multiples of 64 and K of 16; otherwise Level 1
- * runs instead (it handles any shape). On M1-M4 GPUs simdgroup matrices run
- * on the ordinary FP32 ALUs; there is no separate matrix unit, so fp16 does
- * not raise the arithmetic peak (see metal_fma_peak_gflops).
+ * Levels 2-5 need M and N multiples of 64 and K of 16 (8 for Level 3);
+ * otherwise Level 1 runs instead (it handles any shape). On M1-M4 GPUs
+ * simdgroup matrices run on the ordinary FP32 ALUs; there is no separate
+ * matrix unit, so fp16 does not raise the arithmetic peak (see
+ * metal_fma_peak_gflops).
  *
  * Shaders are compiled from source when the first MetalGemm is created
  * (newLibraryWithSource), so no offline Metal toolchain is needed. Without
@@ -49,8 +50,9 @@ std::string metal_device_name();
 
 enum class MetalKernel { kNaive, kTiled, kRegTile, kSimd, kSimdTg, kSimdTgF16, kMps, kMpsF16 };
 
-/// Tile variants of Levels 2-5 compiled into the library (gemm_reg_tile_*,
-/// gemm_simd_*, gemm_simd_tg_*), for MetalGemm::run_variant_ms sweeps.
+/// Every Level 2-5 function compiled into the library, the defaults and
+/// their tile variants (gemm_reg_tile*, gemm_simd*, gemm_simd_tg*), for
+/// MetalGemm::run_variant_ms sweeps.
 std::vector<std::string> metal_kernel_variants();
 
 /// A, B and C resident in GPU-visible memory: what the benchmarks time, so

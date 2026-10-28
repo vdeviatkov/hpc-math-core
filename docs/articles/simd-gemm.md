@@ -29,15 +29,17 @@ independent accumulators the inner loop keeps in registers.
 - The textbook i-j-k loop runs at **0.4–0.6 GFLOP/s** at N = 4096: it
   touches a new cache line of B for every multiply-add. Changing the loop
   order to i-k-j is **52–73× faster** in FP32, with no other change.
-- The peak is set by the FMA units: measured, **362 GFLOP/s FP32 on a
-  Zen 5 core (AVX-512)** and **~130 on an M4 P-core (NEON)**. To reach it a
+- The peak is set by the FMA units: **362 GFLOP/s FP32 on a Zen 5 core
+  (AVX-512)**, measured, and **~130 on an M4 P-core (NEON)**, four FMAs per
+  cycle at ~4.05 GHz. To reach it a
   kernel needs FMA latency × FMA pipes independent accumulators: 8–12 on
   Zen 5, 12–16 on M4.
 - An AVX-512 register tile with 8 accumulators ran at **60% of peak**
   because GCC folded the B loads into the FMAs, re-loading B for every FMA.
   An 8-row tile with 16 accumulators loads B once per step: **333 GFLOP/s,
-  92% of peak** (+53%). The same change made the M4's FP64 kernel 26–38%
-  faster for N ≥ 256.
+  92% of peak** (+53%) in that session; today's 8 × 3 tile with measured
+  blocks peaks at 328 GFLOP/s (91%). The same change made the M4's FP64
+  kernel 26–38% faster for N ≥ 256.
 - With the tile shape a template parameter, every family was swept over
   9–10 shapes. The winners: 6 × 2 for AVX2 (+14–35% over 4 × 2 at
   N ≥ 256), 8 × 3 for AVX-512 (+10–16% FP32 and +26–38% FP64 at N ≥ 1024
@@ -73,8 +75,8 @@ column is N elements apart.
 | Last-level cache | system-level cache, shared by the chip | L3, 32 MiB per 8 cores |
 | FMA latency, measured | 3.3–3.5 cycles | 4.0 cycles |
 | FMAs per cycle, measured | up to ~4 | 2 |
-| FP32 peak | ~130 GFLOP/s (~143 at 4.49 GHz) | **362 GFLOP/s** (AVX2: 182) |
-| FP64 peak | ~65 GFLOP/s | 180 GFLOP/s (AVX2: 91) |
+| FP32 peak | ~130 GFLOP/s (~144 at 4.49 GHz) | **362 GFLOP/s** (AVX2: 182) |
+| FP64 peak | ~65 GFLOP/s (~72 at 4.49 GHz) | 180 GFLOP/s (AVX2: 91) |
 
 The clock is measured with a chain of dependent integer adds, one per cycle
 on both cores. The M4 clock moves with the load on the other cores:
@@ -399,7 +401,7 @@ run alone, 8 × 3 measures 126–128 and 8 × 2 101–103.
 
 8 × 3 uses 28 of the 32 registers. The library kernel uses it now. The
 sweep does not show why the third vector helps so much where B misses L1,
-and this machine allows no hardware counters to look.
+and hardware counters were not available on this machine to find out.
 
 **NEON: 6 × 4, and `LDR` instead of `LD1R`.** On the M4 the sweep first
 showed something else: every tile with 6 or more rows and 4 vectors, or 8
@@ -505,8 +507,8 @@ Sources: [`bench_zen5_defaults.csv`](https://github.com/vdeviatkov/hpc-math-core
 and [`bench_m4_defaults.csv`](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/experiments/block-sweeps/bench_m4_defaults.csv).
 ¹ Run on 2026-10-22; the core clock measured in the M4 runs of
 2026-10-21 was 4.48–4.50 GHz (none was recorded for this run), against 3.96–4.13 GHz for the M4's
-other numbers in this article (the bars marked "before" in the chart
-below).
+other numbers in this article (including the scalar and "before" bars in
+the chart below).
 
 ![FP32 GEMM on one Zen 5 core, N = 512](assets/simd-zen5.svg)
 
@@ -514,10 +516,10 @@ below).
 
 At its best size the AVX-512 kernel runs at **91% of the core's FP32 peak
 and 90% of FP64** (of the measured 362 / 180), AVX2 at 94% / 91%, NEON at
-86% / 87% (of ~144 / ~72 GFLOP/s at 4.49 GHz). The README's headline
-divides by the theoretical peaks (365 / 183 for AVX-512) and quotes the
-best result over every tile and block, so its percentages differ by about
-a point. Against the textbook loop at N = 4096 the AVX-512
+86% / 87% (of ~144 / ~72 GFLOP/s at 4.49 GHz). The repository README
+divides by the theoretical peaks (365 / 183 for AVX-512) and quotes another
+session (2026-10-24) at N = 256 and 4096, so its percentages are up to two
+points lower. Against the textbook loop at N = 4096 the AVX-512
 kernel is 704× faster in FP32.
 
 ## What remains: B's row stride
@@ -615,8 +617,8 @@ Packed against in place, GFLOP/s (Zen 5: 3 runs, M4: 5 runs, medians):
 - **The 4 KiB cliff is gone.** In place, AVX2 loses a quarter to a third
   of its speed whenever B's rows are a multiple of 4 KiB apart. Packed, it
   runs at 166–169 GFLOP/s FP32 and 81–83 FP64 at every size from 1000 to
-  4096, **+32% to +60%**, and at N = 4096 within 3% of its best small-N
-  figure.
+  4096, **+32% to +60%** at the 4 KiB strides, and at N = 4096 within 3%
+  of its best small-N figure.
 - **AVX-512 gains 3–8%** at N ≥ 2000, and 15% at N = 1000, where the
   in-place kernel is unusually slow (rows 4,000 B apart, just short of
   4 KiB). At N = 4096 it now runs at 318.7 GFLOP/s, 88% of the measured
@@ -632,7 +634,9 @@ Packed against in place, GFLOP/s (Zen 5: 3 runs, M4: 5 runs, medians):
   the defaults of the tables above.
 - **Packing A too does not help.** Copying the Mc × Kc block of A as well,
   so that a tile's rows are kc elements apart instead of K, runs at
-  0.95–1.00× of packing B alone on both machines.
+  0.95–1.00× of packing B alone on both machines. (The code now packs A
+  into R-row strips instead: −3% to +10% against the row copy on Zen 5,
+  −0.5% to +4% on the M4; [blocks.md](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/kernels/blocks.md#packed-against-in-place).)
 
 Data and method: [experiments/packed-b](https://github.com/vdeviatkov/hpc-math-core/tree/main/docs/experiments/packed-b),
 [kernels/blocks.md](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/kernels/blocks.md#packed-b).
@@ -642,12 +646,12 @@ Data and method: [experiments/packed-b](https://github.com/vdeviatkov/hpc-math-c
 - **Wider vectors on a memory-bound loop.** Explicit AVX2, AVX-512 and
   NEON versions of the reordered loop run at or below the speed of the
   scalar one, which the compiler already vectorises.
-- **Software prefetch** ([`prefetch.hpp`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/prefetch.hpp)). Prefetching A, B and C 2 to 16 tile rows ahead of
+- **Software prefetch** ([`prefetch.hpp`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/prefetch.hpp)). Prefetching A, B and C 2 to 16 register-tile strips ahead of
   the current register-tile kernels changes their throughput by −1% to
   +0.3% (Zen 5, AVX-512) and −3% to +0.2% (M4, NEON) at N = 256 to 1024:
   the hardware prefetchers already follow these streaming patterns. On the
   earlier 4-row AVX-512 kernel, which was bound by its loads, prefetching
-  gained up to 6%, and 21% in one outlier (FP64, N = 512, 16 rows ahead).
+  gained up to 6%, and 21% in one outlier (FP64, N = 512, 16 strips ahead).
 
 ## Correctness
 
@@ -680,7 +684,7 @@ before and after the tile changes.
   cores busy during the 2026-10-15 measurements, and Spotlight indexing
   and an IDE (load average 2–14) during those of 2026-10-21/22; the core
   clock moved between 3.96 and 4.13 GHz from one program to the next on
-  10-15 and was 4.48–4.50 GHz on 10-21. Treat M4 figures as ±5%,
+  2026-10-15 and was 4.48–4.50 GHz on 2026-10-21. Treat M4 figures as ±5%,
   and compare across the two dates in cycles.
 - **No hardware counters on the CPUs.** macOS has no public counter API,
   and the Linux machine restricts them. The explanations rest on controlled
@@ -719,7 +723,7 @@ cmake --build build --parallel
 ctest --test-dir build
 ./build/benchmarks/fma_peak                        # FMA latency and throughput
 ./build/benchmarks/simd_microkernel                # the micro-kernel alone
-./build/benchmarks/bench_gemm --benchmark_filter='^(Naive|Reordered|Blocked|Neon|Avx2|Avx512)'
+./build/benchmarks/bench_gemm --benchmark_filter='^(Naive|Reordered|Blocked|Neon|Avx2|Avx512)(Reordered|Blocked|Packed)?/'
 ./build/benchmarks/bench_gemm --benchmark_filter='Tile'   # every register-tile shape
 ./build/benchmarks/bench_gemm --benchmark_filter='Block[0-9]'   # every cache block
 ./build/benchmarks/bench_gemm --benchmark_filter='Cmp/'        # packed B against in place

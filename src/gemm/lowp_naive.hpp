@@ -4,14 +4,15 @@
  * @file lowp_naive.hpp
  * @brief Naïve i-j-k GEMM for the low-precision formats, the reference the
  *        low-precision kernels are tested against: C = A · B with bf16 /
- *        fp16 inputs and FP32 output, or INT8 inputs and INT32 output.
+ *        fp16 / FP8 E4M3 inputs and FP32 output, or INT8 inputs and INT32
+ *        output.
  *
  * Every input is converted to double (exactly) and the products are summed
  * in double, then rounded once to float; INT8 products are summed in
- * int64_t, which is exact. The kernels accumulate in FP32 or INT32, so they
- * differ from this reference only by FP32 rounding in a different order
+ * int64_t, which is exact. The kernels accumulate in FP32 (or fp16) or INT32,
+ * so they differ from this reference only by rounding in a different order
  * (floating point) or not at all (INT8, as long as no INT32 sum overflows:
- * K ≤ 133,000 for any INT8 inputs).
+ * K ≤ 131,071 for any INT8 inputs, since |a · b| ≤ 128² = 2^14).
  */
 
 #include "hpc/lowp.hpp"

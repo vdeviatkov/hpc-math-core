@@ -101,15 +101,15 @@ int main() {
     std::fprintf(stderr, "core clock: %.3f GHz\n", g_ghz);
     std::printf("isa,type,rows,vectors_per_row,accumulators,b_layout,gflops,cycles_per_k\n");
 #if HPC_HAS_NEON
-    sweep<NeonF32, 4, 2, 3, 4, 5, 6>();  // library: 4 x 4 vectors = 16 accumulators
-    sweep<NeonF64, 2, 4, 6, 8, 10>();    // library: 8 x 2 vectors = 16
+    sweep<NeonF32, 4, 2, 3, 4, 5, 6>();  // library: 6 x 4 vectors = 24 accumulators
+    sweep<NeonF64, 2, 4, 6, 8, 10>();    // the 2-vector tiles of part 1 (library: 6 x 4 = 24)
 #endif
 #if HPC_HAS_AVX2
     sweep<Avx2F32, 2, 4, 5, 6>();        // library: 6 x 2 = 12 (15-16 of 16 registers)
     sweep<Avx2F64, 2, 4, 5, 6>();
 #endif
 #if HPC_HAS_AVX512
-    sweep<Avx512F32, 2, 4, 6, 8, 12>();  // library: 8 x 2 = 16
+    sweep<Avx512F32, 2, 4, 6, 8, 12>();  // the 2-vector tiles of part 1 (library: 8 x 3 = 24)
     sweep<Avx512F64, 2, 4, 6, 8, 12>();
 #endif
     std::fprintf(stderr, "core clock after: %.3f GHz\n", hpc::experiments::core_ghz());

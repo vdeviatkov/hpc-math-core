@@ -16,9 +16,9 @@ NVIDIA GeForce RTX 5080 (sm_120, 84 SMs), driver 615.71.09, VBIOS
 
 ## Peaks
 
-`cuda_peak`: each test is a kernel that does nothing else, launched as one
-full wave (84 SMs × 6 blocks of 256 threads), timed with CUDA events, best
-of 5. FMA and MMA tests run 16 independent chains per thread or warp on
+`cuda_peak`: each test is a kernel that does nothing else, timed with CUDA
+events, best of 5. The FMA and MMA tests launch one full wave (84 SMs × 6
+blocks of 256 threads); the copy is a grid-stride loop over 84 × 16 blocks. FMA and MMA tests run 16 independent chains per thread or warp on
 registers, each started from a different value so the compiler cannot merge
 them. The Tensor Core instruction count was checked with `ncu`
 (`smsp__inst_executed_pipe_tensor.sum` = the expected 1,056,964,608).

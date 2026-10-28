@@ -38,9 +38,9 @@ struct Shape {
     std::size_t M, K, N;
 };
 
-// Tile multiples with M, K, N all different (fast paths of Levels 2-5, and
-// the 128-wide variants), then shapes off every tile, which fall back to
-// Level 1, and empty products.
+// Tile multiples, some with M, K, N all different (fast paths of Levels
+// 2-5), then shapes off every tile, which fall back to Level 1, and empty
+// products. The tile variants have their own shapes (MetalVariants).
 const std::vector<Shape> kShapes = {{64, 64, 64},   {128, 256, 128}, {256, 128, 384}, {512, 512, 512},
                                     {17, 33, 65},   {129, 37, 131},  {100, 50, 200},  {1, 1, 1},
                                     {3, 0, 4},      {0, 5, 3},       {4, 5, 0}};

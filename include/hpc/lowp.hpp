@@ -2,10 +2,10 @@
 
 /**
  * @file lowp.hpp
- * @brief Storage types for low-precision GEMM inputs: bf16 and fp16.
+ * @brief Storage types for low-precision GEMM inputs: bf16, fp16 and FP8 E4M3.
  *
- * Both are 16-bit bit patterns in a struct, so Matrix<bf16> and
- * Matrix<fp16> work on every compiler and target; the kernels reinterpret
+ * Each is a bit pattern (16 or 8 bits) in a struct, so Matrix<bf16>,
+ * Matrix<fp16> and Matrix<fp8_e4m3> work on every compiler and target; the kernels reinterpret
  * them as the hardware's own types (__bf16, __fp16, __nv_bfloat16, …).
  * INT8 inputs are plain std::int8_t.
  *

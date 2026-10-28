@@ -4,15 +4,20 @@
  *        cuBLAS reference. The public API and the level table are in
  *        gemm/cuda.hpp.
  *
- * The file reads top to bottom in four parts:
+ * The file reads top to bottom in four parts, followed by the public API:
  *
  *   1. Device building blocks: PTX wrappers, tile copies, the cp.async
  *      pipeline. Every kernel below is assembled from them.
  *   2. Kernels, Level 0 to Level 8. Each one's comment says what it adds
  *      over the level it builds on.
- *   3. Host launchers: one *_device entry point per kernel. Each checks its
- *      hardware and shape requirements and falls back to a lower level.
- *   4. The cuBLAS reference and the Matrix wrappers (copy in, run, copy out).
+ *   3. Host launchers: launch and argument checks, TMA tensor maps, Level 8's
+ *      tile choice.
+ *   4. The cuBLAS reference and the Matrix-wrapper internals (copy in, run,
+ *      copy out).
+ *
+ * The public API has one *_device entry point per kernel. Each checks its
+ * hardware and shape requirements and falls back to a lower level, or, for
+ * the exact-tile Tensor Core paths, throws.
  *
  * Addressing convention: a kernel first moves A, B and C to the top-left
  * corner of its block's tile (block_tile), then works in tile-local
@@ -387,13 +392,14 @@ __device__ __forceinline__ void store_tile(T* C, int ldc, const T (&acc)[kTM][kT
 // 8x8 register tile of C.
 //
 // Shared memory: As[kBK][kBM+1], A's tile transposed so a thread's 8 rows of
-// A are contiguous; Bs[kBK][kBN+1], B's tile as is. The +1 padding keeps the
-// transposed stores of A free of bank conflicts.
+// A are contiguous; Bs[kBK][kBN+1], B's tile as is. The +1 padding spreads
+// the transposed stores of A over the banks: unpadded, a float warp's 32
+// stores would fall in two banks.
 //
 // Inner loop: outer product of an As column and a Bs row -> 8x8 FMAs per k
 // step, all from registers. Arithmetic intensity per block is
-// 2·128·128·K FLOP / ((128 + 128)·K·4 B) ≈ 32 FLOP/byte, against ~2 for
-// Level 1, where each thread owns one output.
+// 2·128·128·K FLOP / ((128 + 128)·K·4 B) = 32 FLOP/byte, against 4 for
+// Level 1's 16 x 16 tile, where each thread owns one output.
 // ============================================================================
 
 /// 128 x 128 block tile, 8 x 8 outputs per thread, single shared-memory buffer.
@@ -839,7 +845,7 @@ kernel_mma_ldmatrix(const float* __restrict__ A, const float* __restrict__ B, fl
 // double buffering.
 //
 // kernel_wmma (64x64 block tile, single-buffered, one mma_sync per warp per
-// k-step) runs an order of magnitude below cuBLAS FP16 on the same Tensor
+// k-step) runs at about an eighth of cuBLAS FP16 on the same Tensor
 // Cores. This kernel closes most of that gap the way CUTLASS-style kernels
 // do, still on the wmma:: C++ API:
 //
@@ -1146,8 +1152,8 @@ kernel_lowp(const unsigned char* __restrict__ A, const unsigned char* __restrict
 //   4. A 128 x 256 block tile, 8 consumer warps of 64 x 64, 4 stages of
 //      24 KiB = 96 KiB: one block per SM. Each warp's 4 A and 4 B
 //      ldmatrix.x4 feed 32 mma per 32 bytes of K (kernel_lowp: 6 for 16),
-//      and each byte brought into shared memory feeds twice the mma it does
-//      in a 128 x 128 tile. When 128 x 256 tiles would leave SMs idle, a
+//      and each byte brought into shared memory feeds a third more mma
+//      than in a 128 x 128 tile. When 128 x 256 tiles would leave SMs idle, a
 //      128 x 128 tile (4 consumer warps, 6 stages) runs instead (launch_tma).
 //
 // Measured on an RTX 5080 at N = 2048 and 8192, all formats: 128 x 256 with
@@ -1845,8 +1851,9 @@ void gemm_cuda_wmma_pipelined(const Matrix<float>& A, const Matrix<float>& B, Ma
     });
 }
 
-// Level 8 with inputs rounded to fp16 on the host (as Levels 5-7 do) and B
-// transposed to N x K while padding; without TMA (pre-sm_90) Level 7 runs.
+// Level 8 with inputs rounded to fp16 on the host (Levels 5-7 round on the
+// GPU) and B transposed to N x K while padding; without TMA (pre-sm_90)
+// Level 7 runs.
 void gemm_cuda_tma(const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C) {
     if (!cuda_has_tma())
         return gemm_cuda_wmma_pipelined(A, B, C);

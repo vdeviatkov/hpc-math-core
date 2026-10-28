@@ -94,7 +94,7 @@ The working set of a loop nest is the set of cache lines touched in one executio
 | C(i,j) | 1 element | 1 |
 | **Total** | | **K + K/8 + 1 ≈ 1.125 K** |
 
-For K=1024: ~1152 cache lines = ~72 KB > L1 (32 KB). B constantly thrashes L1.
+For K=1024: ~1152 cache lines = ~72 KB, more than a 32–48 KB L1. B constantly thrashes L1.
 
 ### Reordered inner loop (fixed i, fixed k)
 
@@ -122,7 +122,7 @@ The reordered kernel's stride-1 walk over B row k is the easiest case. The naïv
 Even the reordered kernel has an issue for very large matrices: the outer k-loop causes row `i` of C to be evicted from L1 between k-iterations if N is large. Loop tiling (blocking) addresses this by processing a small tile (e.g. 64×64 elements) that stays cache-resident before moving on: `gemm_blocked`.
 
 ```
-Tiled access pattern (tile size T_r × T_c):
+Tiled access pattern (tile sizes T_r × T_k × T_c):
 
   for i_block in [0, M, T_r):
     for k_block in [0, K, T_k):
@@ -134,7 +134,7 @@ Tiled access pattern (tile size T_r × T_c):
               C(i,j) += A(i,k) * B(k,j)
 ```
 
-With 64×64 tiles of doubles the working set is `3 × 64 × 64 × 8 B = 96 KiB`: more than an L1, but well inside the L2 of both CPUs measured here (1 MiB per Zen 5 core, 16 MiB per M4 cluster).
+With 64×64 tiles of doubles the working set is `3 × 64 × 64 × 8 B = 96 KiB`: more than Zen 5's 48 KiB L1 (M4's 128 KiB L1 holds it), and well inside the L2 of both CPUs measured here (1 MiB per Zen 5 core, 16 MiB per M4 cluster).
 
 ---
 
@@ -155,7 +155,7 @@ Caches soften this at moderate N (part of B stays resident), but the trend shows
 
 For the reordered kernel, effective bandwidth is much higher (from caches), but tiling is needed to reach the compute roofline of:
 ```
-Peak compute = cores × SIMD width × FMA throughput × frequency
+Peak compute = cores × SIMD lanes × FMAs per cycle × 2 FLOPs per FMA × frequency
 ```
 This motivates the explicit SIMD kernels (AVX2, AVX-512, NEON) and the matrix engines.
 

@@ -13,8 +13,10 @@
  *         number of lines at which the latency steps up is the capacity of
  *         the cache sets the stride leaves to them, per level.
  *
- * ldb     The FP32 GEMM of gemm_simd_blocked<Zmm> (same 64 x 256 x 512 blocking,
- *         same 8 x 2 tile of vector_micro<Zmm>) with B stored at row stride ldb >= N. Only
+ * ldb     The FP32 GEMM of gemm_simd_blocked<Zmm> as it was on 2026-10-17
+ *         (64 x 256 x 512 blocking, 8 x 2 tile of vector_micro<Zmm>; the
+ *         library now uses 512 x 256 x 512 and 8 x 3) with B stored at row
+ *         stride ldb >= N. Only
  *         the stride changes; the multiplication does not. Each ldb is run
  *         with B read in place, as the library kernel does, and with each
  *         256 x 512 block of B packed into contiguous 32-column strips first

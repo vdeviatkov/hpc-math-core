@@ -8,8 +8,8 @@ interface and level list: [`src/gemm/metal.hpp`](../../../src/gemm/metal.hpp).
 | File | Program | What it measures |
 |---|---|---|
 | [`bench_gemm_metal.json`](bench_gemm_metal.json) | `bench_gemm_metal --benchmark_repetitions=5 --benchmark_min_time=1s --benchmark_enable_random_interleaving=true --benchmark_report_aggregates_only=true` | every level, MPS, every tile variant and the FMA peak; median, mean, stddev and cv of 5 interleaved repetitions. **The published dataset.** |
-| [`load.txt`](load.txt) | `uptime` before and after | load average 1.5–3.6 |
-| [`session_a.json`](session_a.json), [`session_b.json`](session_b.json), [`session_log.txt`](session_log.txt) | the same without variants (`--benchmark_filter=-Variant`), median of 3, before and after the PyTorch MPS and JAX-on-Metal rows of [frameworks-m4](../frameworks-m4/README.md) | one bracketed GPU session, used for the cross-framework comparison; ran at about half speed (see below) |
+| [`load.txt`](load.txt) | `uptime` before and after | load averages 1.5–3.9 |
+| [`session_a.json`](session_a.json), [`session_b.json`](session_b.json), [`session_log.txt`](session_log.txt) | the same without variants (`--benchmark_filter=-Variant`), median of 3, before and after the PyTorch MPS and JAX-on-Metal rows of [frameworks-m4](../frameworks-m4/README.md) | one bracketed GPU session, used for the cross-framework comparison; ran at 57–59% of the published run's speed (median over rows; see below) |
 
 ## Method
 
@@ -17,10 +17,10 @@ GPU time of the GEMM alone: A, B and C sit in shared-storage `MTLBuffer`s
 filled before timing (plus fp16 copies for the F16 rows), and one untimed
 call compiles the pipeline. Each Google Benchmark iteration is one command
 buffer of `reps` back-to-back dispatches, with `reps` chosen so it lasts at
-least ~5 ms (256 at N=256, 1 at N ≥ 4096); its `GPUStartTime..GPUEndTime`
+least ~5 ms (93–256 at N=256, 1 at N ≥ 4096); its `GPUStartTime..GPUEndTime`
 span is the iteration time, and the flop counter is `reps × 2N³`. The FMA
 peak runs 2²⁰ threads × 16,384 iterations × 8 independent 4-wide FMA
-chains (~40 ms), best of 10 after a warm-up run.
+chains (2⁴⁰ flops, ~75 ms), best of 10 after a warm-up run.
 
 ## Results (bench_gemm_metal.json)
 

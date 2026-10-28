@@ -330,7 +330,8 @@ double metal_fma_peak_gflops(bool f16) {
         Context& ctx = context();
         id<MTLComputePipelineState> pso = ctx.pipeline(f16 ? "fma_peak_f16" : "fma_peak_f32");
         // Enough threads to fill every core several times over; iterations
-        // long enough that launch overhead is negligible (~40 ms per run).
+        // long enough that launch overhead is negligible (2^40 flops per run,
+        // ~75 ms on an M4 Max).
         // Best of 10 after one warm-up run, so the GPU clock has ramped up.
         const uint32_t threads = 1u << 20, iters = 16384;
         const float seed       = 1.0f;

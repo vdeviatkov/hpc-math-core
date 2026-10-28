@@ -23,8 +23,9 @@ one-tile teaching step. [Why these values](sizing.md).
 Unlike SIMD R rows × V vectors, SME R×V counts square ZA tiles. Let S be
 the streaming vector length **in elements of T**. C's micro-tile is
 (R·S)×(V·S), each K step loads R A and V B vectors and computes R·V outer
-products. ZA contains four FP32 or eight FP64 tiles. Shapes must be
-positive and R·V ≤ 4 / 8; cache sizes must be positive. Invalid choices
+products. ZA contains four 32-bit tiles (FP32 and the widening types) or
+eight FP64 tiles. Shapes must be positive and R·V ≤ 4 / 8; cache sizes
+must be positive (TileK a whole number of k groups). Invalid choices
 fail at compile time. These limits follow from
 [Arm's SME programmer guide](https://documentation-service.arm.com/static/664f013638084307512bb30c).
 
@@ -69,23 +70,25 @@ The tile sweep covers every legal positive rectangular shape: eight FP32
 and twenty FP64 shapes, each at N=64/256/512/1024/4096. Counters include
 ZA rows/columns/tile count, `svl` in elements, and actual output `mr`/`nr`.
 The cache grid uses M={256,512,1024}, K/N={1024,2048,4096}, at
-N=512/1024/4096 and the default shape for each type. Packing and allocation
+N=512/1024/4096 and the measured shape for each type. Packing and allocation
 inside the GEMM call are timed, as in the original SME benchmarks.
 Other ISAs/builds report skipped rows rather than substitute kernels.
 
 Keep compiler flags, SVL, machine, load and repetitions with results.
 [Historical cache measurements](../experiments/sme2-gemm/README.md) and
 [new shape measurements](../experiments/sme-tiles/README.md) are separate.
-These template controls currently cover FP32 / FP64; SME widening kernels
-have a separate packed k-group layout and retain their fixed 2×2 ZA32 shape.
+The same template parameters apply to the widening kernels
+(`gemm_sme<fp16, R, V, TileM, TileK, TileN>`, likewise bf16 and INT8),
+whose packed strips hold k-group words; their shapes and blocks have not
+been swept (`SmeParams` keeps 2×2 and FP32's blocks in k groups).
 
 The new M4 sweep finds FP32 1×4 about 9.5% faster than 2×2 at N=1024,
 confirmed with seven interleaved repetitions. FP64 1×4 is about 4.3% faster
 at that size but 1.4% slower at N=4096. Thus the historical balanced shape
-is not optimal at every size. Defaults are preserved while alternatives
-can now be selected directly; see the linked results for all shapes and
-conditions. The default before/after check finds −1.03% to +1.40% changes
-across six cases, within desktop run variation.
+is not optimal at every size. `SmeParams` keeps 2×2 / 2×4; any other shape
+is a template argument away; see the linked results for all shapes and
+conditions. The before/after check at those shapes finds −1.03% to +1.40%
+changes across six cases, within desktop run variation.
 
 ## Several SME units
 
@@ -100,8 +103,8 @@ GotoBLAS:
 - each `(jc, pc)` pass packs the B panel once, shared, with every thread
   packing every team-th strip;
 - after a barrier, threads take chunks of rows from an atomic counter (at
-  most `TileM` rows, about four chunks per thread, never less than one 2·SVL
-  micro-tile), pack them into their own A buffer and run `macro_kernel`;
+  most `TileM` rows, about four chunks per thread, never less than one
+  R·SVL-row micro-tile), pack them into their own A buffer and run `macro_kernel`;
 - a second barrier keeps the panel intact until every chunk is done.
 
 macOS cannot pin a thread to a cluster, so placement is up to the
@@ -109,14 +112,14 @@ scheduler. The first version gave each thread an equal static band of rows.
 It showed the scheduler keeping a few threads on one cluster: with 2, 4 or 6
 threads, N ≤ 2048 ran no faster than one thread (f32 N=1024: 1,447 GFLOP/s
 on one thread, 1,470 on two), and 3 threads were slower than 2 at N=4096
-(2.3 against 2.7 TFLOP/s), because the unit that got two of the three
+(2.4 against 2.7 TFLOP/s), because the unit that got two of the three
 threads finished last. With dynamic chunks, a unit that hosts more threads
 simply takes more chunks.
 
 Sweep: `--benchmark_filter='^(SmeMtT[0-9]+Mc[0-9]+|Sme|Amx)/f(32|64)/N=(1024|2048|4096)(/|$)'`,
 median of 3 interleaved repetitions, wall-clock time, load average 3.9
 ([data](../experiments/sme-mt/README.md)). GFLOP/s, `TileM` = 1024 (256 and
-512 are within 3% of it everywhere):
+512 are within 4% of it everywhere):
 
 | Threads | f32 N=1024 | f32 N=2048 | f32 N=4096 | f64 N=1024 | f64 N=2048 | f64 N=4096 |
 |--:|--:|--:|--:|--:|--:|--:|
@@ -134,12 +137,12 @@ median of 3 interleaved repetitions, wall-clock time, load average 3.9
   spilling onto the second cluster once the first is full. At N=4096 each
   call lasts tens of milliseconds, enough for the scheduler to spread even
   two threads, and two threads already reach 1.8× one.
-- 8 threads is the measured choice (`SmeParams::Threads`): best or within 1.1% of the best everywhere.
-  12 threads, one per P-core, are no better at N=4096 and 5% worse at
-  N=1024.
-- `TileM` makes no measurable difference, because chunks are smaller than
-  any of the three heights from N ≤ 4096 / (4 · 8). `SmeParams::MtMc` stays
-  `gemm_sme`'s `Mc`.
+- 8 threads is the measured choice (`SmeParams::Threads`): best or within
+  1.1% of the best everywhere. 12 threads, one per P-core, are no better
+  at N=4096 and 5% worse at N=1024.
+- `TileM` makes no measurable difference: with 8 threads and N ≤ 4096 the
+  chunks are at most N / (4 · 8) = 128 rows, smaller than any of the three
+  heights. `SmeParams::MtMc` stays `gemm_sme`'s `Mc`.
 - From N=2048 up, `gemm_sme_mt` matches or beats Accelerate. At N=4096 it
   reaches 3.56 TFLOP/s f32, 113% of Accelerate and 91% of the two units'
   3.93 TFLOP/s peak, and 931 GFLOP/s f64 (118%, 93% of 1.00 TFLOP/s). At

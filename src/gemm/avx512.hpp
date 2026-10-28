@@ -12,8 +12,8 @@
  * 32 × 512-bit ZMM registers (16 f32 / 8 f64). With 2 FMA ports:
  * 2 × 16 lanes × 2 FLOP = 64 FLOP/cycle f32, 32 f64.
  *
- * Available on Intel Skylake-SP/X and later server/workstation parts
- * (Cascade Lake, Ice Lake, Sapphire Rapids, Rocket Lake) and AMD Zen 4+.
+ * Available on Intel Skylake-SP/X and later (Cascade Lake, Ice Lake,
+ * Sapphire Rapids, Rocket Lake) and AMD Zen 4+.
  * Not on Apple Silicon, Alder Lake/Raptor Lake (disabled by Intel), or AMD
  * before Zen 4.
  *

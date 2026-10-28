@@ -43,7 +43,8 @@ trivially copyable; the kernels are intended for float and double.
 Each `HPC_HAS_*` macro is always 0 or 1, with a constexpr mirror for template
 registration. Detection describes this translation unit's compiler target,
 not the CPU currently executing it. AVX2 kernels also require FMA. Missing
-families have deleted entry points; tests omit them and benchmarks register
+families have deleted entry points (SME, AMX, KleidiAI) or primitive
+structs that are declared but not defined (SIMD); tests omit them and benchmarks register
 skip-only rows. An ISA-enabled binary must run on compatible hardware.
 Accelerate's availability macro describes a library, not proof of Apple AMX
 hardware or a particular internal dispatch choice.
@@ -103,9 +104,10 @@ Packed kernels use the same micro-kernel with B copied into contiguous
 strips (below). Full SIMD loads are unaligned where needed, because the
 Matrix base alignment does not align every row.
 
-No kernel in `src/` holds a tuned size: register tiles and cache blocks
-are template parameters without defaults, and the values the sweeps chose
-live with the benchmarks (`benchmarks/simd_params.hpp`).
+No SIMD or SME kernel in `src/` holds a tuned size: register tiles and
+cache blocks are template parameters without defaults, and the values the
+sweeps chose live with the benchmarks (`benchmarks/simd_params.hpp`,
+`benchmarks/sme_params.hpp`).
 
 ### `src/gemm/simd.hpp`
 
@@ -175,14 +177,14 @@ required too) and `Zmm<T>` (AVX-512: 32 ZMM registers, 16 floats or 8
 doubles) broadcast A into a full vector. `Q<T>` (NEON: 32 Q registers, 4
 floats or 2 doubles) loads A with a plain `LDR` into lane 0 of a D
 register and multiplies by element; the `vdupq` + `vfmaq` form compiles to
-`LD1R` (load and replicate), which held tiles with many rows 23-30% back on
+`LD1R` (load and replicate), which held tiles with many rows 23–30% back on
 M4. For float, Clang turns every intrinsic spelling back into `LD1R`, so
 `Q<float>::load_a` is a one-instruction inline `asm` on GCC/Clang. AArch64
 is required because `Q<double>` uses double-precision FMA.
 
 The measured parameters (`benchmarks/simd_params.hpp`): AVX2 a 6 × 2 tile
-(6x16 float, 12 accumulators; with two B vectors and one or two A
-broadcasts that is 15-16 of the 16 YMM registers, and 7 rows spill) with
+(6 × 16 float, 12 accumulators; with two B vectors and one or two A
+broadcasts that is 15–16 of the 16 YMM registers, and 7 rows spill) with
 384 × 256 × 1 KiB-of-B blocks; AVX-512 an 8 × 3 tile (24 accumulators in
 28 of 32 ZMM registers; with 4 or fewer rows GCC folds the B loads into
 every FMA and the kernel becomes load-bound) with 512 × 256 × 2 KiB-of-B
@@ -255,7 +257,7 @@ reduction. Dynamic chunks, not equal bands, because macOS cannot pin a
 thread to a cluster and tends to keep a few threads on one, so equal bands
 finish at the pace of the busier unit. Workers raise themselves to
 user-interactive QoS to stay on P-cores. Threads are created per call, which
-dominates below N≈512. The default of 8 threads comes from a sweep
+dominates below N≈512. The 8 threads the benchmarks use (`SmeParams::Threads`) come from a sweep
 ([Several SME units](kernels/sme.md#several-sme-units)); cluster placement
 is inferred from throughput, not observed.
 
@@ -282,10 +284,11 @@ which explains why this particular integration loses speed at large N.
 ## Low-precision kernels
 
 All compute `C = A · B` with bf16 / fp16 / FP8 inputs and FP32 output, or
-INT8 inputs and INT32 output. The narrow instructions add a dot product of
-G consecutive k values (G = 2 for 16-bit, 4 for 8-bit) into each 32-bit
-lane, so every CPU kernel packs B with G rows interleaved and pads K to a
-multiple of G. Article: [part 5](articles/lowp-gemm.md).
+INT8 inputs and INT32 output. Most narrow instructions consume G consecutive
+k values per 32-bit lane or per register (G = 2 for 16-bit and 4 for 8-bit
+dot products and SME outer products, 4 and 8 for `BFMMLA` / `SMMLA`; the
+NEON fp16 FMAs have G = 1), so every CPU kernel packs B by k group and pads
+K to a multiple of G. Article: [part 5](articles/lowp-gemm.md).
 
 | File | Design |
 |---|---|
@@ -293,7 +296,7 @@ multiple of G. Article: [part 5](articles/lowp-gemm.md).
 | `src/gemm/simd.hpp`: `gemm_simd_lowp` | `gemm_simd_lowp<Ops, R, V, Mc, Kc, Nc>`: the low-precision SIMD kernel, generic over an instruction-shape struct (`ZmmDot<In>` in `avx512.hpp`; `QMmla<In>`, `QFmlal<In>`, `QFmlaF16<In>` in `neon.hpp`). It runs `detail::gemm_kgroup`, the kernel `gemm_simd_packed` runs with G = 1. GotoBLAS order; B is always packed by k group (word w of column c holds G consecutive k), A only where the instruction needs it. One micro-kernel: per k group, V B operands, one A operand per row unit, R·V instructions; rows and vectors unrolled with `#pragma GCC unroll`, so FMLAL's lane is a constant. Kept out of line: inlined, the AVX-512 bf16 k loop reloaded its row pointers (56 → 420 instructions with Clang). Tile and blocks are template parameters; the measured values are in `benchmarks/simd_params.hpp` (`LowpParams`). |
 | `ZmmDot<In>` (`avx512.hpp`) | `VDPBF16PS` (bf16), `VPDPBUSD` (INT8). One accumulator is 1 × 16 of C; measured tile 8 × 2 (8 × 32 of C), swept by `bench_gemm_lowp`'s `Avx512{Dpbf16,Vnni}Tile*` rows. Only B is packed (G rows interleaved, as the instructions need); A is broadcast in place. `VPDPBUSD` is unsigned × signed, so B is packed + 128 and each row's accumulators start at −128 · Σ_k A(i, k): exact. `VPDPBUSD` is one inline `asm` instruction because GCC 13 wraps the intrinsic in register copies that cost 16–26%. Edges: masked C loads and stores. Measured blocks: Mc = 128, Kc = 1024 bytes of k, Nc = 512. |
 | `QMmla<In>`, `QFmlal<In>`, `QFmlaF16<In>` (`neon.hpp`) | `BFMMLA` (bf16) and `SMMLA` (INT8): 2 × 2-tile matrix instructions, one accumulator per 2 × 2 of C, A and B both packed; measured as an 8 × 8 C block in 16 registers (R = V = 4). `FMLAL` (fp16, FP32 accumulate) and `FMLA .8h` (fp16 accumulate, converted on load and store) multiply by element: A is packed 4 rows per k and row r uses lane r, so R = 4; measured with 16 accumulators. Edges through a buffer. |
-| `src/gemm/sme.hpp`: `gemm_sme<fp16 \| bf16 \| int8_t>` | `gemm_sme` and `gemm_sme_mt` with widening `FMOPA` / `SMOPA` into the four 32-bit ZA tiles: the FP32 kernels with a 32-bit word of G = 2 or 4 elements in place of an element (G = 1 for FP32 / FP64), so one `pack_a` (NEON transposes of 32-bit words), one `macro_kernel` and one driver serve all five types; `pack_b` zips G rows. Any R × V ZA shape and cache block, as for FP32 (TileK in elements, a multiple of G). Default blocks keep FP32's sizes in k groups (8 MiB A block). |
+| `src/gemm/sme.hpp`: `gemm_sme<fp16 \| bf16 \| int8_t>` | `gemm_sme` and `gemm_sme_mt` with widening `FMOPA` / `SMOPA` into the four 32-bit ZA tiles: the FP32 kernels with a 32-bit word of G = 2 or 4 elements in place of an element (G = 1 for FP32 / FP64), so one `pack_a` (NEON transposes of 32-bit words), one `macro_kernel` and one driver serve all five types; `pack_b` zips G rows. Any R × V ZA shape and cache block, as for FP32 (TileK in elements, a multiple of G). The measured blocks (`SmeParams`) keep FP32's sizes in k groups (8 MiB A block). |
 | `src/gemm/cuda.hpp`, `src/cuda/gemm.cu` | One `mma.sync` kernel template per format struct (`Bf16`, `Fp16`, `Fp16Acc16`, `Int8`, `Fp8`), in two kernels: `kernel_lowp` (cp.async, 2 stages, padded rows, 128 × 128) and `kernel_tma` (Level 8). Both take A and B K-major (B transposed), so one non-transposing `ldmatrix` serves 8- and 16-bit formats. FP8 uses the block-scaled `kind::mxf8f6f4` instruction with unit scales in an `sm_120a` build (full rate), the sm_89 form otherwise. cuBLAS / cuBLASLt references on the same buffers. Matrix wrappers pad, transpose B and select the implementation (`CudaLowpImpl`). |
 | `src/cuda/gemm_stub.cpp` | The same symbols without CUDA; every format reports unsupported and kernels throw. |
 

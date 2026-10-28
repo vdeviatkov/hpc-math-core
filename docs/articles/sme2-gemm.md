@@ -24,7 +24,7 @@ the caches and the TLB.
 - The SME unit completes one 16 × 16 FP32 outer product (512 flops) per
   cycle, but each result takes 4 cycles to feed the next: **1.96 TFLOP/s
   peak, reachable only with four independent accumulators**. There is one
-  unit per CPU cluster, not per core.
+  unit per performance-core cluster, not per core.
 - Three steps after a one-tile baseline take the kernel from **472 to
   1,532 GFLOP/s** (78% of peak; best size of each kernel):
   use all four accumulator tiles (3.1×), block for the caches GotoBLAS-style
@@ -145,9 +145,9 @@ on constant inputs, with no memory traffic
 
 This is the timeline above, measured: an FMOPA's result is ready for the
 next FMOPA on the same tile after **4 cycles**, while the unit accepts
-**one new FMOPA per cycle**. Measured: 1.03 cycles per FMOPA with four
-tiles; at 512 FP32 flops each that is 1.96 TFLOP/s. One tile runs at a quarter of peak, two at half, four fill the
-pipeline. FP64 has the same issue rate with a quarter of the work per
+**one new FMOPA per cycle**. At 1.03 cycles per FMOPA with four tiles and
+512 FP32 flops each, that is 1.96 TFLOP/s. One tile runs at a quarter of
+peak, two at half, four fill the pipeline. FP64 has the same issue rate with a quarter of the work per
 instruction.
 
 Running the same loop on several threads shows how the unit is shared:
@@ -180,9 +180,9 @@ ZA[t][r][c] += a[r] * b[c]          for r, c in 0..15      (512 flops, one instr
 ```
 
 With `a` taken from column `k` of A and `b` from row `k` of B, `K` such
-instructions produce a 16 × 16 block of `C = A·B`. Two vectors loaded yield
-256 multiply-adds, against 16 for a 16-lane vector FMA on the same two vectors: the
-outer product reuses every element 16 times inside the instruction. That
+instructions produce a 16 × 16 block of `C = A·B`. Two vectors loaded
+yield 256 multiply-adds, against 16 for a 16-lane vector FMA on the same
+two vectors: the outer product reuses every element 16 times inside the instruction. That
 is why the SME unit does 64 times the work per instruction of a NEON
 FMA.
 
@@ -245,12 +245,15 @@ for (std::int64_t k = 0; k < kc; ++k) {
     const auto a  = svld1_x2(pn, a_strip + k * mr);   // A rows 0-15 and 16-31, one instruction
     const auto b  = svld1_x2(pb0, b_strip + k * ldb); // B columns 0-15 and 16-31
     const auto a0 = svget2(a, 0), a1 = svget2(a, 1);
-    mopa<T, 0>(pt, a0, svget2(b, 0));   // tile 0: C rows 0-15,  columns 0-15
-    mopa<T, 1>(pt, a0, svget2(b, 1));   // tile 1: C rows 0-15,  columns 16-31
-    mopa<T, 2>(pt, a1, svget2(b, 0));   // tile 2: C rows 16-31, columns 0-15
-    mopa<T, 3>(pt, a1, svget2(b, 1));   // tile 3: C rows 16-31, columns 16-31
+    mopa<T, 0>(a0, svget2(b, 0));   // tile 0: C rows 0-15,  columns 0-15
+    mopa<T, 1>(a0, svget2(b, 1));   // tile 1: C rows 0-15,  columns 16-31
+    mopa<T, 2>(a1, svget2(b, 0));   // tile 2: C rows 16-31, columns 0-15
+    mopa<T, 3>(a1, svget2(b, 1));   // tile 3: C rows 16-31, columns 16-31
 }
 ```
+
+(In the source, `outer_step` generates this pattern for any R × V tile
+shape; for 2 × 2 it compiles to the loop above.)
 
 Four independent chains fill the FMOPA pipeline, and each loaded vector
 now feeds two FMOPAs instead of one, halving the bytes per flop. SME2's
@@ -306,7 +309,7 @@ for jc in 0 .. N step Nc:                  Nc = 4096 columns of B and C (FP32 si
 Code: [`gemm_sme_blocked` and `blocked_driver`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/sme.hpp).
 
 A macro-kernel runs the micro-kernel repeatedly to compute a larger block
-of C. For the default FP32 configuration on M4, with full-sized blocks:
+of C. For the measured FP32 configuration on M4, with full-sized blocks:
 
 | Level | Computes |
 |---|---|
@@ -318,9 +321,10 @@ The macro-kernel controls **reuse between tiles**. The micro-kernel
 controls **loads and arithmetic within one tile**. Edge blocks can be
 smaller than the dimensions above.
 
-In `sme.hpp`, the micro-kernel's arithmetic is written directly inside
-`macro_kernel()`, rather than in a separate function. The macro-kernel
-enters streaming mode, owns ZA, and processes many C tiles before leaving
+In `sme.hpp`, the micro-kernel is `outer_step()`, an always-inlined
+helper that shares `macro_kernel()`'s ZA state, so it compiles into the
+macro-kernel's k loop rather than being called. The macro-kernel enters
+streaming mode, owns ZA, and processes many C tiles before leaving
 streaming mode.
 
 Each loop level fixes one operand while the levels inside it reuse it:
@@ -361,7 +365,7 @@ for (jr ...)          // select one B strip
         micro_kernel();
 ```
 
-At the default M4 FP32 sizes:
+At the measured M4 FP32 sizes:
 
 | Operand or cache | Size |
 |---|---:|
@@ -505,8 +509,8 @@ strip[k * 32 + r] = A(i0 + r, pc + k)      r in 0..31, k in 0..Kc-1
 ```
 
 The copy is a transpose. It is done with NEON 4 × 4 in-register
-transposes (`vtrn1q_f32`, `vtrn2q_f32`, then swapping 64-bit halves with
-`vcombine_f32`), which doubled packing bandwidth over a scalar loop and
+transposes (`vtrn1q_u32`, `vtrn2q_u32`, then swapping 64-bit halves with
+`vcombine_u32`, on the raw bits), which doubled packing bandwidth over a scalar loop and
 made the whole GEMM about 10% faster ([`pack_a`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/sme.hpp)). Packing runs before the macro-kernel
 enters streaming mode, in the core's own NEON pipes; the SME unit only
 ever sees packed data, and the mode switch happens once per 1024 × 2048 ×
@@ -586,7 +590,7 @@ threads on one cluster. Measured, GFLOP/s, wall clock, median of 3
   jump from 6 to 8 threads at N = 1024 (1.8 → 2.7 TFLOP/s) is that
   spill. Seven, the smallest count that forces it, was not measured; 8 is
   best or within 1.1% of the best of the counts measured, so it is the
-  default. Twelve, one per P-core, gain nothing.
+  count used. Twelve, one per P-core, gain nothing.
 - **Dynamic chunks make the extra threads harmless.** A first version
   gave each thread an equal band of rows; the unit that hosted more
   threads finished last, and 3 threads were slower than 2 at N = 4096
@@ -681,7 +685,8 @@ comparison is with Accelerate restricted to one thread
 (`VECLIB_MAXIMUM_THREADS=1`); Accelerate's default, multi-threaded figures
 are listed separately. Peak is 1,963 GFLOP/s FP32 and 500 FP64 for one SME
 unit, twice that for two. `gemm_sme` comes from a different run from the
-step tables above (where FP64 reaches 436 GFLOP/s at N = 4000). The libraries are called through thin wrappers:
+step tables above (where FP64 reaches 436 GFLOP/s at N = 4000). The
+libraries are called through thin wrappers:
 [`gemm_kleidiai`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/kleidiai.hpp) and, for Accelerate's
 `cblas_sgemm` / `cblas_dgemm`, [`gemm_amx`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/amx.hpp).
 
@@ -701,7 +706,7 @@ step tables above (where FP64 reaches 436 GFLOP/s at N = 4000). The libraries ar
 | `gemm_sme_mt`, FP32, 8 threads ² | 370 | 1,480 | 2,670 | 3,071 | **3,496** | 89% |
 | `gemm_sme_mt`, FP64, 8 threads ² | 270 | 618 | 758 | 894 | **914** | 91% |
 
-² From the 5-repetition run of the default
+² From the 5-repetition run of the 8-thread configuration
 ([`default.json`](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/experiments/sme-mt/default.json));
 Step 5 quotes the thread sweep, a different run (3,558 / 931 at N = 4096).
 The Accelerate rows of this table are older; against Accelerate in the same
@@ -778,7 +783,8 @@ VECLIB_MAXIMUM_THREADS=1 ./build/benchmarks/bench_gemm --benchmark_filter=Amx
 
 The kernels are in
 [`src/gemm/sme.hpp`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/sme.hpp),
-all four as templates over FP32 and FP64. Raw data for every table here:
+the four steps and `gemm_sme_mt`, as templates over the element type, the
+ZA tile shape and the cache blocks. Raw data for every table here:
 [experiments/sme2-gemm](https://github.com/vdeviatkov/hpc-math-core/tree/main/docs/experiments/sme2-gemm)
 and [experiments/sme2-machine](https://github.com/vdeviatkov/hpc-math-core/tree/main/docs/experiments/sme2-machine);
 full benchmark tables:

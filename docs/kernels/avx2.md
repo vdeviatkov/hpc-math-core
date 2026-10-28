@@ -141,7 +141,7 @@ alternating two broadcast registers, still with no spill.
   is better served by `gemm_simd_blocked<Zmm>`. `gemm_simd_blocked<Ymm, 7, 2, …>`
   is there for anyone who wants it.
 
-The 6 × 2 kernel reaches 94% (FP32) and 92% (FP64) of the AVX2 peak at
+The 6 × 2 kernel reaches 93% (FP32) and 92% (FP64) of the AVX2 peak at
 N = 256. Past N = 512 what remains is B's row stride, not the tile:
 [Part 1](../articles/simd-gemm.md#what-remains-bs-row-stride).
 

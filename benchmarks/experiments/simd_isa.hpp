@@ -3,8 +3,8 @@
 /**
  * @file simd_isa.hpp
  * @brief One vector type per ISA and precision, for the SIMD experiments
- *        (fma_peak.cpp, simd_microkernel.cpp): lanes, splat, load,
- *        broadcast-from-memory and fused multiply-add.
+ *        (fma_peak.cpp, simd_microkernel.cpp): lanes, splat, load, store
+ *        and fused multiply-add.
  */
 
 #include "hpc/isa.hpp"

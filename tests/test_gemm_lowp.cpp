@@ -9,6 +9,7 @@
  *   INT8 → INT32: exact equality.
  *   bf16 / fp16 → FP32: |C − C_ref| ≤ 2·K·u · Σ_k |A(i,k)·B(k,j)| + 1e-30,
  *   u = 2^-24, the standard bound for a length-K FP32 sum in any order.
+ *   fp16 → fp16 (NEON FMLA .8h): the same bound with u = 2^-11.
  *
  * Shapes cover partial register tiles in every dimension, K not a multiple
  * of the k-group (2 or 4), and K across the cache blocks (Kc = 4096 for

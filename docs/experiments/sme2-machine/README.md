@@ -93,7 +93,7 @@ P-cluster**, not per core.
 
 ## Conditions
 
-A desktop machine with other work running (load average 5–7). Latencies
+A desktop machine with other work running (load average 5–6). Latencies
 are best of 5 runs, so they reflect the hardware rather than the noise;
 the clock is measured in the same process right before each run.
 

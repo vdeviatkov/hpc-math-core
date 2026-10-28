@@ -7,6 +7,11 @@ or 8 double elements). Each JSON includes date and system-load context;
 the reported 24 MHz CPU field is the platform timer frequency, not a
 measured core clock, and is not used to derive a throughput peak.
 
+"Default" below means the shapes and cache blocks that were the template
+defaults when these runs were made (2×2 FP32 / 2×4 FP64; 1024×2048×4096 /
+512×2048×4096). The kernels no longer have defaults; the same values are
+now `SmeParams<T>` in `benchmarks/sme_params.hpp`.
+
 - `tiles_m4.json`: all eight FP32 and twenty FP64 legal positive rectangular
   ZA shapes at N=64/256/512/1024/4096, three randomly interleaved repetitions,
   minimum measured time 0.02 s per repetition. Default cache blocks held fixed.
@@ -32,8 +37,9 @@ these retained runs. Matrix allocation/packing inside each GEMM is timed;
 input allocation/initialization in the benchmark harness is excluded.
 The desktop has background work; medians and variability are included in
 the JSON. These are measurements of these implementations, not a proof of
-optimality across all SME CPUs. Nondefault shapes currently use expanded
-single-vector loads; defaults retain the paired SME2-load specialization.
+optimality across all SME CPUs. In these runs, nondefault shapes used
+expanded single-vector loads and only the defaults the paired SME2 loads;
+every shape now uses paired loads ([SME guide](../../kernels/sme.md)).
 
 Reproduction commands and API: [SME guide](../../kernels/sme.md).
 Historical default-selection data remain in
@@ -122,9 +128,10 @@ compares 1×4 to the unchanged default (2×2 FP32, 2×4 FP64).
 
 The FP32 1×4 shape is a promising alternative, particularly at N=1024
 (+9.48%). FP64 1×4 helps at N=1024 (+4.33%) but loses at N=4096 (−1.36%).
-The current default shapes are preserved; these square-size results do not
+`SmeParams` keeps the 2×2 / 2×4 shapes; these square-size results do not
 establish a universal shape for rectangular workloads or other machines.
-Selecting `gemm_sme<float,1,4>` now requires no micro-kernel rewrite.
+Selecting `gemm_sme<float, 1, 4, Mc, Kc, Nc>` requires no micro-kernel
+rewrite.
 The old balanced/all-tile layout was a sensible starting design, not an
 exhaustively established shape optimum. The shape sweep makes that
 limitation explicit.

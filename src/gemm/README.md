@@ -26,8 +26,9 @@ Cache background: [docs/cache-behavior.md](../../docs/cache-behavior.md).
 | [`metal.hpp`](metal.hpp) | `MetalGemm` / `gemm_metal`: six Metal levels (naive → threadgroup tiles → register tile → `simdgroup_matrix` → staged in threadgroup memory → fp16 inputs) and the MPS reference; shaders in [`src/metal/gemm.metal`](../metal/gemm.metal), host in [`src/metal/gemm_metal.mm`](../metal/gemm_metal.mm) | Apple, `HPC_ENABLE_METAL` (default on; else a stub that reports no device) |
 | [`lowp_naive.hpp`](lowp_naive.hpp) | `gemm_lowp_naive` (i-j-k with double / int64 sums, the reference every low-precision test compares against) | always |
 
-Where an ISA is absent, its kernels are declared `= delete`, so calling one is
-a compile-time error rather than a slower kernel under the same name
+Where an ISA is absent, its primitive structs are only declared and its own
+kernels (`gemm_sme*`, `gemm_amx`, `gemm_kleidiai`) are declared `= delete`, so
+calling one is a compile-time error rather than a slower kernel under the same name
 ([`include/hpc/isa.hpp`](../../include/hpc/isa.hpp); what runs on which
 machine: [docs/build.md](../../docs/build.md#isa-availability--skipping)).
 
@@ -43,12 +44,12 @@ of level 2, and an added technique need not improve every shape.
 | Register tiling | A small C tile stays in registers for a whole k-tile instead of being reloaded every k. | the micro-kernels of `*_blocked` |
 | Software prefetch | Hints for streams the hardware prefetcher might miss; close to neutral on both measured CPUs. | `prefetch.hpp` |
 | Outer products into a 2-D accumulator | One SME `FMOPA` adds an SVL×SVL outer product into ZA instead of one vector FMA. | `sme.hpp` |
-| Packing (GotoBLAS) | Copies blocks of A and B into contiguous strips in the order the micro-kernel reads them; for the FP32 SIMD kernels, B alone, which removes the cache-set conflicts of a power-of-two row stride. | `sme.hpp`, `simd.hpp`, `gemm_simd_packed` |
+| Packing (GotoBLAS) | Copies blocks of A and B into contiguous strips in the order the micro-kernel reads them; for the FP32 SIMD kernels, B alone (A too with `PackA = true`), which removes the cache-set conflicts of a power-of-two row stride. | `sme.hpp`, `simd.hpp`, `gemm_simd_packed` |
 | Several matrix units | One SME unit per P-cluster: threads share one packed B panel and take A chunks from an atomic counter, so the work balances whichever cluster each thread lands on. | `sme.hpp`, `gemm_sme_mt` |
 | GPU simdgroup matrices | A 32-thread simdgroup multiplies 8×8 fragments (`simdgroup_multiply_accumulate`); on M1–M4 they run on the FP32 ALUs, with no separate matrix unit. | `gemm.metal`, Levels 3–5 |
 | GPU shared-memory and register tiling, double buffering, Tensor Cores | The GPU counterparts, one per CUDA level. | `cuda.hpp`, `gemm.cu` |
 | TMA, swizzled shared memory, warp specialisation | A producer warp issues one TMA copy per tile into hardware-swizzled shared memory; consumer warps only run `ldmatrix` + `mma.sync`, synchronised by mbarriers. | `gemm.cu`, `kernel_tma` |
-| k-group packing for widening instructions | bf16 / fp16 / INT8 instructions add a dot product of G = 2 or 4 consecutive k into each 32-bit lane, so B is packed with G rows interleaved and K padded to a multiple of G. The FP32 / FP64 packing is the case G = 1. | `simd.hpp` (`detail::gemm_kgroup`), `sme.hpp`, `cuda_lowp.hpp` |
+| k-group packing for widening instructions | bf16 / fp16 / INT8 instructions consume G consecutive k per lane or register (G = 2 or 4 for the dot products and widening outer products, 4 or 8 for `BFMMLA` / `SMMLA`), so B is packed with G rows interleaved and K padded to a multiple of G. The FP32 / FP64 packing and the NEON fp16 FMAs are the case G = 1. | `simd.hpp` (`detail::gemm_kgroup`), `sme.hpp`, `gemm.cu` |
 
 ## Families
 

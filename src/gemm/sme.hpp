@@ -7,12 +7,12 @@
  *        SME units (gemm_sme_mt). gemm_sme and gemm_sme_mt also take fp16,
  *        bf16 and INT8 inputs, with the widening outer products.
  *
- * ============================================================
  * Shape and cache block: gemm_sme<T, R, V, TileM, TileK, TileN>, no
  * defaults. R/V count ZA tile rows/columns, not SIMD scalar rows/vector
  * columns. The values below are M4's measured ones
  * (benchmarks/sme_params.hpp); rationale and sweeps: docs/kernels/sme.md.
  *
+ * ============================================================
  *  SME in brief
  * ============================================================
  *
@@ -32,9 +32,10 @@
  * FMOPA, ZA loads/stores and `zero {za}` are only legal in streaming SVE
  * mode. `__arm_locally_streaming` makes Clang wrap a function in SMSTART /
  * SMSTOP; `__arm_new("za")` gives it its own ZA state (any live caller ZA
- * state is preserved; svzero_za explicitly initializes the accumulator). Gather loads are not legal in
- * streaming mode, so the strided column of A that FMOPA needs cannot be
- * loaded directly: every kernel here packs A ("Packing" below).
+ * state is preserved; svzero_za explicitly initializes the accumulator).
+ * Gather loads are not legal in streaming mode, so the strided column of A
+ * that FMOPA needs cannot be loaded directly: every kernel here packs A
+ * ("Packing" below).
  *
  *
  * ============================================================
@@ -54,8 +55,8 @@
  * (sme_detail::blocked_driver, macro_kernel): gemm_sme_1tile is the 1×1
  * shape of gemm_sme_tiles, which is gemm_sme_blocked with one block over
  * the whole problem, and gemm_sme_mt is gemm_sme on several threads. The
- * first four are
- * single-threaded: compare against Accelerate with VECLIB_MAXIMUM_THREADS=1
+ * first four are single-threaded: compare against Accelerate with
+ * VECLIB_MAXIMUM_THREADS=1
  * (1,600–1,720 GFLOP/s f32, 340–460 f64 on one M4 Max core, N = 256–4096).
  *
  * gemm_sme_mt is gemm_sme with the B panel packed once and shared, and A
@@ -113,8 +114,8 @@
  *
  * Cache blocking, GotoBLAS-style (f32 sizes; f64 has Mc = 512):
  *
- *   for jc (Nc = 4096)      pack_b → 32 MiB B panel       normal mode
- *    for pc (Kc = 2048)
+ *   for jc (Nc = 4096)
+ *    for pc (Kc = 2048)     pack_b → 32 MiB B panel       normal mode
  *     for ic (Mc = 1024)    pack_a → 8 MiB A block        normal mode
  *      macro_kernel:                                      streaming mode
  *       for jr              one B strip, 256 KiB
@@ -202,16 +203,17 @@
  * comes from those bits (Apple does not document M4's indexing), all 2,048
  * rows of the strip land in one set:
  *
- *   in place, N=4096:  row k at base + k·16 KB    same set every row
+ *   in place, N=4096:  row k at base + k·16 KiB   same set every row
  *   packed:            row k at strip + k·128 B   next set every row
  *
  * More generally, rows s bytes apart visit 128 / gcd(s/128, 128) of the 128
- * L1 sets: 1 at 16 KB, 2 at 8 KB, all 128 at 16,000 B (125 lines, odd).
+ * L1 sets: 1 at 16 KiB, 2 at 8 KiB, all 128 at 16,000 B (125 lines, odd).
  * Contiguity is what fixes it; any strip width would.
  *
  * Evidence, gemm_sme_blocked (in place) vs gemm_sme (packed), f32 / f64:
  *  - N swept around powers of two: −57% / −42% at N=2048 and −68% / −48%
- *    at N=4096; f32 is within 5% at N = 1984–2080 and 4000–4128.
+ *    at N=4096; f32 is within 5% at every other N in 1984–2080 and
+ *    4000–4128.
  *  - The same 4096×4096 problem with only ldb changed: f32 −68% at
  *    ldb = 4096, −6% at ldb = 4128 (+128 B per row). The collapse follows
  *    the byte stride, not N or the work; padding adds only ~0.8% storage.
@@ -220,17 +222,18 @@
  *    lost only 7–8%. Packing removes it.
  *  - ldb = 4097, whose rows are no longer 128 B aligned and so span an
  *    extra line each: −16% / −30%. Line-sized, line-aligned rows matter too.
- *  - A pointer chase from a P-core over 1,024 lines 16 KB apart keeps only
+ *  - A pointer chase from a P-core over 1,024 lines 16 KiB apart keeps only
  *    8 of them in L1 and fewer than 1,024 in L2 (100 cycles per load,
  *    against 12 for lines 16,512 B apart).
- * The evidence points to L2 conflicts: with rows 16 KiB apart the macro-kernel breaks
- * between 576 and 640 rows per strip, far beyond L1's 8 ways. With a
+ * The evidence points to L2 conflicts: with rows 16 KiB apart the
+ * macro-kernel breaks between 576 and 640 rows per strip, far beyond L1's
+ * 8 ways. With a
  * padded stride, in place still trails packed by 4–8% (f32). Padding B
  * would not replace packing in a library anyway: the caller owns B's
  * layout, while packing works for any N. Data: docs/experiments/sme-b-stride.
  *
  * The packing buffers are Matrix<T> storage, 64-byte aligned by contract;
- * the ≥ 128 KB buffers came back 128-byte aligned in all 600 allocations
+ * the ≥ 128 KiB buffers came back 128-byte aligned in all 600 allocations
  * tried on macOS, but nothing guarantees it.
  *
  * Full tables: docs/benchmarks.md, "SME: B row stride". Reproduce with
