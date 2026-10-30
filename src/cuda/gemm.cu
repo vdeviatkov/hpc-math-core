@@ -95,10 +95,27 @@ __device__ __forceinline__ unsigned smem_addr(const void* p) {
     return static_cast<unsigned>(__cvta_generic_to_shared(p));
 }
 
+// The cp_async_* helpers are hand-written versions of CUDA's pipeline
+// primitives (<cuda_pipeline_primitives.h>); each one does what its
+// counterpart does:
+//
+//   cp_async_or_zero<B>(d, s, v)  __pipeline_memcpy_async(d, s, B, v ? 0 : B)
+//   cp_async_16(d, s)             __pipeline_memcpy_async(d, s, 16)
+//   cp_async_commit()             __pipeline_commit()
+//   cp_async_wait<N>()            __pipeline_wait_prior(N)
+//
+// Both lower to cp.async, cp.async.commit_group and cp.async.wait_group on
+// sm_80+. Writing the PTX by hand fixes the cache operator here (.ca for
+// 4/8 bytes, .cg for 16) instead of leaving it to the header, and the
+// #else branches show the synchronous copy used below sm_80.
+// cp_async_pipeline is the usual memcpy_async / commit / wait_prior /
+// __syncthreads loop built on these.
+
 /// Copy one 4- or 8-byte element from global `src` to shared `dst`, or write
 /// zeros when !valid (`src` must still be a readable address). On sm_80+
 /// this is an asynchronous cp.async, finished by cp_async_wait; older GPUs
-/// copy synchronously.
+/// copy synchronously. Same as __pipeline_memcpy_async(dst, src, BYTES,
+/// valid ? 0 : BYTES).
 template <int BYTES>
 __device__ __forceinline__ void cp_async_or_zero(void* dst, const void* src, bool valid) {
     static_assert(BYTES == 4 || BYTES == 8, "an element is 4 or 8 bytes");
@@ -113,7 +130,8 @@ __device__ __forceinline__ void cp_async_or_zero(void* dst, const void* src, boo
 
 /// Copy one 16-byte chunk from global `src` to shared `dst`, both 16-byte
 /// aligned: cp.async on sm_80+ (.cg bypasses L1; a block reads each tile
-/// once), a synchronous copy on older GPUs.
+/// once), a synchronous copy on older GPUs. Same as
+/// __pipeline_memcpy_async(dst, src, 16).
 __device__ __forceinline__ void cp_async_16(void* dst, const void* src) {
 #ifdef HPC_SM80
     asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" ::"r"(smem_addr(dst)), "l"(src));
@@ -122,7 +140,8 @@ __device__ __forceinline__ void cp_async_16(void* dst, const void* src) {
 #endif
 }
 
-/// Close the group of cp.async copies this thread issued since the last commit.
+/// Close the group of cp.async copies this thread issued since the last
+/// commit. Same as __pipeline_commit().
 __device__ __forceinline__ void cp_async_commit() {
 #ifdef HPC_SM80
     asm volatile("cp.async.commit_group;\n");
@@ -130,8 +149,9 @@ __device__ __forceinline__ void cp_async_commit() {
 }
 
 /// Wait until at most PENDING of this thread's committed groups are in
-/// flight. Not a compiler memory barrier: follow it with __syncthreads(),
-/// as cp_async_pipeline does, before reading the copied tile.
+/// flight. Same as __pipeline_wait_prior(PENDING). Not a compiler memory
+/// barrier: follow it with __syncthreads(), as cp_async_pipeline does,
+/// before reading the copied tile.
 template <int PENDING>
 __device__ __forceinline__ void cp_async_wait() {
 #ifdef HPC_SM80
