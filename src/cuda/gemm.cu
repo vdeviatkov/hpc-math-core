@@ -36,6 +36,7 @@
 #include <cublasLt.h>
 #include <cublas_v2.h>
 #include <cuda.h>  // CUtensorMap, cuTensorMapEncodeTiled (Level 8)
+#include <cuda/ptx>  // mbarrier and TMA instructions (Level 8)
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 #include <mma.h>
@@ -95,6 +96,8 @@ __device__ __forceinline__ unsigned smem_addr(const void* p) {
     return static_cast<unsigned>(__cvta_generic_to_shared(p));
 }
 
+// Asynchronous copies (sm_80+).
+//
 // The cp_async_* helpers are hand-written versions of CUDA's pipeline
 // primitives (<cuda_pipeline_primitives.h>); each one does what its
 // counterpart does:
@@ -104,10 +107,34 @@ __device__ __forceinline__ unsigned smem_addr(const void* p) {
 //   cp_async_commit()             __pipeline_commit()
 //   cp_async_wait<N>()            __pipeline_wait_prior(N)
 //
-// Both lower to cp.async, cp.async.commit_group and cp.async.wait_group on
-// sm_80+. Writing the PTX by hand fixes the cache operator here (.ca for
-// 4/8 bytes, .cg for 16) instead of leaving it to the header, and the
-// #else branches show the synchronous copy used below sm_80.
+// Both sides lower to the same three PTX instructions:
+//
+//   cp.async.{ca,cg}.shared.global [dst], [src], cp-size{, src-size};
+//       Start a copy of cp-size bytes (4, 8 or 16) from global to shared
+//       memory and return at once; the thread keeps running while the
+//       bytes move (SASS LDGSTS, which does not pass through registers).
+//       Only src-size bytes are read and the rest of cp-size is zeroed:
+//       __pipeline_memcpy_async's zfill is cp-size - src-size. .ca caches
+//       in L1 and L2, .cg in L2 only and is allowed for 16 bytes only.
+//       dst must not be read until a wait_group covers the copy.
+//   cp.async.commit_group;
+//       Close the copies this thread issued since the last commit into a
+//       group (SASS LDGDEPBAR). Groups are per thread and complete in
+//       order; an empty group is allowed.
+//   cp.async.wait_group N;
+//       Block until at most the N newest groups of this thread are still
+//       in flight (SASS DEPBAR.LE SB0, N). N must be a constant. The
+//       copied bytes are then visible to this thread only, so other
+//       threads read them after a __syncthreads().
+//
+// The PTX is written by hand rather than through __pipeline_* for two
+// reasons. The cache operator is stated here (.ca for 4/8 bytes, .cg for
+// 16, where a block reads each tile once and L1 would only be polluted)
+// instead of being chosen inside the header. And the #else branches show
+// what runs below sm_80: a plain synchronous copy, with commit and wait
+// compiling to nothing, so cp_async_pipeline keeps its structure and
+// results and only loses the overlap.
+//
 // cp_async_pipeline is the usual memcpy_async / commit / wait_prior /
 // __syncthreads loop built on these.
 
@@ -202,41 +229,48 @@ __device__ __forceinline__ void ldmatrix_x2_trans(unsigned* r, const void* p) {
                  : "r"(smem_addr(p)));
 }
 
+// mbarrier and TMA (sm_90+), through cuda::ptx (<cuda/ptx>). Each
+// cuda::ptx function emits exactly the PTX instruction it is named after,
+// with the qualifiers passed as tag arguments, so the comments name the
+// instruction.
+
 /// Initialise an mbarrier that completes a phase after `count` arrivals.
+/// mbarrier.init.shared.b64
 __device__ __forceinline__ void mbar_init(std::uint64_t* bar, unsigned count) {
-    asm volatile("mbarrier.init.shared::cta.b64 [%0], %1;\n" ::"r"(smem_addr(bar)), "r"(count));
+    cuda::ptx::mbarrier_init(bar, count);
+}
+
+/// Make the initialised barriers visible to the async proxy (TMA) before any
+/// copy completes on them. fence.mbarrier_init.release.cluster
+__device__ __forceinline__ void mbar_init_fence() {
+    cuda::ptx::fence_mbarrier_init(cuda::ptx::sem_release, cuda::ptx::scope_cluster);
 }
 
 /// Arrive on the barrier and announce `bytes` that TMA copies will deliver to it.
+/// mbarrier.arrive.expect_tx.release.cta.shared::cta.b64
 __device__ __forceinline__ void mbar_expect_tx(std::uint64_t* bar, unsigned bytes) {
-    asm volatile("mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], %1;\n" ::"r"(smem_addr(bar)), "r"(bytes)
-                 : "memory");
+    cuda::ptx::mbarrier_arrive_expect_tx(cuda::ptx::sem_release, cuda::ptx::scope_cta, cuda::ptx::space_shared,
+                                         bar, bytes);
 }
 
-/// Arrive on the barrier.
+/// Arrive on the barrier. mbarrier.arrive.shared.b64
 __device__ __forceinline__ void mbar_arrive(std::uint64_t* bar) {
-    asm volatile("mbarrier.arrive.shared::cta.b64 _, [%0];\n" ::"r"(smem_addr(bar)) : "memory");
+    cuda::ptx::mbarrier_arrive(bar);
 }
 
 /// Spin until the barrier's phase with this parity has completed.
+/// mbarrier.try_wait.parity.shared::cta.b64
 __device__ __forceinline__ void mbar_wait(std::uint64_t* bar, unsigned parity) {
-    unsigned done = 0;
-    while (!done)
-        asm volatile("{\n .reg .pred p;\n"
-                     " mbarrier.try_wait.parity.shared::cta.b64 p, [%1], %2;\n"
-                     " selp.u32 %0, 1, 0, p;\n}\n"
-                     : "=r"(done)
-                     : "r"(smem_addr(bar)), "r"(parity)
-                     : "memory");
+    while (!cuda::ptx::mbarrier_try_wait_parity(bar, parity)) {
+    }
 }
 
 /// TMA: copy the box at (byte column x, row y) of the tensor `map` describes
 /// into shared `dst`, completing its bytes on barrier `bar`.
+/// cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes
 __device__ __forceinline__ void tma_load(void* dst, const CUtensorMap* map, std::uint64_t* bar, int x, int y) {
-    asm volatile("cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::complete_tx::bytes"
-                 " [%0], [%1, {%3, %4}], [%2];\n" ::"r"(smem_addr(dst)),
-                 "l"(reinterpret_cast<std::uint64_t>(map)), "r"(smem_addr(bar)), "r"(x), "r"(y)
-                 : "memory");
+    const std::int32_t coords[2] = {x, y};
+    cuda::ptx::cp_async_bulk_tensor(cuda::ptx::space_cluster, cuda::ptx::space_global, dst, map, coords, bar);
 }
 
 /// Move A, B and C to the top-left corner of this block's BM x BN tile of C
@@ -1222,7 +1256,7 @@ kernel_tma(const __grid_constant__ CUtensorMap map_a, const __grid_constant__ CU
             mbar_init(&full[s], 1);
             mbar_init(&empty[s], T::kConsumers);
         }
-        asm volatile("fence.mbarrier_init.release.cluster;\n" ::: "memory");
+        mbar_init_fence();
     }
     __syncthreads();
 
