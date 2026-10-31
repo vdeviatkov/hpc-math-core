@@ -820,6 +820,36 @@ kernel_wmma(const float* A, const float* B, float* C, int M, int K, int N) {
 // native tile is 16x8x16, so each warp issues two MMAs side by side to
 // cover the 16x16 area kernel_wmma covers with one.
 //
+// How each WMMA call of kernel_wmma maps onto this kernel:
+//
+//   fill_fragment(c_frag, 0)     float acc[2][4] = {}: two 16x8 tiles, four
+//                                fp32 per lane each.
+//   load_matrix_sync(a_frag, …)  ldmatrix_x4: the 16x16 A tile as four 8x8
+//                                matrices, lane l addressing row l % 8 of
+//                                matrix l / 8.
+//   load_matrix_sync(b_frag, …)  two ldmatrix_x2_trans: the left and right
+//                                16x8 halves of the 16x16 B tile.
+//   mma_sync(c, a, b, c)         two Fp16::mma (mma.sync.m16n8k16) that
+//                                share the A registers: columns 0-7, 8-15.
+//   store_matrix_sync(C, …)      each lane stores its four accumulators per
+//                                tile at the positions in the layout below.
+//   row_major / col_major tags   whether ldmatrix uses .trans. mma.sync
+//                                has only .row.col for f16, so an operand
+//                                stored the other way round is transposed
+//                                on load; kernel_wmma's col_major A
+//                                (As[k][m]) would need .trans, so As is
+//                                stored [m][k] here instead.
+//
+// nvcc lowers the WMMA calls themselves to PTX wmma.load / wmma.mma, and
+// ptxas turns those into the same Tensor Core instructions (a 16x16x16
+// wmma.mma is two m16n8k16 HMMAs on sm_80+). The difference is who
+// chooses: WMMA leaves the fragment layout unspecified and picks the
+// shared-memory loads itself from a (pointer, ld) pair, so it can read only
+// plain strided tiles; with ldmatrix each lane supplies its own row
+// address, which is what lets kernel_lowp and kernel_tma read padded and
+// swizzled layouts, and mma.sync's documented accumulator layout is what
+// lets store_acc write C straight from registers.
+//
 // Operand layouts (the only f16 m16n8k16 variant is .row.col):
 //   A `.row` (K contiguous): As is stored [m][k], A's own layout, so no
 //     transpose — unlike kernel_wmma and the FMA kernels, which store As as
