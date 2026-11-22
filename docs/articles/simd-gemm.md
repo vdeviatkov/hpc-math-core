@@ -545,8 +545,8 @@ cost among several; with 8 × 3 and the current blocks, −5% (327.9 →
 isolates it on this core: with only the stride changed, B rows 4, 8 and
 16 KiB apart cost the kernel (then with the 8 × 2 tile and 64-row
 blocks) 14–17% against the same rows padded by one
-64-byte line. Every multiple of 4 KiB folds a strip's rows onto 12 lines
-of L1 (64 sets × 12 ways); L2 conflicts, which cost the M4's SME2 kernel
+64-byte line. At any multiple of 4 KiB a strip's rows all map to one L1
+set, so they share its 12 ways (L1 has 64 sets × 12 ways); L2 conflicts, which cost the M4's SME2 kernel
 two thirds, appear to be absorbed by Zen 5's L3. The cure is to pad B's
 rows or copy each strip of B into a contiguous buffer before the
 micro-kernel uses it, as part 2 does for the SME2 kernel. The next step

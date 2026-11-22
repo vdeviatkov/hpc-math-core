@@ -32,8 +32,9 @@ cliff to its cause and measures both fixes.
   time by 8–9% even when the stride is already padded.
 - **On AMD Zen 5 the same mechanism costs much less.** Part 1's AVX-512
   kernel (then with an 8 × 2 tile) loses 14–17% at N = 1024, 2048 and
-  4096 against the same rows padded by 64 B, against 68% here. Every
-  multiple of 4 KiB folds a strip's rows onto 12 lines of L1; the L2
+  4096 against the same rows padded by 64 B, against 68% here. At every
+  multiple of 4 KiB a strip's rows all map to one L1 set and share its
+  12 ways; the L2
   limits behind the M4's cliff are there too, but a fast L3 backs them.
   Packing B in GotoBLAS order ([part 1, Step 5](simd-gemm.md#step-5-pack-b))
   removes it there too.
