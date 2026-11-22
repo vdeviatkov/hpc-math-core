@@ -57,6 +57,16 @@ register/cache-shape sweep establishing all their sizes as optimal:
 | AVX-512 BF16 / INT8 | 8×32 C, 16 accumulators; Mc=128, Kc=512 BF16 / 1024 INT8, Nc=512 | Eight rows reuse each of two B vectors; a 32-column packed B strip is 32 KiB in either type, leaving headroom in Zen 5's 48 KiB L1. A is read in place. This uses a different packed layout and loop order from the FP32 blocked kernel (it is the k-group kernel of `gemm_simd_packed`). |
 | SME widening FP16 / BF16 / INT8 | 2×2 ZA32 tiles; Mc=1024, Kc=4096 for 16-bit / 8192 INT8, Nc=4096 | All four 32-bit tiles; K groups of 2 or 4 inputs per accumulated element. Sizes inherit FP32's 8 MiB A-block budget in bytes. No separate shape/block optimum has been demonstrated. |
 
+## GPU kernels
+
+The Metal and CUDA kernels choose a block tile per thread block and a tile
+per thread, simdgroup or warp. Their sizes and how each was chosen:
+[metal.md](metal.md) (Level 2's 8 × 4 per thread is the one clear sweep
+result; Levels 3–5 keep defaults no variant beat) and [cuda.md](cuda.md)
+(Level 8's tile and the low-precision kernel's stages were swept; Levels
+2–7 sizes are design choices, apart from FP64's 64 × 64 forced by shared
+memory).
+
 See [low-precision measurements](../experiments/lowp/README.md) and the
 headers `simd.hpp` (with the structs in `neon.hpp` and `avx512.hpp`) and `sme.hpp`. The SME
 shape/cache API covers the widening kernels too (`gemm_sme<fp16, R, V, TileM, TileK, TileN>`),

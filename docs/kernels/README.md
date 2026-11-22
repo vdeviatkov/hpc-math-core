@@ -1,4 +1,4 @@
-# Register tiles of the SIMD and SME kernels
+# Tiles and blocks of the kernels
 
 [Why each default was chosen, including evidence and untuned sizes](sizing.md).
 
@@ -30,6 +30,19 @@ Best measured is `gemm_simd_blocked` at its measured tile and its best size
 are `fma_peak`'s measured FMA rates at the clock of each run. Raw data and
 method: [experiments/tile-sweeps](../experiments/tile-sweeps/README.md),
 [experiments/block-sweeps](../experiments/block-sweeps/README.md).
+
+## GPU kernels
+
+The GPU kernels have block tiles per thread block and tiles per thread,
+simdgroup or warp instead of R × V register tiles. Their pages list every
+level's sizes and say which were swept and which were not:
+
+| Family | Page | Default tiles | Machine | Swept |
+|---|---|---|---|---|
+| Metal | [metal.md](metal.md) | Level 2: 64 × 64, 8 × 4 per thread; Levels 3–5: 2 × 2 simdgroups of 32 × 32 | Apple M4 Max GPU | Levels 2–5, 3–5 variants each |
+| CUDA | [cuda.md](cuda.md) | Levels 2–4: 128 × 128, 8 × 8 per thread; Level 8: 128 × 256 or 128 × 128 | NVIDIA RTX 5080 | Level 8 and the low-precision kernel only |
+
+## CPU pages
 
 The measured AVX2, AVX-512 and NEON pages have, per shape and size, the full-multiplication throughput,
 the registers it needs, and why the default wins: the accumulator count

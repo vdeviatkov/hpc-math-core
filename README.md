@@ -166,7 +166,7 @@ docs/                         Benchmark results, build guide, kernel design guid
 |---|---|
 | [src/gemm/README.md](src/gemm/README.md) | Map of the kernels: files, techniques, registers and intrinsics per family. Each kernel's design is in its own header. |
 | [docs/kernel-design.md](docs/kernel-design.md) | File-by-file design: algorithms, layouts, edges, precision, benchmark methodology and supporting files |
-| [docs/kernels/](docs/kernels/README.md) | Register-tile, cache-block and packed-B block sweeps of the AVX2, AVX-512 and NEON kernels on Zen 5 and M4, with the reasons for each default |
+| [docs/kernels/](docs/kernels/README.md) | Register-tile, cache-block and packed-B block sweeps of the AVX2, AVX-512 and NEON kernels on Zen 5 and M4, with the reasons for each default; the tiles of the Metal and CUDA kernels, and which of them were swept |
 | [docs/benchmarks.md](docs/benchmarks.md) | All measurements and their analysis: Apple M4 Max (CPU and GPU), AMD Zen 5 and RTX 5080 |
 | [docs/build.md](docs/build.md) | Build on Linux, macOS and Windows, CMake options, SME/AMX flags, what runs where, CI |
 | [docs/cache-behavior.md](docs/cache-behavior.md) | Background: cache lines, reuse distance, working sets, memory-bound limits, GPU memory hierarchy |
