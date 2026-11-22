@@ -2,8 +2,8 @@
 
 `gemm_simd_blocked<Q, R, V, …>` multiplies with an R × V register tile:
 R rows of C, V Q-vectors of 4 FP32 / 2 FP64 each, kept in R·V accumulators
-for a whole k block. The default is **6 × 4** (6 × 16 FP32, 6 × 8 FP64) for
-both types. This page gives the measurements behind that choice on an
+for a whole k block. The default is **6 × 4** for both types,
+which covers a 6 × 16 block of C in FP32 and 6 × 8 in FP64. This page gives the measurements behind that choice on an
 Apple M4 Max P-core, and a code-generation change that the sweep led to.
 Code: [`neon.hpp`](../../src/gemm/neon.hpp) (`vector_micro<Q<T>, R, V>`), driver
 [`simd.hpp`](../../src/gemm/simd.hpp). The other

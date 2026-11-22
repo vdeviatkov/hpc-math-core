@@ -2,8 +2,8 @@
 
 `gemm_simd_blocked<Ymm, R, V, …>` multiplies with an R × V register tile:
 R rows of C, V vectors of 8 FP32 / 4 FP64 each, kept in R·V YMM
-accumulators for a whole k block. The default is **6 × 2** (6 × 16 FP32,
-6 × 8 FP64). This page gives the measurements behind that choice on AMD
+accumulators for a whole k block. The default is **6 × 2**, which covers a
+6 × 16 block of C in FP32 and 6 × 8 in FP64. This page gives the measurements behind that choice on AMD
 Zen 5. Code: [`avx2.hpp`](../../src/gemm/avx2.hpp) (`vector_micro<Ymm<T>, R, V>`),
 driver [`simd.hpp`](../../src/gemm/simd.hpp). The other
 families: [AVX-512](avx512.md), [NEON](neon.md).
@@ -15,7 +15,12 @@ elements of A and issues R·V FMAs. Three numbers follow from R and V:
 
 - **Independent accumulators, R·V.** Zen 5 issues 2 FMAs per cycle with a
   4-cycle latency (`fma_peak`, [experiments/cpu-simd](../experiments/cpu-simd/README.md)),
-  so 8 accumulators are the minimum and 12 reach the full rate.
+  so in theory 2 × 4 = 8 independent accumulators keep both FMA units busy.
+  In practice 8 give 1.83 FMAs per cycle (92%). With 8, each accumulator
+  becomes ready exactly when its next turn comes, so no other FMA is
+  waiting: any one-cycle delay (loop overhead, issue order) leaves an FMA
+  unit idle. With 12, ready FMAs are always waiting, so another one fills
+  the gap; 12 give 1.99, the full rate.
 - **Registers, R·V + V + 1.** The accumulators, the V vectors of B (live
   for the whole k step) and one broadcast of A (dead after its V FMAs).
   AVX2 has 16 YMM registers. On Zen 5, `-march=native` also enables
