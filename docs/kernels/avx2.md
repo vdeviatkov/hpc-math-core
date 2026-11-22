@@ -26,12 +26,16 @@ elements of A and issues R·V FMAs. Three numbers follow from R and V:
   AVX2 has 16 YMM registers. On Zen 5, `-march=native` also enables
   AVX-512VL, which gives 256-bit code 32 YMM registers; a build for an
   AVX2-only CPU (`-DHPC_MARCH=x86-64-v3`) has 16.
-- **B traffic, 32 / R bytes per FMA.** Within a cache block (256 k × 256 FP32 columns),
-  the same R × 256 piece of A (6 KiB FP32 for R = 6) serves the 16 calls of
-  the j loop and stays in L1; every call reads a different 256 × V-vector
-  strip of B out of a 256 KiB block that L1 (48 KiB) cannot hold. B
-  arrives from L2, and each row added to the tile reuses each B load once
-  more.
+- **B traffic, 32 / R bytes per FMA.** Each k step loads V vectors of B
+  (32 bytes each) and uses each in R FMAs, one per row: 32·V bytes for
+  R·V FMAs. Only the rows reduce it. This is the traffic that counts,
+  because B comes from L2 and A from L1. The driver works on a block of B
+  at a time: 256 rows (k) × 256 columns, 256 KiB in FP32, larger than L1
+  (48 KiB). One R-row strip of A (R × 256 k, 6 KiB FP32 for R = 6) is
+  multiplied by all 16 tiles across that block's columns and stays in L1.
+  Each tile reads a different 256 × V-vector strip of B, so each strip
+  of A reads the whole 256 KiB block of B, and the next strip of A reads
+  it all again.
 
 ## Tile sweep, Zen 5
 
