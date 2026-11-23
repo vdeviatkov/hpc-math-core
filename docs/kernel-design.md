@@ -471,18 +471,21 @@ does not automatically preserve a cycle or cache interpretation.
 | `.gitignore` | Excludes build products, editor state and root-level benchmark JSON while keeping recorded experiment data. |
 | `LICENSE` | MIT license for project code; fetched dependencies retain their own licenses. |
 | `README.md`, `src/gemm/README.md` | Entry point and compact kernel map. Headline results are measured best-size values, not hardware specifications or universal speed guarantees. |
-| `docs/build.md`, `docs/benchmarks.md`, `docs/cache-behavior.md` | Build instructions, historical measured tables and explanatory cache models. Timings from distinct sessions must remain labeled rather than being combined into a synthetic experiment. |
+| `docs/build.md`, `docs/benchmarks.md`, `docs/cache-behavior.md` | Build instructions, measured tables and explanatory cache models. Timings from distinct runs stay labeled rather than being combined into a synthetic experiment. |
 | `docs/articles/*.md` | Five connected investigations: CPU SIMD, SME2 design, SME2 stride conflicts, CUDA, and low-precision formats. Front matter supplies publishing metadata; explanatory pseudocode can omit guards present in the source. |
 | `docs/index.md`, `docs/_layouts/article.html`, `docs/_config.yml` | Article index, shared HTML/CSS template and Jekyll settings. Only index/articles publish; project guides and experiments remain linked on GitHub. |
 | `docs/articles/assets/render_charts.py` | Standard-library SVG generator. CSVs beside it hold curated chart values; strip-height medians are calculated from raw experiment samples. Labels distinguish categorical x axes from numerical spacing. |
 | `docs/articles/assets/*.csv`, `*.svg` | Curated numeric inputs and generated charts. Keep SVGs reproducible from those inputs; do not edit generated numbers independently. |
-| `docs/experiments/cpu-simd/*` | Raw FMA, micro-kernel and GEMM runs, plus focused post-tile-change measurements. README identifies compiler, load and which rows replace the older tile. |
-| `docs/experiments/tile-sweeps/*`, `docs/kernels/*` | `bench_gemm` register-tile sweeps on Zen 5 and M4, the re-measured default kernels, and the pages that compare the shapes. |
+| `docs/experiments/cpu-simd/*` | FMA latency/throughput and the scalar-kernel GEMM runs; the README identifies compilers, flags and load. |
+| `docs/experiments/tile-sweeps/*`, `docs/kernels/*` | `bench_gemm` register-tile sweeps and the L1-resident micro-kernel on Zen 5 and M4, and the pages that compare the shapes. |
+| `docs/experiments/block-sweeps/*` | Cache-block grids, stage-2 candidates and the default SIMD kernels (FP32/FP64 and low precision) on Zen 5 and M4. |
+| `docs/experiments/packed-b/*` | Packed-B block grids and packed against in-place comparisons for `gemm_simd_packed`. |
+| `docs/experiments/sme-tiles/*` | SME ZA-shape and cache-block grids on the M4, test logs and source hashes. |
 | `docs/experiments/sme2-gemm/*` | Raw SME ladder, block-sweep and vendor-comparison samples behind part 2; the README records their provenance. |
 | `docs/experiments/zen5-b-stride/*` | Pointer chase and stride / size / height sweeps behind part 3's Zen 5 section; the README lists the cache geometry and method. |
 | `docs/experiments/lowp/*` | Instruction peaks, CPU and GPU GEMM runs, accuracy and Nsight counters behind part 5; the README lists machines, builds and method. |
 | `docs/experiments/sme2-machine/*` | Cache/TLB/FMOPA samples and metadata for the M4 machine model. TLB capacities and cluster sharing are experimental inferences. |
-| `docs/experiments/sme-b-stride/*` | Phase timings and stride/height/width/chase data; metadata includes commands and source hashes for historical reproduction. |
+| `docs/experiments/sme-b-stride/*` | Phase timings and stride/height/width/chase data; metadata includes commands and source hashes for reproduction. |
 | `docs/experiments/metal-m4/*` | Metal ladder, MPS and FMA peak in one bracketed GPU session, plus the tile-variant sweep; the README records the clock and power caveats. |
 | `docs/experiments/frameworks-m4/*` | NumPy / PyTorch / JAX CSVs and metadata (versions, BLAS) on the M4 Max. |
 | `docs/experiments/sme-mt/*` | `gemm_sme_mt` thread × A-block sweep and the default against `gemm_sme` and Accelerate. |

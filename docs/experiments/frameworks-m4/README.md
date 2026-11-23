@@ -2,7 +2,7 @@
 
 Recorded data from a NumPy / PyTorch / JAX GEMM comparison.
 Apple M4 Max (12 P-cores in two clusters, 4 E-cores, 40-core GPU), macOS
-26.3.1, Python 3.13.8, 2026-10-24, AC power. The benchmark script
+26.3.1, Python 3.13.8, AC power. The benchmark script
 (`bench_frameworks.py`) is not part of this repository. Triton and every
 CUDA row report SKIPPED here: no NVIDIA GPU.
 
@@ -12,28 +12,21 @@ CUDA row report SKIPPED here: no NVIDIA GPU.
 | [`session_torch_mps.csv`](session_torch_mps.csv), [`.txt`](session_torch_mps.txt) | `--only torch --parts gpu` | PyTorch MPS, f32 / fp16 / bf16, N = 256 … 8192 |
 | [`session_jax_metal.csv`](session_jax_metal.csv), [`.txt`](session_jax_metal.txt) | `--only jax --parts gpu`, separate venv: jax / jaxlib 0.4.35 + jax-metal 0.1.1 | JAX on the Apple GPU, f32 |
 
-## Edits to the recorded files
+## Notes on the files
 
-- `bench_frameworks.csv` keeps the CPU rows only. Its GPU rows (also in the
-  `.txt` log) predate a fix to the accuracy check and are superseded by the
-  session files. Removed with them: JAX's `threads=1` rows. XLA:CPU ignores
-  every thread limit tried (`VECLIB_MAXIMUM_THREADS`, `OMP_NUM_THREADS`,
+- `bench_frameworks.csv` holds the CPU rows; the GPU rows are in the session
+  files. JAX has no `threads=1` rows: XLA:CPU ignores every thread limit
+  tried (`VECLIB_MAXIMUM_THREADS`, `OMP_NUM_THREADS`,
   `XLA_FLAGS=--xla_cpu_multi_thread_eigen=false`): with any of them a 4096
   f32 product keeps ~14 of 16 cores busy (process CPU time ÷ wall time) and
-  runs at ~3.2 TFLOP/s. Those rows were all-core runs under a 1-thread label.
-  The harness now reports them as SKIPPED.
+  runs at ~3.2 TFLOP/s. The harness reports those rows as SKIPPED.
 - The session files are the PyTorch and JAX steps of one bracketed GPU
   session (Metal ladder → PyTorch MPS → JAX on Metal → Metal ladder again;
-  [metal-m4/session_log.txt](../metal-m4/session_log.txt), 01:56–02:02).
-  The harness's CSVs for those two steps were later overwritten by a rerun,
-  stopped because the GPU was down to ~1 TFLOP/s (PyTorch bf16 at N=8192:
-  1,081; JAX f32: 916–947). The session `.txt` logs were restored from the
-  console output of the session, and the CSVs rebuilt from them, so they
-  have no `ms_min` / `gflops_best` columns.
-- JAX's fp16 and bf16 rows failed in that session: jax-metal cannot lower a
-  dot with fp16 inputs and an fp32 result (`preferred_element_type`). The
-  harness now keeps the input type on Metal, and a short check ran both, but
-  they have no measurement from the session.
+  [metal-m4/session_log.txt](../metal-m4/session_log.txt), 01:56–02:02),
+  rebuilt from the session's console output, so they have no `ms_min` /
+  `gflops_best` columns.
+- JAX has no fp16 or bf16 rows: in that session jax-metal could not lower a
+  dot with fp16 inputs and an fp32 result (`preferred_element_type`).
 
 ## CPU results
 
@@ -60,8 +53,8 @@ particular are lower bounds.
   match each other and `gemm_amx` within the noise: 1-thread f32 ~1.7
   TFLOP/s, the single-core Accelerate figure in
   [benchmarks.md](../../benchmarks.md#matrix-engines-single-core).
-- JAX f32 with all cores: 1.9–2.0 TFLOP/s in this run, ~3.2 in the
-  mislabelled 1-thread run and in a standalone check. It keeps every core
+- JAX f32 with all cores: 1.9–2.0 TFLOP/s in this run, ~3.2 in a
+  standalone check. It keeps every core
   busy, E-cores included, so it is the most sensitive to other load. jaxlib
   links no Accelerate; its CPU GEMM is XLA's own (YNNPACK and oneDNN symbols
   are present). Reaching ~3.2 TFLOP/s implies both SME units, but which

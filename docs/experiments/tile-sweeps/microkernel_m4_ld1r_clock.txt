@@ -1,2 +1,0 @@
-core clock: 4.490 GHz
-core clock after: 4.495 GHz

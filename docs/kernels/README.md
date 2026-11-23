@@ -22,7 +22,8 @@ the measured choices:
 The cache blocks around the register tile are template parameters too
 (`gemm_simd_blocked<Ops, R, V, TileM, TileK, TileN>`), swept in
 [blocks.md](blocks.md): taller blocks of A and a B block that fits in half
-of Zen 5's L2 made the kernels 10–51% faster at N = 4096.
+of Zen 5's L2 make the kernels 9–50% faster at N = 4096 than 64-row
+blocks.
 
 Best measured is `gemm_simd_blocked` at its measured tile and its best size
 (N = 64–512) with its default cache block, from the runs in

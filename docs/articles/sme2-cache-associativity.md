@@ -220,7 +220,7 @@ so the conflicting sets must be L2's.
 
 A pointer chase on a CPU core, one dependent load per line, measures the
 capacity at this stride independently of SME (cycles per load at
-3.99 GHz; best of 5, from an earlier session than the other experiments):
+3.99 GHz; best of 5, from a separate run):
 
 | Lines, 16 KiB apart | 8 | 16 | 448 | 512 | 768 | 1,024 | 2,048 |
 |---|--:|--:|--:|--:|--:|--:|--:|
@@ -291,10 +291,10 @@ all. At these sizes it pays for itself several times over.
 Part 1's AVX-512 kernel, `gemm_simd_blocked<Zmm>`, also reads B in place, and
 it also loses throughput at power-of-two sizes: FP32 at N = 1024 and FP64
 at N = 512, both rows 4 KiB apart ([part 1](simd-gemm.md)). The experiments
-above, repeated on one core of an AMD Ryzen 9 9950X with the kernel's 8 × 2
-register tile and 64-row blocks (its defaults when this was measured; in
-`bench_gemm` the library kernel dropped 13% from FP32 N = 512 to 1024 with
-them, and drops 5% with today's 8 × 3 tile and 512 × 256 × 512 blocks, see
+above, repeated on one core of an AMD Ryzen 9 9950X with a GEMM built from
+the library's micro-kernel at an 8 × 2 register tile and 64-row blocks
+(the library kernel itself, with an 8 × 3 tile and 512 × 256 × 512
+blocks, drops 5% from FP32 N = 512 to 1024 in `bench_gemm`, see
 [docs/kernels](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/kernels/README.md)), show when and how much
 ([`avx512_b_stride`](https://github.com/vdeviatkov/hpc-math-core/blob/main/benchmarks/experiments/avx512_b_stride.cpp),
 data in [experiments/zen5-b-stride](https://github.com/vdeviatkov/hpc-math-core/tree/main/docs/experiments/zen5-b-stride)).
@@ -333,8 +333,7 @@ levels and is one sample.)
 ### What it costs the GEMM
 
 The same multiplication with only B's row stride changed, as on the M4,
-using the library kernel's blocking of the time (64 × 256 × 512) and its
-8 × 2 micro-kernel. This harness is not `bench_gemm`, and its absolute
+using a fixed 64 × 256 × 512 blocking and the 8 × 2 micro-kernel. This harness is not `bench_gemm`, and its absolute
 numbers are about a fifth lower (220 against 282 GFLOP/s at N = 1024);
 only the ratios matter here:
 
@@ -390,15 +389,15 @@ N = 1024, GFLOP/s):
 
 So on Zen 5 the stride matters whenever B's rows are a multiple of 4 KiB
 apart, FP32 with N a multiple of 1024 and FP64 with N a multiple of 512,
-and cost this kernel 14–17% at its block size of the time; on the M4 the same
+and cost this GEMM 14–17%; on the M4 the same
 mechanism costs two thirds. Padding by one line removes it. Packing
 helps too, but less here than on the M4: in this experiment each B block
-is packed once per 64-row block of A (the loop order and block of the
-time), so packing still reads the strided B N / 64 times. Packed, the GEMM runs at
+is packed once per 64-row block of A (this harness's loop order), so
+packing still reads the strided B N / 64 times. Packed, the GEMM runs at
 238, 231 and 202 GFLOP/s at the three power-of-two strides and 269, 269
 and 234 when padded. A GotoBLAS loop order, as in part 2, packs each block
-of B once; [part 1's Step 5](simd-gemm.md#step-5-pack-b) now does this on
-Zen 5, with the current tiles and blocks. At N = 4096 AVX-512 runs at 319
+of B once; [part 1's Step 5](simd-gemm.md#step-5-pack-b) does this on
+Zen 5, with the library's tiles and blocks. At N = 4096 AVX-512 runs at 319
 GFLOP/s packed against 294 in place (+8%), and AVX2, whose 4 KiB strides
 cost it most, at 167 against 104 (+60%).
 
@@ -566,10 +565,8 @@ What the experiments do not establish:
   Ryzen 9 9950X core. Other chips, or other variants of these, may break
   at different thresholds.
 - **One kernel configuration.** The thresholds belong to these matrix
-  shapes, this micro-kernel and these block sizes. With the earlier
-  blocking (Mc = 128, Kc = 1024) the kernel broke between 384 and 448
-  rows instead of between 576 and 640; other shapes and blocks may move
-  them again.
+  shapes, this micro-kernel and these block sizes; other shapes and blocks
+  may move them.
 - **Inferred, not counted.** The case for L2 conflicts on the M4, and for
   L1 conflicts on Zen 5, rests on throughput and latency thresholds
   matching across experiments. No hardware performance counters were read
@@ -582,8 +579,8 @@ What the experiments do not establish:
    large power of two leaves few cache sets for all the rows a loop reuses.
    Which level suffers, and how much, depends on the machine: on the M4,
    L2 from 8 KiB on, at a cost of up to two thirds; on Zen 5, L1 at every
-   multiple of 4 KiB, at a cost of 14–17% for part 1's kernel (with its
-   earlier 8 × 2 tile and 64-row blocks). 4096 FP32
+   multiple of 4 KiB, at a cost of 14–17% for a GEMM with part 1's
+   micro-kernel (8 × 2 tile, 64-row blocks). 4096 FP32
    columns and 2048 FP64 columns are both 16 KiB.
 2. **Test with a padded leading dimension.** Running the same problem with
    `ldb = N + one cache line` separates a stride effect from everything
@@ -609,7 +606,7 @@ The Zen 5 setup is described in its section and in
 Apple M4 Max (P-cores: 128-byte lines, 128 KiB L1 data per core, 16 MiB L2
 per cluster, 16 KiB pages), macOS 26.3.1, Apple Clang 17,
 `-O3 -mcpu=apple-m4 -ffast-math -funroll-loops`, one thread. All results
-except the pointer chase (best of 5, earlier session) are medians of
+except the pointer chase (best of 5, separate run) are medians of
 repetitions run in randomly interleaved order on a desktop
 machine under moderate load; interquartile ranges, raw samples, source
 hashes and per-experiment details are in the

@@ -2,71 +2,50 @@
 
 Apple M4 Max, macOS, one calling thread, Apple Clang 17.0.0,
 `-O3 -mcpu=apple-m4 -ffast-math -funroll-loops -fno-omit-frame-pointer`.
-Measured 2026-10-23 local time. Streaming vector length 512 bits (16 float
-or 8 double elements). Each JSON includes date and system-load context;
+Streaming vector length 512 bits (16 float or 8 double elements). Each
+JSON includes system-load context;
 the reported 24 MHz CPU field is the platform timer frequency, not a
 measured core clock, and is not used to derive a throughput peak.
 
-"Default" below means the shapes and cache blocks that were the template
-defaults when these runs were made (2×2 FP32 / 2×4 FP64; 1024×2048×4096 /
-512×2048×4096). The kernels no longer have defaults; the same values are
-now `SmeParams<T>` in `benchmarks/sme_params.hpp`.
+"Default" below means the measured values in `SmeParams<T>`
+(`benchmarks/sme_params.hpp`): 2×2 FP32 / 2×4 FP64 ZA shapes,
+1024×2048×4096 / 512×2048×4096 cache blocks.
 
 - `tiles_m4.json`: all eight FP32 and twenty FP64 legal positive rectangular
   ZA shapes at N=64/256/512/1024/4096, three randomly interleaved repetitions,
   minimum measured time 0.02 s per repetition. Default cache blocks held fixed.
 - `tiles_m4_stage2.json`: 1×4, 2×2 and (FP64) 2×4 at
   N=256/1024/4096, seven randomly interleaved repetitions, minimum time
-  0.1 s; confirmation of the leading candidate against defaults.
+  0.1 s; the leading candidate against the defaults.
 - `blocks_m4.json`: default ZA shapes, M={256,512,1024},
   K/N={1024,2048,4096}, N=512/1024/4096, both precisions; three randomly
   interleaved repetitions, minimum time 0.02 s.
-- `before_1.json` … `before_3.json` and `after_1.json` … `after_3.json`:
-  pre-change versus configurable implementation at unchanged defaults,
-  N=256/1024/4096, alternated in three rounds. Each round has one randomly
-  interleaved repetition, minimum time 0.1 s. The baseline binary was built
-  before modifying `sme.hpp`, with the same compiler/build settings.
 - `tests.txt`, `lowp-tests.txt`: all 32 regular and 12 low-precision tests
-  pass on actual SME2 hardware. New shape tests exercise every legal shape
+  pass on actual SME2 hardware. The shape tests exercise every legal shape
   through packed-B, unpacked-B and unblocked entry points, plus 5×7×13
   cache blocks, partial tiles, empty dimensions and K accumulation.
 - `validation.json`: source hashes, compiler and benchmark flags.
 
 The binaries run sequentially; no concurrent benchmark or build is part of
-these retained runs. Matrix allocation/packing inside each GEMM is timed;
+these runs. Matrix allocation/packing inside each GEMM is timed;
 input allocation/initialization in the benchmark harness is excluded.
 The desktop has background work; medians and variability are included in
 the JSON. These are measurements of these implementations, not a proof of
-optimality across all SME CPUs. In these runs, nondefault shapes used
-expanded single-vector loads and only the defaults the paired SME2 loads;
-every shape now uses paired loads ([SME guide](../../kernels/sme.md)).
+optimality across all SME CPUs. In these runs only the default shapes used
+paired SME2 loads; the other shapes loaded one vector at a time. The kernel
+uses paired loads for every shape ([SME guide](../../kernels/sme.md)), so
+the non-default rows may understate it.
 
-Reproduction commands and API: [SME guide](../../kernels/sme.md).
-Historical default-selection data remain in
-[sme2-gemm](../sme2-gemm/README.md); this experiment does not overwrite them.
-
-## Default performance preservation
-
-Median GFLOP/s across the three alternated rounds (whole GEMM, including
-packing). The changes range from −1.03% to +1.40%, consistent with the
-run-to-run variation on this desktop; this check finds no material default
-throughput regression. It is not a guarantee for every shape or machine.
-
-| Type | N | Before | After | Change |
-|---|--:|--:|--:|--:|
-| f32 | 256 | 768.5 | 771.9 | +0.44% |
-| f32 | 1024 | 1444.8 | 1430.8 | -0.97% |
-| f32 | 4096 | 1540.3 | 1524.5 | -1.03% |
-| f64 | 256 | 318.9 | 318.6 | -0.10% |
-| f64 | 1024 | 421.0 | 426.9 | +1.40% |
-| f64 | 4096 | 426.4 | 424.3 | -0.49% |
+Reproduction commands and API: [SME guide](../../kernels/sme.md). The
+run-time block sweep that chose the cache blocks is in
+[sme2-gemm](../sme2-gemm/README.md).
 
 ## Cache sweep
 
-At N=4096, the existing defaults are the best measured cache configurations
-in this grid for both types: FP32 1024×2048×4096 at 1538.2 GFLOP/s, FP64
-512×2048×4096 at 435.2 GFLOP/s. This supports retaining those defaults on
-this M4; the leading configurations differ at smaller sizes.
+At N=4096, the defaults are the best measured cache configurations in this
+grid for both types: FP32 1024×2048×4096 at 1538.2 GFLOP/s, FP64
+512×2048×4096 at 435.2 GFLOP/s. The leading configurations differ at
+smaller sizes.
 
 ## Full register-shape sweep
 
@@ -115,7 +94,7 @@ A tile's dimensions are counts of ZA tiles, not output elements.
 ## Repeated candidate comparison
 
 Seven interleaved repetitions in one session. Median GFLOP/s; percentage
-compares 1×4 to the unchanged default (2×2 FP32, 2×4 FP64).
+compares 1×4 to the default (2×2 FP32, 2×4 FP64).
 
 | Type | N | Default | 1×4 | Change |
 |---|--:|--:|--:|--:|
@@ -131,7 +110,5 @@ The FP32 1×4 shape is a promising alternative, particularly at N=1024
 `SmeParams` keeps the 2×2 / 2×4 shapes; these square-size results do not
 establish a universal shape for rectangular workloads or other machines.
 Selecting `gemm_sme<float, 1, 4, Mc, Kc, Nc>` requires no micro-kernel
-rewrite.
-The old balanced/all-tile layout was a sensible starting design, not an
-exhaustively established shape optimum. The shape sweep makes that
-limitation explicit.
+change. The balanced all-tile layout is a sound design, not an established
+shape optimum.

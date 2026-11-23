@@ -232,7 +232,7 @@ dependent FMOPA chain allows: the kernel is entirely latency bound. Every
 FMOPA waits for the previous one on the same tile, while three quarters of
 the unit's issue slots stay empty.
 
-Code: [`gemm_sme_1tile`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/sme.hpp), now the 1×1 shape of the shared macro-kernel.
+Code: [`gemm_sme_1tile`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/sme.hpp), the 1×1 shape of the shared macro-kernel.
 
 ## Step 2: all four tiles — 1,447 GFLOP/s
 
@@ -434,11 +434,10 @@ subject of the last step.
 ### Choosing the block sizes
 
 The obvious alternative uses L2 the other way round: keep the **B panel**
-resident and pass small A blocks through it. That was this kernel's first
-sizing, Mc = 128 and Kc = 1024: a 16 MiB B panel, the whole L2, and
-512 KiB A blocks. Each B strip was then reused by only 4 A strips before
-the next one was needed, and the panel, which competes with A and C for
-the same 16 MiB, kept partly falling out.
+resident and pass small A blocks through it: Mc = 128 and Kc = 1024, a
+16 MiB B panel, the whole L2, and 512 KiB A blocks. Each B strip is then
+reused by only 4 A strips before the next one is needed, and the panel,
+which competes with A and C for the same 16 MiB, keeps partly falling out.
 
 A sweep of the complete kernel (step 4 below) over Mc and Kc, N = 4096 and
 Nc = 4096, median of 3 runs, configurations in round-robin order
@@ -447,7 +446,7 @@ shows where the optimum is:
 
 | GFLOP/s by Mc (rows), Kc (depth) | Kc = 1024 | 2048 | 4096 |
 |---|--:|--:|--:|
-| Mc = 128 (first sizing) | 1,347 | | |
+| Mc = 128 (B panel resident) | 1,347 | | |
 | 256 | 1,311 | 1,428 | 1,438 |
 | 512 | 1,327 | 1,464 | 1,451 |
 | 1024 | 1,370 | **1,517** | 1,351 |
@@ -458,8 +457,8 @@ to 8 MiB, where it is highest, and falls at 16 MiB, the size of L2. Of the three
 1024 × 2048 wins (1,517 GFLOP/s, against 1,451 for 512 × 4096 and 1,404
 for 2048 × 1024): with Kc = 4096 each B strip is twice as long (512 KiB)
 and serves half as many A strips (16). FP64 elements are twice as large, so FP64 uses Mc = 512
-for the same 8 MiB A block. Against the first sizing, measured old and new
-alternately, the complete kernel gains 4% at N = 2048 and 10–12% at
+for the same 8 MiB A block. Against the B-resident sizing, the two
+measured alternately, the complete kernel gains 4% at N = 2048 and 10–12% at
 N = 4000 and 4096 in FP32 and up to 7% in FP64. In FP32 at N = 256, where
 one block covers the whole problem, it gains 11% (FP64 3%), at N = 512 3%
 (FP64 unchanged), and at N = 1024 it is unchanged within noise.
@@ -591,11 +590,10 @@ threads on one cluster. Measured, GFLOP/s, wall clock, median of 3
   spill. Seven, the smallest count that forces it, was not measured; 8 is
   best or within 1.1% of the best of the counts measured, so it is the
   count used. Twelve, one per P-core, gain nothing.
-- **Dynamic chunks make the extra threads harmless.** A first version
-  gave each thread an equal band of rows; the unit that hosted more
-  threads finished last, and 3 threads were slower than 2 at N = 4096
-  (2.4 against 2.7 TFLOP/s). With chunks taken from a counter, a unit
-  with more threads simply takes more chunks.
+- **Dynamic chunks make the extra threads harmless.** With an equal band
+  of rows per thread, the unit that hosts more threads would finish last.
+  With chunks taken from a counter, a unit with more threads simply takes
+  more chunks.
 - **The price is cores.** Eight P-cores are occupied to keep two units
   busy, most of them waiting their turn on a shared unit. The threads are
   also created on every call, which, with placement, keeps N = 1024 at
@@ -709,16 +707,15 @@ libraries are called through thin wrappers:
 ² From the 5-repetition run of the 8-thread configuration
 ([`default.json`](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/experiments/sme-mt/default.json));
 Step 5 quotes the thread sweep, a different run (3,558 / 931 at N = 4096).
-The Accelerate rows of this table are older; against Accelerate in the same
-run, `gemm_sme_mt` is 111% (FP32) and 117% (FP64) at N = 4096.
+The Accelerate rows of this table are from another run; against Accelerate
+in the same run, `gemm_sme_mt` is 111% (FP32) and 117% (FP64) at N = 4096.
 
-¹ Part 1's kernel with its current 6 × 4 tile and cache block, measured on
-2026-10-22, ten days after the SME rows; NEON's peak assumes the 4.49 GHz
-core clock measured in the M4 runs of 2026-10-21. The SME rows ran at
-3.94–3.99 GHz, so the two are from different runs and clocks. Part 1's
-[packed-B kernel](simd-gemm.md#step-5-pack-b) (`gemm_simd_packed<Q>`) removes
-NEON's drop at N = 4096: 120 GFLOP/s there, 123 at N = 1024, from a
-separate run on 2026-10-24.
+¹ Part 1's kernel with its 6 × 4 tile and default cache block; NEON's peak
+assumes the 4.49 GHz core clock measured in part 1's register-tile runs.
+The SME rows ran at 3.94–3.99 GHz, so the two are from different runs and
+clocks. Part 1's [packed-B kernel](simd-gemm.md#step-5-pack-b)
+(`gemm_simd_packed<Q>`) removes NEON's drop at N = 4096: 120 GFLOP/s
+there, 123 at N = 1024, from a separate run.
 
 - SME is **12× the best NEON result** on the same core (1,504 GFLOP/s at
   N = 4096 against 124 at N = 512; at N = 4096 alone, 15×), from different

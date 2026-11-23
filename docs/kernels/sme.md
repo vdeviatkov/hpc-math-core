@@ -15,8 +15,8 @@ template parameters with no defaults. The measured values, in
 [`benchmarks/sme_params.hpp`](../../benchmarks/sme_params.hpp) (`SmeParams<T>`), are 2×2
 FP32 / 2×4 FP64 ZA shapes and M/K/N blocks 1024/2048/4096 FP32,
 512/2048/4096 FP64; fp16 / bf16 / INT8 keep FP32's blocks in k groups
-(TileK = 2048·G elements). The original `gemm_sme_1tile` remains a fixed
-one-tile teaching step. [Why these values](sizing.md).
+(TileK = 2048·G elements). `gemm_sme_1tile` is a fixed one-tile teaching
+step. [Why these values](sizing.md).
 
 ## Shape units and limits
 
@@ -37,11 +37,12 @@ packing, edges and reuse can favor another shape.
 Every shape runs the same code: per K step, its R A vectors and V B
 vectors are loaded two at a time with predicated SME2 loads (an odd last
 vector is the inactive half of a pair), each reused across its row or
-column of tiles, and whole micro-tiles of C move without edge predicates.
-The measured shapes compile to the same loop as before this was shared
-(2×2: two paired loads and four FMOPAs per K step). Sweeps of other shapes
-recorded before 2026-10-26 used single-vector loads for them. No runtime
-ZA-tile indexing is introduced: tile numbers are instruction immediates.
+column of tiles, and whole micro-tiles of C move without edge predicates
+(2×2: two paired loads and four FMOPAs per K step). No runtime ZA-tile
+indexing is involved: tile numbers are instruction immediates. The recorded
+shape sweep ([sme-tiles](../experiments/sme-tiles/README.md)) loaded one
+vector at a time for the non-default shapes, so those rows may understate
+the current kernel.
 
 A is zero-padded to R·S rows; packed B is zero-padded to V·S columns.
 Unpacked B uses predicates and clamped inactive-column pointers. C movement
@@ -71,24 +72,24 @@ and twenty FP64 shapes, each at N=64/256/512/1024/4096. Counters include
 ZA rows/columns/tile count, `svl` in elements, and actual output `mr`/`nr`.
 The cache grid uses M={256,512,1024}, K/N={1024,2048,4096}, at
 N=512/1024/4096 and the measured shape for each type. Packing and allocation
-inside the GEMM call are timed, as in the original SME benchmarks.
+inside the GEMM call are timed, as in the other SME benchmarks.
 Other ISAs/builds report skipped rows rather than substitute kernels.
 
 Keep compiler flags, SVL, machine, load and repetitions with results.
-[Historical cache measurements](../experiments/sme2-gemm/README.md) and
-[new shape measurements](../experiments/sme-tiles/README.md) are separate.
+Data: the run-time block sweep that chose the cache blocks,
+[sme2-gemm](../experiments/sme2-gemm/README.md), and the shape and
+block grids, [sme-tiles](../experiments/sme-tiles/README.md).
 The same template parameters apply to the widening kernels
 (`gemm_sme<fp16, R, V, TileM, TileK, TileN>`, likewise bf16 and INT8),
 whose packed strips hold k-group words; their shapes and blocks have not
 been swept (`SmeParams` keeps 2×2 and FP32's blocks in k groups).
 
-The new M4 sweep finds FP32 1×4 about 9.5% faster than 2×2 at N=1024,
+The M4 shape sweep finds FP32 1×4 about 9.5% faster than 2×2 at N=1024,
 confirmed with seven interleaved repetitions. FP64 1×4 is about 4.3% faster
-at that size but 1.4% slower at N=4096. Thus the historical balanced shape
-is not optimal at every size. `SmeParams` keeps 2×2 / 2×4; any other shape
-is a template argument away; see the linked results for all shapes and
-conditions. The before/after check at those shapes finds −1.03% to +1.40%
-changes across six cases, within desktop run variation.
+at that size but 1.4% slower at N=4096, so the balanced shape is not
+optimal at every size. `SmeParams` keeps 2×2 / 2×4; any other shape is a
+template argument away; see the linked results for all shapes and
+conditions.
 
 ## Several SME units
 
@@ -108,13 +109,10 @@ GotoBLAS:
 - a second barrier keeps the panel intact until every chunk is done.
 
 macOS cannot pin a thread to a cluster, so placement is up to the
-scheduler. The first version gave each thread an equal static band of rows.
-It showed the scheduler keeping a few threads on one cluster: with 2, 4 or 6
-threads, N ≤ 2048 ran no faster than one thread (f32 N=1024: 1,447 GFLOP/s
-on one thread, 1,470 on two), and 3 threads were slower than 2 at N=4096
-(2.4 against 2.7 TFLOP/s), because the unit that got two of the three
-threads finished last. With dynamic chunks, a unit that hosts more threads
-simply takes more chunks.
+scheduler, which tends to keep a few busy threads on one cluster until it
+is full. With an equal static band of rows per thread, the unit that hosts
+more threads would finish last; with dynamic chunks, it simply takes more
+chunks.
 
 Sweep: `--benchmark_filter='^(SmeMtT[0-9]+Mc[0-9]+|Sme|Amx)/f(32|64)/N=(1024|2048|4096)(/|$)'`,
 median of 3 interleaved repetitions, wall-clock time, load average 3.9

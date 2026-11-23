@@ -148,8 +148,8 @@ template <> struct ZmmDot<std::int8_t> {
     static BReg load_b(const Word* p) { return _mm512_loadu_si512(p); }
     // With the intrinsic, GCC 13 copies every accumulator to another register
     // around each VPDPBUSD (30 extra moves per 16 dot products), and the
-    // loop then runs out of front-end bandwidth: 935 instead of 1,195 GOP/s
-    // on Zen 5. The one-instruction asm keeps each accumulator in place.
+    // loop then runs out of front-end bandwidth on Zen 5. The
+    // one-instruction asm keeps each accumulator in place.
     static Acc madd(Acc acc, AReg a, BReg b, int, int) {
 #if defined(__GNUC__)
         asm("vpdpbusd %2, %1, %0" : "+v"(acc) : "v"(b), "v"(a));

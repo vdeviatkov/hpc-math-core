@@ -105,10 +105,10 @@ FP64:
 
 Variation: coefficient of variation ≤ 1.1% in every cell.
 
-The sweep ran with the cache block of the time, 64 × 256 × 256 (TileM × TileK
-× TileN); the blocks were swept afterwards with the chosen tile
-([blocks.md](blocks.md)). The tiles were not re-swept with the new
-blocks.
+The sweep ran with a 64 × 256 × 256 cache block (TileM × TileK × TileN);
+the blocks were swept afterwards with the chosen tile
+([blocks.md](blocks.md)), and the tiles have not been swept at the default
+block.
 
 ### Registers and spills
 

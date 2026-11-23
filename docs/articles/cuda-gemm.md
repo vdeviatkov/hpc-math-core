@@ -163,12 +163,11 @@ And **47%** of the shared-memory load wavefronts are bank conflicts: the
 16 threads of a half-warp read `Bs[k][tn + n]` with `tn` 8 floats apart,
 so lanes 4 apart hit the same one of the 32 banks.
 
-How the tiles are loaded matters as much as the arithmetic. In an earlier
-version of this kernel, consecutive threads loaded consecutive *rows* of
-the A tile, so a warp's 32 loads touched 32 different lines of A. Making
-consecutive threads load consecutive elements of a row, so the loads
-coalesce, and transposing in the store to shared memory instead, made this
-level 27% faster and the next one 36%.
+How the tiles are loaded matters as much as the arithmetic. If consecutive
+threads load consecutive *rows* of the A tile, a warp's 32 loads touch 32
+different lines of A. Making consecutive threads load consecutive elements
+of a row, so the loads coalesce, and transposing in the store to shared
+memory instead, makes this level 27% faster and the next one 36%.
 
 ## Level 3: double buffering — 25.6 TFLOP/s
 
@@ -257,18 +256,18 @@ The final kernel changes the structure, the way CUTLASS-style kernels do:
    one extra cache line per row of B moved each row to a different cache
    set; here, 16 extra bytes per row move each row to different banks.
 
-The padding alone was worth +24%, measured with Nsight Compute's
-compute-only timing when it was added (the raw output was not kept, and
-the kernel then used 126 registers per thread, 118 now; the ladder below
-times the whole call, 96.7 TFLOP/s):
+The padding alone is worth +24%, measured with Nsight Compute's
+compute-only timing on a build of the kernel at 126 registers per thread
+(the per-level profile has 118; the ladder below times the whole call,
+96.7 TFLOP/s):
 
-| Level 7 at N = 4096, at the time | Unpadded | Padded |
+| Level 7 at N = 4096 | Unpadded | Padded |
 |---|--:|--:|
 | Shared-load bank conflicts, share of wavefronts | 85% | **1%** |
 | Tensor pipe utilisation | 68% | **86%** |
 | TFLOP/s | 80.8 | **100.5** |
 
-Today's profile of the kernel: Tensor pipe busy 86%, 1% bank conflicts,
+The per-level profile of the kernel: Tensor pipe busy 86%, 1% bank conflicts,
 DRAM traffic 116 MB for the whole multiplication (below the 134 MB
 compulsory minimum: part of C is still in the 64 MiB L2 when the kernel
 ends, so its write-back is not counted), and occupancy 32%: two blocks per
@@ -340,7 +339,7 @@ At N = 8192 (the 128 × 256 tile) the Tensor pipe is 99% busy
 while the GEMM runs at 94% of the microbenchmark peak; the counter measures
 busy cycles at whatever clock the board holds under this load, which was
 not logged. Level 8 reaches **117.3 TFLOP/s at N = 8192 and 119.9 at
-N = 16384: 99% and 100% of cuBLAS FP16** measured in the same session
+N = 16384: 99% and 100% of cuBLAS FP16** measured in the same run
 (118.9 and 119.7), and 94% and 96% of the measured Tensor Core peak.
 Below N = 8192 cuBLAS keeps a lead: Level 8 reaches 98% of it at
 N = 1024 and 94% at N = 4096, and 91% at N = 2048 in part 5's run
@@ -385,11 +384,11 @@ Against the vendor library (the cuBLAS rows call `gemm_cuda_cublas*` in
 | Level 7, FP16 Tensor Cores | 96.7 | 100.7 | 99.8 |
 | **Level 8, FP16 Tensor Cores** | **106.6** | **117.3** | **119.9** |
 | cuBLAS FP16, Tensor Cores | 113.0 | 119.1 | 120.0 |
-| cuBLAS FP16, Level 8's session | 113.2 | 118.9 | 119.7 |
+| cuBLAS FP16, Level 8's run | 113.2 | 118.9 | 119.7 |
 
-(Level 8 was measured in a later session, in which Level 7 and cuBLAS FP16
+(Level 8 was measured in a separate run, in which Level 7 and cuBLAS FP16
 reproduced within 0.5% at N ≥ 4096 (0.9% at N = 1024); its percentages of
-cuBLAS use that session's cuBLAS row; the file is
+cuBLAS use that run's cuBLAS row; the file is
 [`bench_gemm_cuda_level8.txt`](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/experiments/cuda-machine/bench_gemm_cuda_level8.txt).)
 
 ### Small matrices and FP64

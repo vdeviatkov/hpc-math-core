@@ -33,7 +33,7 @@ threadgroup memory per barrier.
 ## Tile sweep, M4 Max
 
 `bench_gemm_metal`'s `MetalVariant/<function>` benchmarks, GFLOP/s at
-N = 2048 / 4096, median of 5 interleaved repetitions, 2026-10-24
+N = 2048 / 4096, median of 5 interleaved repetitions
 ([data](../experiments/metal-m4/README.md)). The default of each level is
 the plain name; best of each level per column in bold.
 
@@ -65,8 +65,7 @@ so compare rows of this run with each other, not with other runs.
 
 - **Level 2: 8 × 4 per thread.** The only clear result of the sweep: the
   default is the best at both sizes, 16–25% ahead of 4 × 4 and 8–34%
-  ahead of the two 8 × 8 variants. It replaced 4 × 4 after an earlier single pass (7,477
-  against 6,445 GFLOP/s at N = 4096), and this run confirms it. Why 8 × 8,
+  ahead of the two 8 × 8 variants. Why 8 × 8,
   with fewer reads per FMA, is slower was not investigated; this run
   records no register counts or GPU counters.
 - **Levels 3–5: kept, not proven best.** No variant beats its default at
@@ -81,12 +80,12 @@ so compare rows of this run with each other, not with other runs.
 
 ## A code-generation trap: unrolling
 
-The first build of Levels 3–5 ran the 32 × 32-per-simdgroup kernels at
-1.2–2.0 TFLOP/s, while the 16 × 32 variant reached 11.8 and the fp16 copy
-of the same code 12.4. The fixed-trip loops over the accumulator array were
-not unrolled, so the array was indexed at run time and lived in memory
-instead of registers. `#pragma clang loop unroll(full)` on those loops
-(`HPC_UNROLL` in `gemm.metal`) brought them to 11–13 TFLOP/s. This is the
+Without forced unrolling, the 32 × 32-per-simdgroup kernels of Levels 3–5
+run at 1.2–2.0 TFLOP/s, while the 16 × 32 variant reaches 11.8 and the
+fp16 copy of the same code 12.4: the compiler leaves the fixed-trip loops
+over the accumulator array rolled, so the array is indexed at run time and
+lives in memory instead of registers. `#pragma clang loop unroll(full)` on
+those loops (`HPC_UNROLL` in `gemm.metal`) brings them to 11–13 TFLOP/s. This is the
 GPU form of the CPU kernels' rule that the tile loops must unroll
 completely so the accumulators stay in registers.
 

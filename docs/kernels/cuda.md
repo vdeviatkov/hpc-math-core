@@ -56,8 +56,8 @@ are two instantiations of one template).
   Level 7 changes the structure rather than the size.
 - **Level 7: padding, not the tile.** Padding each shared-memory row by 8
   halves took bank conflicts from 85% to 1% of wavefronts and the kernel
-  from 80.8 to 100.5 TFLOP/s at N = 4096 (+24%, Nsight Compute timing
-  when the padding was added). The 128 × 128 block and
+  from 80.8 to 100.5 TFLOP/s at N = 4096 (+24%, Nsight Compute timing).
+  The 128 × 128 block and
   32 × 64 warp tile were not compared with other sizes.
 - **Level 8: 128 × 256 against 128 × 128, and the stage count.** Swept at
   N = 2048 and 8192, all five formats

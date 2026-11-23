@@ -39,7 +39,7 @@ In `bench_gemm`, N is a compile-time constant, as at a fixed-size call site. The
 > **Machine:** Apple M4 Max, 16 cores, Apple Clang 17, C++20
 > **Build:** `cmake -B build -DCMAKE_BUILD_TYPE=Release -DHPC_ENABLE_SME=ON` → `-O3 -ffast-math -funroll-loops` (`-march` cleared in favour of `-mcpu=apple-m4`, see [§ SME and AMX build flags](build.md#sme-and-amx-build-flags))
 > **CPU Caches (P-cores, which run the benchmarks):** L1d 128 KiB · L1i 192 KiB · L2 16 MiB shared per cluster (12 P-cores; the 4 E-cores have 64 KiB L1d and a 4 MiB L2 — the values Google Benchmark prints, since it reports the first core type)
-> **Load Average:** 5–7 on 16 cores during the scalar and NEON runs (2026-10-15), including two unrelated processes at 100% each — treat ±5% as noise
+> **Load Average:** 5–7 on 16 cores during the scalar runs, including two unrelated processes at 100% each; 2–10 during the NEON runs — treat ±5% as noise
 
 Five families run here: scalar, NEON, SME2 (opt-in), AMX via Accelerate,
 and the KleidiAI reference (built when SME is on). AVX2 and AVX-512 are
@@ -68,19 +68,12 @@ float (f32)
 | `gemm_simd_blocked<Q>` | 122.41 | 122.86 | 123.78 | 121.19 | 102.10 |
 
 `gemm_simd_blocked<Q>` uses a 6×16 f32 / 6×8 f64 register tile (6 rows × 4
-vectors, 24 accumulators) and loads A with `LDR` instead of `LD1R` since
-2026-10-21, and a 384×256×256 cache block since 2026-10-22
-([kernels/blocks.md](kernels/blocks.md)). Its rows are the median of three
-runs with both
+vectors, 24 accumulators), loads A with `LDR` and multiplies by element, and
+uses a 384×256×256 cache block ([kernels/blocks.md](kernels/blocks.md)). Its
+rows are the median of three runs
 ([`bench_m4_defaults.csv`](experiments/block-sweeps/bench_m4_defaults.csv)),
-at a core clock of about 4.49 GHz; the other rows are from 2026-10-15, when the
-clock was 3.96–4.13 GHz, so compare across them with ~10% allowance. In the
-2026-10-15 run the previous kernel (4×16 f32, 8×4 f64, `LD1R`) measured
-93.51 / 94.39 / 94.96 / 91.20 / 69.81 f32 and 37.27 / 39.64 / 39.18 / 37.90
-/ 33.10 f64; at the same clock as the new one, the tile sweep has it at
-115.2 f32 and 41.5 f64 for N=256. With the old 64-row block the 6×4
-kernel measured 121.88 / 121.78 / 122.74 / 120.98 / 91.91 f32 and 61.35 /
-61.29 / 60.32 / 58.25 / 45.80 f64. Every tile shape and why 6 × 4:
+at a core clock of about 4.49 GHz; the other rows ran at 3.96–4.13 GHz, so
+compare across them with ~10% allowance. Every tile shape and why 6 × 4:
 [kernels/neon.md](kernels/neon.md).
 
 ### ARM SME2 (`-DHPC_ENABLE_SME=ON`)
@@ -104,8 +97,9 @@ GotoBLAS cache blocking and SME2 multi-vector loads; `gemm_sme_1tile`,
 
 #### The four SME steps
 
-Block sizes Mc = 1024 (f32) / 512 (f64), Kc = 2048, Nc = 4096 (the current
-ones; see `sme.hpp`). Separate run, load average ~6–7, median of 3:
+Block sizes Mc = 1024 (f32) / 512 (f64), Kc = 2048, Nc = 4096 (`SmeParams`
+in [`benchmarks/sme_params.hpp`](../benchmarks/sme_params.hpp)). Separate
+run, load average ~6–7, median of 3:
 
 | Kernel | N=256 | N=512 | N=1024 | N=2048 | N=4000 | N=4096 |
 |---|---|---|---|---|---|---|
@@ -122,14 +116,14 @@ ones; see `sme.hpp`). Separate run, load average ~6–7, median of 3:
 - All tiles → blocked: 3.4× f32 / 2.1× f64 at N=4000. Without blocking all of A is re-read for every B strip. N=4000 is as slow as N=4096 without blocking, so this is not a stride effect; capacity is the likely cause.
 - Blocked → `gemm_sme`: +4% at N=4000, but 2.3× f32 at N=2048 and 3.1× at N=4096 (1.7× / 1.9× f64): the B row stride effect below. With 2,048-row strips an 8 KiB stride (N=2048) hurts as much as a 16 KiB one.
 - At N ≤ 512 the kernels without B packing are faster (+18% f32 at N=256): everything fits in cache, and `gemm_sme` pays for the copy.
-- Against the previous block sizes (Mc = 128, Kc = 1024), measured interleaved: `gemm_sme` f32 +4% at N=2048, +10% at N=4000, +12% at N=4096, +3% at N=512, unchanged within noise at N=1024; f64 +2–7% at N ≥ 2048. All tables in this section use the current sizes.
+- Against B-resident blocks (Mc = 128, Kc = 1024), measured interleaved: `gemm_sme` f32 +4% at N=2048, +10% at N=4000, +12% at N=4096, +3% at N=512, unchanged within noise at N=1024; f64 +2–7% at N ≥ 2048 ([data](experiments/sme2-gemm/README.md)).
 
 #### SME: B row stride
 
 > **Command:** `./build/benchmarks/bench_gemm --benchmark_filter=BStride --benchmark_repetitions=3 --benchmark_enable_random_interleaving=true --benchmark_report_aggregates_only=true`
 
 The same blocked kernel with B read in place (`gemm_sme_blocked`) and packed
-(`gemm_sme`), current block sizes (2,048-row B strips); GFLOP/s, median of 3
+(`gemm_sme`), default block sizes (2,048-row B strips); GFLOP/s, median of 3
 interleaved runs, load average 5–10. Why a power-of-two row stride is
 expected to hurt: [sme.hpp](../src/gemm/sme.hpp), "Packing". First, N around
 powers of two (all matrices square, B row stride = N·sizeof(T); the f64
@@ -158,7 +152,7 @@ Then the 4096×4096 problem with B in a wider buffer, so only its row stride
 | 4160 (+256 B) | 16,640 B | 1,498 | 1,532 | −2% | 319 | 434 | −26% |
 
 - f32: the collapse is confined to the exact powers of two; 32 columns either side, in place is within 5% of packed. Padding each row by one cache line (ldb = 4128) recovers 3.1× with the same N and work, and only about 0.8% more storage, so the loss follows the byte stride. That is what cache-set conflicts predict.
-- f64: in place now loses 26–48% at almost every N around 4096, padded or not; only N = 4000 escapes. Its strips are 2,048 rows of 256 B, twice the f32 footprint, at strides twice as large; with the previous 1,024-row strips padded f64 lost only 7–8%. Why padding no longer helps f64 was not investigated further. `gemm_sme` packs B, so none of this reaches it.
+- f64: in place loses 26–48% at almost every N around 4096, padded or not; only N = 4000 escapes. Its strips are 2,048 rows of 256 B, twice the f32 footprint, at strides twice as large; why padding does not help f64 was not investigated. `gemm_sme` packs B, so none of this reaches it.
 - ldb = 4097 is a control, not a fix: its row segments are no longer 128 B aligned, so each spans an extra cache line, and the loss mixes that cost with the stride effect.
 - Where the conflict happens, and the cost of each fix (f32): [experiments/sme-b-stride](experiments/sme-b-stride/README.md). With rows 16 KiB apart the macro-kernel loses 5–26% up to 576 rows per strip and breaks between 576 and 640, and the core's pointer chase at that stride holds roughly 450–600 lines in L2 against 8 in L1: the conflicts are in L2. With a padded stride, packing B costs ~2.5 ms and saves 7–8 ms of compute at N=4096; the remaining in-place cost is 4–8% across N = 1024–4224.
 
@@ -191,16 +185,14 @@ Same machine and run as above. Every row uses one core, so this is the like-for-
 | `gemm_amx` f64 | 329.78 | 466.61 | 822.88 | **860.28** | 804.22 | 813.36 |
 | `gemm_amx` f32 | 797.61 | 1,724 | 2,906 | **3,296** | 3,202 | 3,156 |
 
-(Recorded when the family still had three entry points — naive/reordered/blocked — that all called the same `cblas_*gemm`; they measured within ~1% of each other, which is why they were merged into `gemm_amx`. The row above is the former `gemm_amx_blocked`.)
-
-- Up to 3.3 TFLOP/s f32 and 860 GFLOP/s f64 in this run (best 3,178 / 804 in the later run that the README and part 2 quote), the highest CPU throughput in this repo and ~2.3× / ~2.1× the single-threaded `gemm_sme` — but with every core available. Limited to one thread it reaches ~1.7 TFLOP/s f32 from N=256 up ([§ Matrix engines, single core](#matrix-engines-single-core)), so the climb from ~0.8 to ~3.3 TFLOP/s is about half problem size and half the second performance cluster.
+- Up to 3.3 TFLOP/s f32 and 860 GFLOP/s f64 in this run (best 3,178 / 804 in the run that the README and part 2 quote), the highest CPU throughput in this repo and ~2.3× / ~2.1× the single-threaded `gemm_sme` — but with every core available. Limited to one thread it reaches ~1.7 TFLOP/s f32 from N=256 up ([§ Matrix engines, single core](#matrix-engines-single-core)), so the climb from ~0.8 to ~3.3 TFLOP/s is about half problem size and half the second performance cluster.
 - The f32/f64 ratio is ~3.8×, not the ~2× lane-count ratio seen elsewhere (NEON 2.0×, AVX-512 ~2×). It is close to the 4× of the M4's matrix unit, where an f64 outer product covers 8×8 elements against 16×16 for f32 (`gemm_sme` measures 3.5×) — consistent with Accelerate running on that unit, though Apple does not document it.
 - For production code on a Mac, call Accelerate. The hand-written kernels show how close one can get to it, and what each step contributes.
 
 ### Several SME units (`gemm_sme_mt`)
 
 > **Command:** `./build/benchmarks/bench_gemm --benchmark_filter='^(SmeMt|Sme|Amx)/' --benchmark_repetitions=5 --benchmark_enable_random_interleaving=true` (wall-clock time for `SmeMt` and `Amx`)
-> **Date:** 2026-10-24, load average 2.6–6.2. Median of 5 interleaved repetitions. Data: [experiments/sme-mt](experiments/sme-mt/README.md)
+> **Load average:** 2.6–6.2. Median of 5 interleaved repetitions. Data: [experiments/sme-mt](experiments/sme-mt/README.md)
 
 `gemm_sme` is one thread, so one SME unit; the M4 Max has one per P-cluster,
 two in all. `gemm_sme_mt` runs `gemm_sme`'s blocking on 8 threads: the B
@@ -227,9 +219,8 @@ on (macOS cannot pin threads). Design and the thread sweep:
   `gemm_sme_mt` spreads over eight; it was not measured separately.
 - At N=1024 it reaches 83% / 92% of Accelerate. Below N≈512 creating 8
   threads per call costs more than it saves (26 GFLOP/s at N=64), so small
-  products should call `gemm_sme`. A first version with equal static row
-  bands, and the evidence that macOS keeps a few threads on one cluster, are
-  in [kernels/sme.md](kernels/sme.md#several-sme-units).
+  products should call `gemm_sme`. Why rows are handed out dynamically:
+  [kernels/sme.md](kernels/sme.md#several-sme-units).
 
 ### Prefetch distance sweep
 
@@ -241,7 +232,7 @@ Benchmarks named `<Family>BlockedPf<D>/<prec>/N=<size>` sweep prefetch distance 
 
 R is the register-tile height (1 for the scalar kernel).
 
-GFLOP/s against the same kernel without prefetch, same run as the tables above (the `NeonBlockedPf` rows from the run with the current tile and block, [`bench_m4_defaults.csv`](experiments/block-sweeps/bench_m4_defaults.csv)):
+GFLOP/s against the same kernel without prefetch, same run as the tables above (the `NeonBlockedPf` rows from the run of the NEON kernel, [`bench_m4_defaults.csv`](experiments/block-sweeps/bench_m4_defaults.csv)):
 
 | Kernel | N | D=2 | D=4 | D=8 | D=16 | no prefetch |
 |---|---|---|---|---|---|---|
@@ -288,7 +279,7 @@ Cache-access pattern dominates at large N. `gemm_naive` runs at nearly the same 
 
 Explicit SIMD beats auto-vectorisation mainly by staying flat. `gemm_reordered` and `gemm_blocked` carry no NEON intrinsics — the compiler vectorises the sequential inner j-loop under `-ffast-math`, reaching ~83 GFLOP/s f32 at small N. That figure relies on N being a compile-time constant ([Deriving GFLOP/s](#deriving-gflops)). Adding an explicit 6×16 f32 register tile on top of L2 blocking changes the *shape* of the curve: `gemm_simd_blocked<Q>` holds 121–124 GFLOP/s f32 from N=64 through N=1024 (at 4.49 GHz, see above), while the auto-vectorised `gemm_blocked` decays 83 → 41.
 
-The accumulator count sets the ceiling. The P-core issues up to 4 FMAs per cycle with a ~3-cycle latency (`fma_peak`, [experiments/cpu-simd](experiments/cpu-simd/README.md)), so a micro-kernel needs 12–16 independent accumulators; the 6×4 tile has 24. The other limit was a single instruction: broadcasting A with `LD1R` held every tile with many rows back, and loading it with `LDR` and multiplying by element made the 6×4 tile 23–30% faster. f32 and f64 now run at the same 85% of their peaks. Every shape measured: [kernels/neon.md](kernels/neon.md).
+The accumulator count sets the ceiling. The P-core issues up to 4 FMAs per cycle with a ~3-cycle latency (`fma_peak`, [experiments/cpu-simd](experiments/cpu-simd/README.md)), so a micro-kernel needs 12–16 independent accumulators; the 6×4 tile has 24. The other limit is a single instruction: broadcasting A with `LD1R` holds tiles with many rows back, and loading it with `LDR` and multiplying by element makes the 6×4 tile 23–30% faster. f32 and f64 run at the same 85% of their peaks. Every shape measured: [kernels/neon.md](kernels/neon.md).
 
 Peak per family on this machine:
 
@@ -309,7 +300,6 @@ Peak per family on this machine:
 > **CPU Caches:** L1d 48 KiB (×16) · L1i 32 KiB (×16) · L2 1024 KiB (×16) · L3 32768 KiB (×2)
 > **Load Average:** 0.00 / 0.11 / 0.08 on 32 threads — idle
 > **Governor:** `performance` · **Run time:** 2147 s (36 min) for the full CPU sweep
-> **Date:** 2026-10-15; `gemm_simd_blocked<Zmm>` re-measured the same night after its micro-kernel change (below)
 
 Zen 5 has a full-width 512-bit AVX-512 datapath (unlike Zen 4's double-pumped
 256-bit), so this is the first machine in this repo where the AVX-512 kernels
@@ -342,27 +332,14 @@ The `gemm_simd_reordered` rows for AVX2/AVX-512 are omitted above — they
 trail scalar reordered, which GCC auto-vectorises at least as well.
 
 The `gemm_simd_blocked<Ymm>` and `gemm_simd_blocked<Zmm>` rows are the median of
-three runs on 2026-10-22 with their current register tiles and cache blocks
+three runs with their default register tiles and cache blocks
 ([`bench_zen5_defaults.csv`](experiments/block-sweeps/bench_zen5_defaults.csv);
 blocks: [kernels/blocks.md](kernels/blocks.md)): AVX2 384×256 × 1 KiB of
-B's rows, AVX-512 512×256 × 2 KiB. With the old 64-row blocks the same
-tiles measured 297.22 / 325.52 / 328.96 / 312.15 / 230.25 f32 and 149.90 /
-162.09 / 128.41 / 123.44 / 95.86 f64 (AVX-512), 169.01 / 171.16 / 167.72 /
-124.01 / 95.40 f32 and 82.80 / 83.84 / 62.35 / 54.35 / 48.13 f64 (AVX2).
-
-`gemm_simd_blocked<Zmm>` uses an 8×48 f32 / 8×24 f64 register tile (8 rows
-× 3 vectors, 24 accumulators) since 2026-10-21. The 8×2 tile it replaced (16 accumulators, since 2026-10-15) measured
-320.29 / 332.68 / 327.92 / 284.59 / 198.23 f32 and 154.62 / 161.54 /
-105.21 / 90.87 / 77.16 f64; the 4×2 tile before that 216.8 / 205.2 / 141.3
-/ 119.9 f32 and 106.2 / 55.8 / 55.1 / 51.1 f64 at N=256 / 512 / 1024 /
-4096. Every tile shape and why 8 × 3: [kernels/avx512.md](kernels/avx512.md).
-
+B's rows, AVX-512 512×256 × 2 KiB. `gemm_simd_blocked<Zmm>` uses an 8×48
+f32 / 8×24 f64 register tile (8 rows × 3 vectors, 24 accumulators); every
+tile shape and why 8 × 3: [kernels/avx512.md](kernels/avx512.md).
 `gemm_simd_blocked<Ymm>` uses a 6×16 f32 / 6×8 f64 register tile (12
-accumulators) since 2026-10-21, measured alternated with the previous
-4-row tile
-([experiments/cpu-simd/avx2-tiles](experiments/cpu-simd/avx2-tiles/)). The
-4-row tile ran at 151.2 / 150.2 / 143.4 / 93.5 / 75.9 f32 and 75.1 / 71.3 /
-46.0 / 41.7 / 37.3 f64 in the original sweep.
+accumulators): [kernels/avx2.md](kernels/avx2.md).
 
 ### Speedup vs `gemm_naive`
 
@@ -396,38 +373,36 @@ The register tile needs enough accumulators and register-only FMAs. Zen 5
 retires 2 FMAs per cycle with a 4-cycle latency (`fma_peak`,
 [experiments/cpu-simd](experiments/cpu-simd/README.md)): 362 GFLOP/s f32 and
 180 f64 at 5.71 GHz with AVX-512, and 12 independent accumulators for the
-full rate. With a 4×2-ZMM tile (8 accumulators) GCC also folded the B loads
+full rate. With a 4×2-ZMM tile (8 accumulators) GCC also folds the B loads
 into the FMAs as memory operands, 12 loads per k step for 8 FMAs, and the
-kernel stopped at 60% of peak. The 8×2 tile loads B once per k step and has
-16 accumulators: 332.7 GFLOP/s f32 (92% of peak) and 161.5 f64 (90%) at
+kernel stops at 60% of peak. The 8×2 tile loads B once per k step and has
+16 accumulators: 327.6 GFLOP/s f32 (90% of peak) and 158.9 f64 (88%) at
 N=256. The 8×3 tile (24 accumulators) is as fast at N≤512 and holds up
 better where B misses L1: +10% f32 at N=1024 and +16% at 4096, +22–36% f64
 from N=512 up, at the same cache block
-([kernels/avx512.md](kernels/avx512.md)). The current cache blocks add
-+28% f32 and +51% f64 at N=4096 and +22–23% f64 at N=512–1024
-([kernels/blocks.md](kernels/blocks.md)): the B block now fits in half of
-L2 in either type, and each B block serves 512 rows of A instead of 64. `gemm_simd_blocked<Ymm>` uses a 6×2-YMM tile (12 accumulators, 15–16 of
-AVX2's 16 registers without spilling): 171.7 f32 and 81.9 f64 at N=256
-(83.8 with the old block), 94% and 90–92% of the AVX2 peak (182 / 91 GFLOP/s); the 4×2 tile it replaced
-reached 83% ([kernels/avx2.md](kernels/avx2.md)).
+([kernels/avx512.md](kernels/avx512.md)). The default cache blocks add
++28% f32 and +50% f64 at N=4096 against 64-row blocks
+([kernels/blocks.md](kernels/blocks.md)): the B block fits in half of L2
+in either type, and each B block serves 512 rows of A. `gemm_simd_blocked<Ymm>`
+uses a 6×2-YMM tile (12 accumulators, 15–16 of AVX2's 16 registers without
+spilling): 171.7 f32 and 81.9 f64 at N=256, 94% and 90% of the AVX2 peak
+(182 / 91 GFLOP/s); a 4×2 tile reaches 83% ([kernels/avx2.md](kernels/avx2.md)).
 
 The drops with N follow the byte stride of B's rows, which the kernels read
 in place. The micro-kernel runs over 256 rows of B; at a 4 KiB row stride
 (f32 N=1024, f64 N=512) those rows fall into a few cache sets of L1 and L2
 and stop staying cached. On L1-resident data, `simd_microkernel` measures a
-1 KiB stride costing 5% and a 4 KiB stride 22% against packed B (AVX-512
-f32, 16 accumulators), and the 8×2 kernel dropped by the same order at
-the same sizes: 327.9 → 284.6 f32 at N=1024, 161.5 → 105.2 f64 at N=512.
-The current AVX-512 kernel drops less: 327.9 → 312.8 f32, and its f64
-rows lost the drop with the smaller B block (157.7 at N=512); AVX2 still
-drops (169.7 → 126.9 f32, 81.9 → 62.3 f64).
+1 KiB stride costing 4% and a 4 KiB stride 21% against packed B (AVX-512
+f32, 16 accumulators). The AVX-512 kernel drops little at those sizes:
+327.9 → 312.8 f32 at N=1024, and f64 holds 157.7 at N=512 with its smaller
+B block; AVX2 drops by a quarter (169.7 → 126.9 f32, 81.9 → 62.3 f64).
 Packing B into contiguous strips (`gemm_simd_packed`) removes it:
 [experiments/packed-b](experiments/packed-b/README.md).
 
 Software prefetch has almost no effect on Zen 5, and the distance is
 irrelevant. Across every family, precision and size, all four distances
 (D ∈ {2, 4, 8, 16}) land within ~3% of each other and of no prefetch (the
-AVX-512 and AVX2 rows from the run with the current tiles and blocks,
+AVX-512 and AVX2 rows from the run of the default kernels,
 [`bench_zen5_defaults.csv`](experiments/block-sweeps/bench_zen5_defaults.csv)):
 
 | Kernel | D=2 | D=4 | D=8 | D=16 | no prefetch |
@@ -453,7 +428,7 @@ run time.
 > **Machine:** AMD Ryzen 9 9950X host + **NVIDIA GeForce RTX 5080** (Blackwell, sm_120), Ubuntu 24.04, CUDA 13.2, GCC 13.3, C++20
 > **Build:** `cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_COMPILER=/usr/local/cuda-13.2/bin/nvcc` → native `sm_120` SASS (verified with `cuobjdump --list-elf`)
 > **Run:** `./build/benchmarks/bench_gemm_cuda` — 134 s for the full GPU sweep
-> **Date:** 2026-10-13, driver 615.71.09, host idle. All CUDA tests passed with no skips.
+> **Driver:** 615.71.09, host idle. All CUDA tests passed with no skips.
 
 What each level adds: [src/gemm/cuda.hpp](../src/gemm/cuda.hpp).
 
@@ -505,7 +480,7 @@ double (f64)
 | `CudaVectorized` | 45 | 723 | 885 | 940 |
 | `CudaCublas` (ref) | 601 | 649 | 848 | 848 |
 
-- ⁸ Level 8, measured in a later session (2026-10-16, build
+- ⁸ Level 8, measured in a separate run (build
   `CMAKE_CUDA_ARCHITECTURES=120a`) in which `CudaWmmaPipelined` and
   `CudaCublasFp16` reproduced within 0.5%:
   [`bench_gemm_cuda_level8.txt`](experiments/cuda-machine/bench_gemm_cuda_level8.txt).
@@ -553,10 +528,10 @@ TFLOP/s, ascending:
 
 ### Level 7: shared-memory bank conflicts
 
-Without padding its shared-memory tiles, `gemm_cuda_wmma_pipelined` measured
+Without padding its shared-memory tiles, `gemm_cuda_wmma_pipelined` runs at
 80.8 TFLOP/s, 68% of cuBLAS. Padding each row by 8 halves (why 8, and why
 not a swizzle: the `kPipeAsLd` comment in
-[gemm.cu](../src/cuda/gemm.cu)) changed, per Nsight Compute
+[gemm.cu](../src/cuda/gemm.cu)) changes, per Nsight Compute
 at N=4096 compute-only:
 
 | Metric | Unpadded | Padded (+8) |
@@ -571,12 +546,13 @@ at N=4096 compute-only:
 | Registers per thread | 126 | 126 |
 | **Throughput** | 80.8 TFLOP/s | 100.5 TFLOP/s |
 
-The kernel had required about 6.6× as many shared-load wavefronts;
+Unpadded, the kernel needs about 6.6× as many shared-load wavefronts;
 these count bank-service work, not 6.6× as many requested data bytes;
-afterwards it is within 1% of the minimum wavefront count. Shared memory
+padded, it is within 1% of the minimum wavefront count. Shared memory
 per block grows from 32 to 37 KB, lowering the shared-memory occupancy
-limit from 3 to 2 blocks per SM, which costs nothing: its registers (126
-per thread then, 118 now) already cap it at 2. That register pressure (occupancy 33%, ~67%
+limit from 3 to 2 blocks per SM, which costs nothing: its registers
+already cap it at 2. (This pair was profiled with a build at 126 registers
+per thread; the kernel in the per-level profile uses 118.) That register pressure (occupancy 33%, ~67%
 unused warp slots per Nsight) constrains occupancy; it does not by itself
 prove the remaining performance bottleneck. Deeper pipelines and split-K
 are possible experiments, not measured fixes for the remaining gap.
@@ -588,7 +564,7 @@ are possible experiments, not measured fixes for the remaining gap.
 > **Machine:** Apple M4 Max, 40-core GPU, macOS 26.3.1, Apple Clang 17, Metal shaders compiled at run time with fast math
 > **Build:** default (`HPC_ENABLE_METAL` is on on Apple); `cmake -B build -DCMAKE_BUILD_TYPE=Release`
 > **Command:** `./build/benchmarks/bench_gemm_metal --benchmark_repetitions=5 --benchmark_min_time=1s --benchmark_enable_random_interleaving=true --benchmark_report_aggregates_only=true`
-> **Date:** 2026-10-24, AC power, load average 1.5–3.9. Median of 5 interleaved repetitions; cv up to 17% per row. Data and method: [experiments/metal-m4](experiments/metal-m4/README.md)
+> **Conditions:** AC power, load average 1.5–3.9. Median of 5 interleaved repetitions; cv up to 17% per row. Data and method: [experiments/metal-m4](experiments/metal-m4/README.md)
 
 What each level adds: [src/gemm/metal.hpp](../src/gemm/metal.hpp). Apple
 GPUs have no FP64, so every row is f32 in and out; the F16 rows multiply
@@ -600,10 +576,10 @@ to last ≥ ~5 ms (93–256 at N=256), since at small N one GEMM is shorter than
 command buffer's fixed cost.
 
 **Read across rows, not across sessions.** On this laptop the absolute GPU
-rate moved by up to ~3× between sessions (`MetalMps` f32 at N=4096: 13.5
-TFLOP/s in a first quick pass, 11.1 in this run, 4.5–7.3 later), while the
+rate moved by up to ~3× between sessions (`MetalMps` f32 at N=4096: 11.1
+TFLOP/s in this run, 4.5–7.3 in other runs), while the
 register-only FMA peak stayed near 14.7. That fits sustained power limiting
-of memory-heavy work; [the data README](experiments/metal-m4/README.md#two-things-found-on-the-way)
+of memory-heavy work; [the data README](experiments/metal-m4/README.md#clock-and-power)
 has the details. The rows below come from one run, interleaved, so they
 compare fairly with each other.
 
@@ -658,8 +634,9 @@ the format before timing; every rate counts a multiply-add as 2 operations,
 INT8 included. Medians of 3.
 
 Apple M4 Max, one P-core / one SME unit, GFLOP/s or GOP/s
-(`bench_gemm_lowp`; SME rows 2026-10-16, NEON rows one session on
-2026-10-22 with the current FP32 kernel,
+(`bench_gemm_lowp`; SME rows from
+[`bench_lowp_m4.csv`](experiments/lowp/bench_lowp_m4.csv), NEON rows from one
+session with the FP32 kernel,
 [`lowp_m4_defaults.csv`](experiments/block-sweeps/lowp_m4_defaults.csv)):
 
 | Kernel | Format | N=256 | N=1024 | N=2048 | N=4096 |
@@ -675,9 +652,8 @@ Apple M4 Max, one P-core / one SME unit, GFLOP/s or GOP/s
 | `NeonSmmla` | int8 | 449 | 493 | 503 | 491 |
 
 AMD Zen 5, one core, GFLOP/s or GOP/s (`bench_gemm_lowp`, pinned to core 2;
-all rows one session on 2026-10-23, after the rewrite of the low-precision
-kernels,
-[`bench_lowp_zen5_rewrite.csv`](experiments/lowp/avx512-rewrite/bench_lowp_zen5_rewrite.csv)):
+all rows one session,
+[`bench_lowp_zen5.csv`](experiments/lowp/bench_lowp_zen5.csv)):
 
 | Kernel | Format | N=256 | N=1024 | N=2048 | N=4096 |
 |---|---|--:|--:|--:|--:|

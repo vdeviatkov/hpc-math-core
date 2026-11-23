@@ -155,8 +155,8 @@
  * M4 our stride/cache measurements point to operand reuse through the
  * P-cluster L2, rather than the core L1. This is an inference about M4,
  * not an SME architectural requirement or a documented internal datapath.
- * The previous sizing (Mc = 128, Kc = 1024) aimed at keeping the whole
- * B panel in L2 instead; the current one is 4–12% faster at N ≥ 2048.
+ * The alternative, keeping the whole B panel in L2 with small A blocks
+ * (Mc = 128, Kc = 1024), measured 4–12% slower at N ≥ 2048.
  *
  * Packing runs in the non-streaming driver, because scalar and NEON code is
  * slow in streaming mode; only macro_kernel runs streaming, with one

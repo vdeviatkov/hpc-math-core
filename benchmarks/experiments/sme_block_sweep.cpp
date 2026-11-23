@@ -9,7 +9,7 @@
  * compile-time template parameters, at the measured ZA shape
  * (sme_params.hpp). Every combination of Mc in
  * {256, 512, 1024, 2048}, Kc in {1024, 2048, 4096} and Nc in {1024, 2048,
- * 4096}, plus (128, 1024, 4096), the kernel's first sizing, runs on square
+ * 4096}, plus (128, 1024, 4096), the B-resident alternative, runs on square
  * matrices N = 512 … 4096, FP32 and FP64. Configurations are timed in turn
  * within each repetition (5 repetitions, 3 at N = 4096) and the median is
  * reported. stdout gets CSV rows.

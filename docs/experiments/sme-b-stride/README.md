@@ -65,9 +65,8 @@ or 16,512 B apart (`ldb` = 4128); packed for reference. Median GFLOP/s
 | 2048 | 500 [499–506] | 1,584 [1,563–1,610] | 1,700 | 0.32 |
 
 `height.csv` also has Kc = 16 and 64. Up to 576 rows the power-of-two
-stride costs 5–26%; between 576 and 640 rows it breaks. An earlier run
-with Mc = 128 (4 A strips per B strip instead of 32) broke between 384
-and 448 rows; both are in the range where the chase below loses L2.
+stride costs 5–26%; between 576 and 640 rows it breaks, in the range
+where the chase below loses L2.
 
 ## Width: what padding leaves
 

@@ -11,7 +11,7 @@
     "chase.csv": "./build/benchmarks/cache_chase stride"
   },
   "base_commit": "b9b63e0",
-  "base_commit_note": "phases, height and width were rerun with the block sizes Mc = 1024 (f32), Kc = 2048, Nc = 4096 on top of base_commit; chase.csv is unchanged from the earlier run (it does not use the kernel). The hashes identify the exact sources.",
+  "base_commit_note": "phases, height and width use the block sizes Mc = 1024 (f32), Kc = 2048, Nc = 4096 on top of base_commit; chase.csv is from a separate run (it does not use the kernel). The hashes identify the exact sources.",
   "sha256": {
     "src/gemm/sme.hpp": "85343523a48f30b1386c17f17de7b6b5d04d98713ae4fc35aaf6123a38bb39ab",
     "include/hpc/matrix.hpp": "7f5162f46bdb1dd0e9d28ee10b6dd53f9f22881e347ed7501cf115dfe57182d3",

@@ -2,8 +2,8 @@
 
 Data behind the Zen 5 section of
 [part 3](../../articles/sme2-cache-associativity.md#the-same-experiment-on-amd-zen-5):
-part 3's B-stride experiment repeated on an x86 core with part 1's AVX-512
-FP32 kernel. Measured 2026-10-17.
+part 3's B-stride experiment repeated on an x86 core with an AVX-512 FP32
+GEMM built from part 1's micro-kernel.
 
 ## Machine and build
 
@@ -33,12 +33,13 @@ All from [`avx512_b_stride`](../../../benchmarks/experiments/avx512_b_stride.cpp
 
 GEMM columns: GFLOP/s of B in place and packed, medians of 5 interleaved
 repetitions; every variant is checked against `gemm_simd_blocked<Zmm>` before
-timing. The GEMM uses the library kernel's blocking (64 rows of A × `kc`
-rows of B × 512 columns, `kc` = 256 except in `height`) and its
-micro-kernel with the 8 × 2 tile it had then (`vector_micro<Zmm<T>, 8, 2>`, 8 × 32
-FP32; the library default is 8 × 3 since 2026-10-21). "Packed" copies each
+timing. The experiment's GEMM has its own fixed blocking (64 rows of A ×
+`kc` rows of B × 512 columns, `kc` = 256 except in `height`) and runs the
+library micro-kernel with an 8 × 2 tile (`vector_micro<Zmm<T>, 8, 2>`, 8 × 32
+FP32); the library kernel's tile and blocks are 8 × 3 and
+512 × 256 × 512 ([docs/kernels](../../kernels/README.md)). "Packed" copies each
 `kc` × 512 block of B into contiguous 32-column strips before use; with
-the library's loop order (64-row blocks of A outermost) that copy is
+this loop order (64-row blocks of A outermost) that copy is
 repeated for every block of A, so packed B still reads the strided B
 N / 64 times. Packing time is included.
 

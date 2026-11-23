@@ -161,7 +161,7 @@ def main():
          load_bars("cuda-ladder.csv"), "TFLOP/s", 130, 20,
          references=[(59.7, "FP32 peak 59.7"), (124.4, "Tensor Core peak 124.4")],
          colors={"fma": "#245ea8", "tensor": "#be4d14", "ref": "#8c96a3"})
-    simd = {"scalar": "#8c96a3", "simd": "#245ea8", "old": "#c9d3de"}
+    simd = {"scalar": "#8c96a3", "simd": "#245ea8"}
     bars("simd-zen5.svg", "FP32 GEMM on one Zen 5 core",
          "AMD Ryzen 9 9950X · N = 512 · GCC 13 · one thread",
          load_bars("simd-zen5.csv"), "GFLOP/s", 400, 50,

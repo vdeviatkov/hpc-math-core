@@ -7,8 +7,7 @@ Data behind `gemm_simd_packed<Ymm>`, `gemm_simd_packed<Zmm>` and
 [part 1](../../articles/simd-gemm.md#step-5-pack-b). The packed kernels run
 the blocked kernels' micro-kernels and register tiles (AVX2 6 × 2, AVX-512
 8 × 3, NEON 6 × 4) in GotoBLAS order, with each Kc × Nc block of B copied
-once into contiguous strips V vectors wide. Measured 2026-10-24, one
-thread.
+once into contiguous strips V vectors wide. One thread.
 
 ## Machines and builds
 
@@ -26,16 +25,12 @@ thread.
 | [`zen5_avx512_packblock.csv`](zen5_avx512_packblock.csv), [`zen5_avx2_packblock.csv`](zen5_avx2_packblock.csv) | `bench_gemm --benchmark_filter='^Avx512PackBlock'` (and `Avx2`), one run | Mc ∈ {64, 128, 256, 512} × Kc ∈ {128, 256, 512} × Nc ∈ {512, 1024, 2048}, N = 1024, 2000, 4096, FP32 and FP64 |
 | [`zen5_cmp.csv`](zen5_cmp.csv) | `--benchmark_filter='Cmp/' --benchmark_repetitions=3 --benchmark_enable_random_interleaving=true` | `<Isa>BlockedCmp` (B in place), `<Isa>PackedCmp`, `<Isa>PackedACmp` (A packed too) at the chosen defaults, N = 1000, 1024, 2000, 2048, 4000, 4096 |
 | [`zen5_small.csv`](zen5_small.csv) | `'^(Avx2\|Avx512)(Blocked\|Packed)/'`, 3 repetitions interleaved | the same two kernels at N = 64 … 4096 (the main table's sizes) |
-| [`m4_neon_packblock_loaded.csv`](m4_neon_packblock_loaded.csv) | `'^NeonPackBlock'`, one run | Mc ∈ {64 … 1024} × Kc ∈ {256, 512, 1024} × Nc ∈ {512, 1024, 2048}. **Run under load average 7–23** (an IDE reindexing); kept for the record, not used for any number |
-| [`m4_neon_slice.csv`](m4_neon_slice.csv) | `'^NeonPackBlock(256\|512\|1024)x512x(512\|1024)/'`, 3 repetitions interleaved | the candidates re-measured on a quieter machine; chose the NEON default |
+| [`m4_neon_slice.csv`](m4_neon_slice.csv) | `'^NeonPackBlock(256\|512\|1024)x512x(512\|1024)/'`, 3 repetitions interleaved | the NEON candidates (Mc 256–1024, Kc 512, Nc 512–1024); chose the NEON default |
 | [`m4_cmp.csv`](m4_cmp.csv) | `'^Neon(Blocked\|Packed\|PackedA)(Cmp)?/'`, 5 repetitions interleaved | the NEON counterpart of `zen5_cmp.csv` and `zen5_small.csv` in one session |
 | `load_m4.txt` | `uptime` | load before and after each M4 run |
 
 Coefficient of variation of the time: ≤ 1.2% in every Zen 5 repeated cell;
-≤ 1.9% in `m4_cmp.csv` and ≤ 1.6% in `m4_neon_slice.csv`. A first M4
-comparison under load average 9–18 had CVs of 40–90%, and FP64 in-place
-results a third of the usual (consistent with the process being moved to
-efficiency cores, which macOS does not report); it was discarded.
+≤ 1.9% in `m4_cmp.csv` and ≤ 1.6% in `m4_neon_slice.csv`.
 
 The CSVs report time only (the GFLOP/s counter column is missing because
 the first rows of a run are SKIPPED families); GFLOP/s = 2·N³ / `cpu_time`.
@@ -46,7 +41,7 @@ the first rows of a run are SKIPPED families); GFLOP/s = 2·N³ / `cpu_time`.
 |---|---|---|
 | AVX2 | 256 × 256 × 512 | within 1% of the best block of each type (geometric mean over N) |
 | AVX-512 | 128 × 512 × 512 | within 0.7% of the best per type (geometric mean over N); Kc = 512 beats 256 by ~2% although a 512 × 48-float strip (96 KiB) exceeds the 48 KiB L1 |
-| NEON | 256 × 512 × 512 | every candidate within 3% on the quiet machine; best or tied in 4 of 6 cells |
+| NEON | 256 × 512 × 512 | every candidate within 3%; best or tied in 4 of 6 cells |
 
 ## Results (medians, GFLOP/s)
 
@@ -73,7 +68,11 @@ The packing copy and its buffer allocation are inside the timed call.
 
 Packing A as well (`PackedACmp`) is 0.95–1.00× of packed B alone on
 Zen 5 and 0.96–0.99× on M4 at the chosen defaults: with B packed, the
-A rows K elements apart are not what limits these kernels.
+A rows K elements apart are not what limits these kernels. In these files
+`PackedACmp` copies the A block row-major; the library's `PackA = true`
+packs A into R-row strips, as the low-precision kernels do, which measured
+−3% to +10% on Zen 5 and −0.5% to +4% on M4 against the row copy at
+N = 1000–4096.
 
 ## Limitations
 

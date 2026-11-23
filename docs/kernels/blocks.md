@@ -14,11 +14,11 @@ gemm_simd_blocked<Zmm, R, V, TileM, TileK, TileN>(A, B, C);
 | AVX-512 | 512 × 256 × 512 FP32, 512 × 256 × 256 FP64 | 512 KiB | AMD Zen 5 |
 | NEON | 384 × 256 × 256 | 256 KiB FP32, 512 KiB FP64 | Apple M4 Max |
 
-Until 2026-10-22 every family used 64 × 256 × 256 (AVX-512: × 512), sizes
-no measurement had chosen. The sweep below replaced them: at N = 4096 the
-new blocks are 10–12% faster for AVX2 and NEON, 28% for AVX-512 FP32 and
-51% for AVX-512 FP64; at N ≤ 1024 they change little, except AVX-512 FP64
-(+22–23%).
+All three come from the sweep below. Against the 64-row blocks of stage 2
+(64 × 256 × 256, AVX-512: × 512), the defaults are 9–12% faster at N = 4096 for
+AVX2 and NEON, 28% for AVX-512 FP32 and 50% for AVX-512 FP64; at
+N ≤ 1024 the block matters little, except for AVX-512 FP64, whose B block
+must stay under 1 MiB.
 
 ## What each size decides
 
@@ -48,8 +48,8 @@ for each block of TileM rows of A            (i-block)
 its default register tile with every block in a grid of 7 TileM values
 (AVX2, NEON: 48, 64, 96, 192, 384, 768, 1536; AVX-512: 32 … 2048) × TileK
 and TileN ∈ {128, 256, 512, 1024}, at N = 512, 1024 and 4096, both types:
-672 measurements per family. Stage 1 ran the grid once; stage 2 re-ran
-the best candidates and the old default three times, in interleaved order
+672 measurements per family. Stage 1 ran the grid once; stage 2 ran
+the best candidates and a 64-row block three times, in interleaved order
 ([data](../experiments/block-sweeps/README.md)). GFLOP/s.
 
 ### TileM: the larger, the less B traffic, up to a plateau
@@ -119,9 +119,10 @@ Up to 512 KiB the B block stays in Zen 5's 1 MiB L2 next to A's strips and
 C's rows; at 1 MiB it does not, and the kernel loses 11–27% at every
 TileK × TileN that makes 1 MiB. So the best TileN depends on the element
 size: 512 FP32 columns but 256 FP64 columns for AVX-512 (2 KiB of each B
-row), 256 FP32 and 128 FP64 for AVX2 (1 KiB). The old AVX-512 FP64 block,
-256 × 512 doubles, was exactly 1 MiB; that alone cost FP64 22–23% at
-N = 512–1024 (157.7 / 151.0 now, against 128.4 / 123.4).
+row), 256 FP32 and 128 FP64 for AVX2 (1 KiB). For AVX-512 FP64 a
+256 × 512 block of doubles is exactly 1 MiB; at TileN = 256 instead, FP64
+runs 14–19% faster at N = 512–4096 (stage 2, 512 × 256 × 256 against
+512 × 256 × 512).
 
 TileK = 1024 is slow even with a small B block (AVX-512 FP32, 1024 × 128:
 254 / 228): the A strip, 8 × 1024 × 4 = 32 KiB, no longer leaves room in
@@ -163,7 +164,7 @@ AVX2, Zen 5:
 
 | Block M × K × N | FP32 N = 512 | 1024 | 4096 | FP64 N = 512 | 1024 | 4096 |
 |---|--:|--:|--:|--:|--:|--:|
-| 64 × 256 × 256 (old) | 166.9 | 125.4 | 94.7 | 61.4 | 54.1 | 47.8 |
+| 64 × 256 × 256 | 166.9 | 125.4 | 94.7 | 61.4 | 54.1 | 47.8 |
 | 384 × 256 × 256 (FP32 default) | 169.0 | 127.0 | 105.1 | 61.7 | 54.5 | 53.4 |
 | 768 × 256 × 256 | 169.4 | 126.8 | 105.9 | 61.7 | 54.0 | 53.7 |
 | 384 × 256 × 128 (FP64 default) | 168.5 | 125.2 | 105.2 | 62.1 | 54.7 | 53.5 |
@@ -173,7 +174,7 @@ AVX-512, Zen 5:
 
 | Block M × K × N | FP32 N = 512 | 1024 | 4096 | FP64 N = 512 | 1024 | 4096 |
 |---|--:|--:|--:|--:|--:|--:|
-| 64 × 256 × 512 (old) | 326.5 | 307.8 | 229.1 | 151.5 ² | 123.5 | 95.9 |
+| 64 × 256 × 512 | 326.5 | 307.8 | 229.1 | 151.5 ² | 123.5 | 95.9 |
 | 512 × 256 × 512 (FP32 default) | 327.0 | 297.8 ² | 293.7 | 136.2 | 131.5 | 120.9 |
 | 1024 × 256 × 512 | 327.3 | 298.6 | 296.0 | 135.2 | 131.2 | 121.2 |
 | 512 × 256 × 256 (FP64 default) | 319.1 | 299.2 | 281.8 | 157.4 | 150.3 | 143.5 |
@@ -181,14 +182,13 @@ AVX-512, Zen 5:
 
 ² The 4 KiB B-row stride sizes (FP32 N = 1024, FP64 N = 512) depend on
 where the allocator puts the matrices, and the interleaved order changes
-that: the same old block measured 128 FP64 at N = 512 in the earlier
-runs, and the new FP32 default 312.8 at N = 1024 in its own run (below).
+that: the FP32 default measures 312.8 at N = 1024 in its own run (below).
 
 NEON, M4 (load average 3–7):
 
 | Block M × K × N | FP32 N = 512 | 1024 | 4096 | FP64 N = 512 | 1024 | 4096 |
 |---|--:|--:|--:|--:|--:|--:|
-| 64 × 256 × 256 (old) | 124.4 | 122.2 | 91.5 | 60.3 | 57.6 | 45.9 |
+| 64 × 256 × 256 | 124.4 | 122.2 | 91.5 | 60.3 | 57.6 | 45.9 |
 | **384 × 256 × 256** (default) | 122.6 | 121.5 | 100.8 | 60.6 | 57.6 | 49.9 |
 | 384 × 256 × 128 | 121.4 | 121.3 | 99.9 | 60.7 | 58.2 | 50.2 |
 | 384 × 256 × 512 | 122.6 | 117.5 | 99.9 | 61.0 | 58.9 | 50.6 |
@@ -199,31 +199,24 @@ Where candidates are within 1–2% of each other the default is the smaller
 block. For NEON one TileN serves both types: on the M4 the B block size
 does not matter.
 
-## The kernels with the new blocks
+## The kernels at their default blocks
 
-The library kernels at their defaults, three runs each
+The library kernels at their default tiles and blocks, three runs each
 ([`bench_zen5_defaults.csv`](../experiments/block-sweeps/bench_zen5_defaults.csv),
-[`bench_m4_defaults.csv`](../experiments/block-sweeps/bench_m4_defaults.csv)),
-against the same kernels with the old blocks in their last runs:
+[`bench_m4_defaults.csv`](../experiments/block-sweeps/bench_m4_defaults.csv)):
 
 | GFLOP/s | N = 64 | 256 | 512 | 1024 | 4096 |
 |---|--:|--:|--:|--:|--:|
-| AVX-512 FP32, old blocks | 297.2 | 325.5 | 329.0 | 312.2 | 230.2 |
-| AVX-512 FP32, new | 297.7 | 324.4 | 327.9 | 312.8 | **294.7** |
-| AVX-512 FP64, old blocks | 149.9 | 162.1 | 128.4 | 123.4 | 95.9 |
-| AVX-512 FP64, new | 153.0 | 162.0 | **157.7** | **151.0** | **145.0** |
-| AVX2 FP32, old blocks | 169.0 | 171.2 | 167.7 | 124.0 | 95.4 |
-| AVX2 FP32, new | 166.7 | 171.7 | 169.7 | 126.9 | **105.6** |
-| AVX2 FP64, old blocks | 82.8 | 83.8 | 62.3 | 54.3 | 48.1 |
-| AVX2 FP64, new | 82.8 | 81.9 | 62.3 | 54.8 | **53.8** |
-| NEON FP32, old blocks | 121.9 | 121.8 | 122.7 | 121.0 | 91.9 |
-| NEON FP32, new | 122.4 | 122.9 | 123.8 | 121.2 | **102.1** |
-| NEON FP64, old blocks | 61.3 | 61.3 | 60.3 | 58.2 | 45.8 |
-| NEON FP64, new | 62.1 | 62.3 | 61.0 | 59.5 | **51.0** |
+| AVX-512 FP32 | 297.7 | 324.4 | 327.9 | 312.8 | 294.7 |
+| AVX-512 FP64 | 153.0 | 162.0 | 157.7 | 151.0 | 145.0 |
+| AVX2 FP32 | 166.7 | 171.7 | 169.7 | 126.9 | 105.6 |
+| AVX2 FP64 | 82.8 | 81.9 | 62.3 | 54.8 | 53.8 |
+| NEON FP32 | 122.4 | 122.9 | 123.8 | 121.2 | 102.1 |
+| NEON FP64 | 62.1 | 62.3 | 61.0 | 59.5 | 51.0 |
 
 What remains at large N is mostly B's row stride
 ([Part 3](../articles/sme2-cache-associativity.md)): AVX2 FP32 and FP64
-still drop at the 4 KiB stride (N = 1024 FP32, 512 FP64). Packing B into
+drop at the 4 KiB stride (N = 1024 FP32, 512 FP64). Packing B into
 contiguous strips, as the SME2 kernel does, is the next step: below.
 
 ## Packed B
@@ -298,9 +291,9 @@ Medians, GFLOP/s (Zen 5: 3 runs; M4: 5 runs, interleaved):
   whose rows are already 4 KiB apart). Packing is inside the timed call.
 - **Packing A too** (`PackA = true`) is 0.95–1.00× of packing B alone on
   both machines: once B is contiguous, A's row stride does not limit these
-  kernels. (Measured with A copied row-major. Since 2026-10-26, A is packed
-  into R-row strips, as in the low-precision kernels; against the row copy
-  that is −3% to +10% on Zen 5 and −0.5% to +4% on M4 at N = 1000–4096.)
+  kernels. (Measured with A copied row-major; the library packs A into
+  R-row strips, as the low-precision kernels do, which measured −3% to +10%
+  on Zen 5 and −0.5% to +4% on M4 against the row copy at N = 1000–4096.)
 
 The blocked kernels stay the defaults of the main tables, which include
 N = 64 … 512; the packed ones are separate entry points for large N.

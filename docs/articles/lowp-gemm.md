@@ -172,8 +172,8 @@ compare directly:
 | | `m16n8k32` | INT8 → INT32 | | 497 TOP/s | 8.3 |
 
 (Latency is per instruction with one accumulator; on SME2, with one ZA
-tile. The FP32 rows differ from earlier parts because the sessions and
-the loops differ: the M4 P-core ran at 4.47 GHz here, and NEON FP32's 135
+tile. The FP32 rows differ from parts 1–2 because the runs and the loops
+differ: the M4 P-core ran at 4.47 GHz here, and NEON FP32's 135
 GFLOP/s is 30.2 flops per cycle, 5% below the 31.8 that part 1's
 `fma_peak` measured; the FP32 `FMOPA` peak is 2,018 GFLOP/s here and 1,963
 in part 2, where the core ran at 3.94–3.99 GHz: the SME unit gained 3%
@@ -208,8 +208,8 @@ GPU.
 ## CPU kernels
 
 The CPU kernels keep the FP32 kernels' structure: a register tile of C,
-three-level cache blocking and packing, now with the k-group packing above
-and block sizes re-chosen in bytes. Inputs are converted before
+three-level cache blocking and packing, with the k-group packing above
+and block sizes chosen in bytes. Inputs are converted before
 timing, as a real workload stores them; packing is timed, as in parts 1–2
 ([`bench_gemm_lowp`](https://github.com/vdeviatkov/hpc-math-core/blob/main/benchmarks/bench_gemm_lowp.cpp)).
 Medians of 3 repetitions, one thread:
@@ -236,15 +236,9 @@ instructions per k group for 16 dot products. At Zen 5's two dot products
 per cycle a k group needs 8 cycles, and 61 instructions in 8 cycles is at
 the core's documented 8-wide dispatch, so the front end, not the
 dot-product units, set the pace. Written as a one-instruction `asm`, the
-loop is 30 instructions and runs 16–26% faster (three alternated runs of
-each version; `VDPBF16PS` compiles without the copies):
+loop is 30 instructions (`VDPBF16PS` compiles without the copies).
 
-| `gemm_simd_lowp<ZmmDot>` INT8, GOP/s | N = 256 | 1,024 | 2,048 | 4,096 |
-|---|--:|--:|--:|--:|
-| intrinsic (and A packed) | 709 | 901 | 930 | 885 |
-| one-instruction `asm` | **826** | **1,138** | **1,138** | **1,037** |
-
-All three kernels in one session, the current versions:
+All three kernels in one session:
 
 | GFLOP/s or GOP/s | N = 256 | 1,024 | 2,048 | 4,096 | best, % of peak |
 |---|--:|--:|--:|--:|--:|
@@ -254,11 +248,9 @@ All three kernels in one session, the current versions:
 
 At N = 4,096 bf16 is 1.9× and INT8 3.5× faster than FP32; best size
 against best size, 2.0× and 3.5×, against peak ratios of 2.0 and 4.0.
-bf16 and INT8 drop from N = 2,048 to 4,096, probably because A is now
-read in place: at N = 4,096 its rows are 8 or 4 KiB apart, the stride
-conflict of part 1, which packing A avoided. bf16 is 2% slower at
-N = 4,096 than with A packed, and 1–9% faster at the other sizes; at
-N = 4,000 it is not slower.
+bf16 and INT8 drop from N = 2,048 to 4,096, probably because A is read in
+place: at N = 4,096 its rows are 8 or 4 KiB apart, the stride conflict of
+part 1.
 
 ### Apple M4, NEON
 
@@ -270,8 +262,8 @@ each (G = 4 bf16 or 8 INT8), and adds their 2 × 2 product to a 2 × 2 tile
 of C held in one register. The micro-kernel arranges 16 such tiles into an
 8 × 8 block of C: per k group, 4 registers of A (row pairs) and 4 of B
 (column pairs) feed 16 instructions, the outer product of part 1 at the
-granularity of 2 × 2 tiles. `FMLAL` and `FMLA .8h` keep the 4 × 4 tile
-that part 1's FP32 kernel used until it moved to 6 × 4.
+granularity of 2 × 2 tiles. `FMLAL` and `FMLA .8h` use a 4 × 4 tile
+(part 1's FP32 kernel uses 6 × 4).
 
 | GFLOP/s or GOP/s | N = 256 | 1,024 | 2,048 | 4,096 | best, % of peak |
 |---|--:|--:|--:|--:|--:|
@@ -281,9 +273,8 @@ that part 1's FP32 kernel used until it moved to 6 × 4.
 | fp16 → fp16, `FMLA .8h` | 204 | **216** | 214 | 209 | 81% |
 | INT8, `SMMLA` | 449 | 493 | **503** | 491 | 98% |
 
-(All rows from one session on 2026-10-22, with the FP32 kernel's current
-6 × 4 tile and cache block; the low-precision rows are 0.7–2% below the
-first run on 2026-10-16.)
+(All rows from one session, with the FP32 kernel's 6 × 4 tile and default
+cache block.)
 
 The kernels follow the peaks. bf16 is the slowest kernel in the table
 while running at 93% of its instruction's rate. `FMLAL` has FP32's
@@ -509,7 +500,7 @@ because all three accumulate the same `mma` instructions in the same k order.
   the block-scaled FP8 instruction) is a property of consumer cards;
   data-centre GPUs run FP32 accumulation at full rate, and the ratios in
   the GPU rows would differ there.
-- **The M4 ran with background load** (load average 2–11 across sessions). Repetitions
+- **The M4 ran with background load** (load average 2–11 across runs). Repetitions
   agreed within 1%, but treat M4 figures as ±5%, as in parts 1–2.
 - **The Zen 5 INT8 kernel** reaches 79% of its peak against bf16's 90%;
   the rest of that gap was not investigated.

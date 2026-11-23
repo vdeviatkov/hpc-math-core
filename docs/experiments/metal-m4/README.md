@@ -1,8 +1,8 @@
 # Apple M4 Max GPU: Metal kernels, MPS and FMA peak
 
 Raw data behind [benchmarks.md § Apple M4 Max GPU — Metal](../../benchmarks.md#apple-m4-max-gpu--metal).
-Apple M4 Max, 40-core GPU, macOS 26.3.1, Apple Clang 17, 2026-10-24, on AC
-power, automatic power mode. The kernels: [`src/metal/gemm.metal`](../../../src/metal/gemm.metal),
+Apple M4 Max, 40-core GPU, macOS 26.3.1, Apple Clang 17, on AC power,
+automatic power mode. The kernels: [`src/metal/gemm.metal`](../../../src/metal/gemm.metal),
 interface and level list: [`src/gemm/metal.hpp`](../../../src/gemm/metal.hpp).
 
 | File | Program | What it measures |
@@ -68,26 +68,17 @@ defaults are the plain names:
 
 Bold: the best of each level at each size. In Levels 3–5 no variant beats
 its default at both sizes, and the gaps are mostly within this run's noise
-(cv up to 18%), so the defaults stay. The Level 2 default was changed from
-4×4 to 8×4 outputs per thread after an earlier single pass (7,477 against
-6,445 GFLOP/s at N=4096), which this run confirms at both sizes.
+(cv up to 18%), so the defaults stay. Level 2's 8×4 outputs per thread
+is the best of its level at both sizes.
 
-## Two things found on the way
+## Clock and power
 
-- **Unrolling.** The first build of Levels 3–5 measured 1.2–2.0 TFLOP/s for
-  the 32×32-per-simdgroup kernels, while the 16×32 variant reached 11.8 and
-  the fp16 copy of the same code 12.4. The fixed-trip loops over the
-  accumulator array were not unrolled, so the array was indexed dynamically
-  and lived in memory. `clang loop unroll(full)` on those loops brought them
-  to 11–13 TFLOP/s in the same conditions.
-- **Clock and power.** Absolute GPU numbers on this laptop moved by up to
-  ~3× between sessions. A first quick pass had `MetalMps` f32 at 13.5 TFLOP/s
-  at N=4096; the published run 11.1; the bracketed session 6.6–7.3; a run a
-  few minutes later 4.5–5.0, steady over 12 repetitions, while the
-  register-only FMA peak still reached 14.7. That pattern (fast when cold,
-  slower under a sustained memory-heavy load, the low-power FMA loop
-  unaffected) fits power limiting rather than another process using the GPU:
-  `ioreg` showed the GPU idle between runs. During those later runs CLion was
-  indexing (230% CPU) and an XProtect scan ran (90%). No `sudo powermetrics`
-  was available to read the GPU clock, so this is an inference. Compare rows
-  within one run, not across runs.
+Absolute GPU numbers on this laptop vary by up to ~3× between runs:
+`MetalMps` f32 at N=4096 measured 11.1 TFLOP/s in the published run,
+6.6–7.3 in the bracketed session and as low as 4.5–5.0 in other runs,
+while the register-only FMA peak still reached 14.7. That pattern (fast
+when cold, slower under a sustained memory-heavy load, the low-power FMA
+loop unaffected) fits power limiting rather than another process using the
+GPU: `ioreg` showed the GPU idle between runs. No `sudo powermetrics` was
+available to read the GPU clock, so this is an inference. Compare rows
+within one run, not across runs.

@@ -13,17 +13,17 @@
  *         number of lines at which the latency steps up is the capacity of
  *         the cache sets the stride leaves to them, per level.
  *
- * ldb     The FP32 GEMM of gemm_simd_blocked<Zmm> as it was on 2026-10-17
- *         (64 x 256 x 512 blocking, 8 x 2 tile of vector_micro<Zmm>; the
- *         library now uses 512 x 256 x 512 and 8 x 3) with B stored at row
- *         stride ldb >= N. Only
+ * ldb     An FP32 GEMM with fixed 64 x 256 x 512 blocking and the library's
+ *         micro-kernel at an 8 x 2 tile (vector_micro<Zmm>; the library
+ *         kernel itself uses 512 x 256 x 512 and 8 x 3), with B stored at
+ *         row stride ldb >= N. Only
  *         the stride changes; the multiplication does not. Each ldb is run
  *         with B read in place, as the library kernel does, and with each
  *         256 x 512 block of B packed into contiguous 32-column strips first
  *         (packing time included).
  *
  * size    The same two variants at N around 1024, 2048 and 4096, ldb = N:
- *         what a caller of the library kernel sees.
+ *         the case a caller with unpadded matrices sees.
  *
  * height  Only the strip height Kc changes (the k extent of the B block the
  *         micro-kernel reuses), for B rows 4, 8 and 16 KiB apart and each
@@ -132,8 +132,8 @@ void chase() {
 // ---------------------------------------------------------------------------
 // GEMM with B at row stride ldb, in place or packed per block
 // ---------------------------------------------------------------------------
-// The library's cache block when this experiment was run (2026-10-17); the
-// default is 512 × 256 × 512 since 2026-10-22 (docs/kernels/blocks.md).
+// This experiment's fixed cache block; the library kernel's measured
+// block is 512 × 256 × 512 (docs/kernels/blocks.md).
 constexpr std::size_t kTileM = 64;
 constexpr std::size_t kTileN = 512;
 constexpr std::size_t kJStep = 32;                       // f32: 2 ZMM per micro-kernel call

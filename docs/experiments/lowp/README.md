@@ -1,23 +1,9 @@
 # Low-precision GEMM: bf16, fp16, INT8 and FP8
 
-Data behind [part 5](../../articles/lowp-gemm.md). Measured on 2026-10-16.
-Part 5's M4 NEON table and the Zen 5 FP32 kernel were re-measured
-on 2026-10-22, after part 1's FP32 kernels changed register tile and cache
-block (part 5's Zen 5 table now quotes the 2026-10-23 run below):
-[`block-sweeps/lowp_m4_defaults.csv`](../block-sweeps/lowp_m4_defaults.csv)
-(all NEON kernels, one session) and
-[`block-sweeps/lowp_zen5_defaults.csv`](../block-sweeps/lowp_zen5_defaults.csv).
-An intermediate re-run of 2026-10-21 (register tile only) is in
-[tile-sweeps](../tile-sweeps/README.md).
-The files here keep the first run.
-
-On 2026-10-23 the Zen 5 low-precision kernels were rewritten (A read in
-place, B carries the INT8 offset, masked edges, `VPDPBUSD` as inline asm):
-[`avx512-rewrite/`](avx512-rewrite/) holds three alternated runs of the
-old (`old_<run>.csv`) and new (`new_<run>.csv`) kernels, one repetition
-each, and the final run of all three Zen 5 kernels in one session
-(`bench_lowp_zen5_rewrite.csv`, 3 repetitions) that part 5 and
-docs/benchmarks.md quote.
+Data behind [part 5](../../articles/lowp-gemm.md). The M4 NEON kernels
+(with the FP32 kernel of the same core, one session) are in
+[`block-sweeps/lowp_m4_defaults.csv`](../block-sweeps/lowp_m4_defaults.csv);
+everything else is here.
 
 ## Machines and builds
 
@@ -38,11 +24,13 @@ every M4 row), but treat M4 figures as ±5%, as in parts 1–2.
 |---|---|---|
 | `lowp_peak_m4.csv`, `lowp_peak_zen5.csv` | [`lowp_peak`](../../../benchmarks/experiments/lowp_peak.cpp) | Latency (1 accumulator) and throughput (8, 16 accumulators; 1 and 4 ZA tiles) of every multiply-accumulate instruction used, with FP32 on the same unit |
 | `cuda_peak_sm120.csv`, `cuda_peak_sm120a.csv`, `cuda_peak_device.txt` | [`cuda_peak`](../../../benchmarks/experiments/cuda_peak.cu) | Tensor Core `mma.sync` throughput per format; the block-scaled FP8 row exists only in the sm_120a build |
-| `bench_lowp_m4.csv`, `bench_lowp_zen5.csv` | [`bench_gemm_lowp`](../../../benchmarks/bench_gemm_lowp.cpp) | CPU GEMMs, square N = 256 … 4096, with the FP32 kernel of the same unit; 3 repetitions, mean / median / stddev / cv |
-| `bench_lowp_cuda_sm120a.csv` | [`bench_gemm_lowp_cuda`](../../../benchmarks/bench_gemm_lowp_cuda.cpp) | `Mma/…` the cp.async kernel, `Tma/…` Level 8, `Cublas/…` cuBLAS (`cublasGemmEx`; `cublasLtMatmul` for FP8); five formats, N = 1024 … 16384, one session (2026-10-16) |
+| `bench_lowp_m4.csv` | [`bench_gemm_lowp`](../../../benchmarks/bench_gemm_lowp.cpp) | the SME kernels (`Sme`, `SmeWidening`), square N = 256 … 4096; 3 repetitions, mean / median / stddev / cv |
+| `bench_lowp_zen5.csv` | same | the three Zen 5 kernels (`Avx512Blocked` f32, `Avx512Dpbf16`, `Avx512Vnni`), one session, 3 repetitions |
+| `bench_lowp_cuda_sm120a.csv` | [`bench_gemm_lowp_cuda`](../../../benchmarks/bench_gemm_lowp_cuda.cpp) | `Mma/…` the cp.async kernel, `Tma/…` Level 8, `Cublas/…` cuBLAS (`cublasGemmEx`; `cublasLtMatmul` for FP8); five formats, N = 1024 … 16384, one session |
 | `bench_lowp_cuda_fp8_sm120.csv` | same | Both FP8 kernels built for plain sm_120 (sm_89 `mma` form) |
 | `ncu_lowp_N8192.csv` | Nsight Compute | Per implementation and format at N = 8192: kernel name, registers, warp and Tensor instructions, Tensor pipe activity, time, DRAM bytes |
 | `lowp_accuracy.csv` | [`lowp_accuracy`](../../../benchmarks/experiments/lowp_accuracy.cpp) | Relative Frobenius error of each format against the exact product of the FP32 inputs, K = 256 … 16384 |
+| `tuning_cp_async.csv`, `tuning_level8.csv` | `bench_gemm_lowp_cuda` with build-time variants | the CUDA kernel sweeps below |
 
 The Zen 5 CPU benchmark ran pinned to core 2 (`taskset -c 2`); the GPU
 benchmarks report GPU-event time of the GEMM alone, as in part 4.
@@ -65,8 +53,8 @@ benchmarks report GPU-event time of the GEMM alone, as in part 4.
   was not faster. Best everywhere: 2 stages (two 40 KiB blocks per SM, 8–18%
   faster than 3 or 4), grouped order. The grouped order matters most for
   the fast formats: INT8 at N = 16384 goes from 181 to 308 TOP/s, bf16 from
-  97 to 110 TFLOP/s. (The final run, `bench_lowp_cuda_sm120a.csv`, is a
-  later session; its values differ from the sweep by up to 2%.)
+  97 to 110 TFLOP/s. (`bench_lowp_cuda_sm120a.csv` is a separate run; its
+  values differ from the sweep by up to 2%.)
 - **Kernel tuning (Level 8).** Swept at N = 2048 and 8192, all formats:
   128 × 128 tiles with 4, 5, 6 stages and 128 × 256 tiles with 3, 4
   stages (`tuning_level8.csv`). 128 × 256 makes the GEMM 3–11% faster; the stage count changes
