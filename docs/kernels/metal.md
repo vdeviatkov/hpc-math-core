@@ -60,34 +60,24 @@ Variation: coefficient of variation up to 18% per row. Absolute GPU rates
 on this laptop moved by up to ~3× between sessions (power limiting under
 sustained memory-heavy load, inferred; no GPU clock reading was available),
 so compare rows of this run with each other, not with other runs.
+The sweep is only valid with the tile loops fully unrolled: the Metal
+compiler left them rolled on its own, which put the 32 × 32 kernels at
+1.2–2.0 TFLOP/s and made 16 × 32 look 6–10× faster, until `HPC_UNROLL`
+(`clang loop unroll(full)`) was added
+([details](../experiments/metal-m4/README.md#two-things-found-on-the-way)).
 
 ## Why these defaults
 
-- **Level 2: 8 × 4 per thread.** The only clear result of the sweep: the
-  default is the best at both sizes, 16–25% ahead of 4 × 4 and 8–34%
-  ahead of the two 8 × 8 variants. Why 8 × 8,
-  with fewer reads per FMA, is slower was not investigated; this run
-  records no register counts or GPU counters.
-- **Levels 3–5: kept, not proven best.** No variant beats its default at
-  both sizes, and most gaps are within this run's noise. Where a variant
-  wins at one size it loses more at the other: Level 3's 16 × 32 is 1%
-  ahead at N = 2048 and 19% behind at 4096; Level 5's BK = 32 is 10% ahead
-  at 2048 and 17% behind at 4096. The defaults stay because nothing
-  measured better, not because the sweep shows a reason for 32 × 32.
-- **Not swept:** Level 1's 16 × 16 tile, Level 3's 2 × 2 simdgroup
-  arrangement (only the per-simdgroup block varies), and any size at
-  N ≤ 1024.
-
-## A code-generation trap: unrolling
-
-Without forced unrolling, the 32 × 32-per-simdgroup kernels of Levels 3–5
-run at 1.2–2.0 TFLOP/s, while the 16 × 32 variant reaches 11.8 and the
-fp16 copy of the same code 12.4: the compiler leaves the fixed-trip loops
-over the accumulator array rolled, so the array is indexed at run time and
-lives in memory instead of registers. `#pragma clang loop unroll(full)` on
-those loops (`HPC_UNROLL` in `gemm.metal`) brings them to 11–13 TFLOP/s. This is the
-GPU form of the CPU kernels' rule that the tile loops must unroll
-completely so the accumulators stay in registers.
+- **Level 2: 8 × 4 per thread.** Fastest at both sizes: 16–25% ahead of
+  4 × 4 and 8–34% ahead of the two 8 × 8 variants. The cause of the 8 × 8
+  deficit, despite fewer reads per FMA, was not measured (no register
+  counts or GPU counters in this run).
+- **Levels 3–5: 32 × 32 per simdgroup, BK = 16.** No variant is faster at
+  both sizes, and most differences are within the run's variation. The
+  variants that lead at N = 2048 fall further behind at N = 4096:
+  Level 3's 16 × 32 by +1% and −19%, Level 5's BK = 32 by +10% and −17%.
+- **Scope.** Level 1's 16 × 16 tile and Level 3's 2 × 2 simdgroup
+  arrangement are fixed; sizes below N = 2048 are not part of the sweep.
 
 ## How far the kernels get
 

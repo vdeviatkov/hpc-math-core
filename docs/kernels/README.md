@@ -17,7 +17,7 @@ the measured choices:
 | AVX2 | [avx2.md](avx2.md) | 6 × 2 (6 × 16 FP32) | AMD Zen 5 | 171.7 / 82.8 | 94% / 91% |
 | AVX-512 | [avx512.md](avx512.md) | 8 × 3 (8 × 48 FP32) | AMD Zen 5 | 327.9 / 162.0 | 91% / 90% |
 | NEON | [neon.md](neon.md) | 6 × 4 (6 × 16 FP32) | Apple M4 Max | 123.8 / 62.2 | 86% / 87% |
-| SME2 | [sme.md](sme.md) | 2×2 FP32 / 2×4 FP64 ZA tiles | Apple M4 Max | See SME measurements | — |
+| SME2 | [sme.md](sme.md) | 2×2 FP32 / 2×4 FP64 ZA tiles (32 × 32 / 16 × 32 FP32 / FP64) | Apple M4 Max, one SME unit | 1,504 / 424 | 77% / 85% |
 
 The cache blocks around the register tile are template parameters too
 (`gemm_simd_blocked<Ops, R, V, TileM, TileK, TileN>`), swept in
@@ -26,11 +26,15 @@ of Zen 5's L2 make the kernels 9–50% faster at N = 4096 than 64-row
 blocks.
 
 Best measured is `gemm_simd_blocked` at its measured tile and its best size
-(N = 64–512) with its default cache block, from the runs in
-[benchmarks.md](../benchmarks.md); peaks
-are `fma_peak`'s measured FMA rates at the clock of each run. Raw data and
+(N = 64–512) with its default cache block, or `gemm_sme` with its measured
+ZA shape and blocks at its best size (N = 4096), from the runs in
+[benchmarks.md](../benchmarks.md). Peaks
+are `fma_peak`'s measured FMA rates at the clock of each run, and for SME2
+`sme_fmopa`'s 1,963 / 500 GFLOP/s for one SME unit
+([sme2-machine](../experiments/sme2-machine/README.md)). Raw data and
 method: [experiments/tile-sweeps](../experiments/tile-sweeps/README.md),
-[experiments/block-sweeps](../experiments/block-sweeps/README.md).
+[experiments/block-sweeps](../experiments/block-sweeps/README.md),
+[experiments/sme2-gemm](../experiments/sme2-gemm/README.md).
 
 ## GPU kernels
 
