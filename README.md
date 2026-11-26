@@ -119,7 +119,7 @@ Detailed reasoning, contracts and tradeoffs for each source file:
 
 ## Quick start
 
-Requires CMake ≥ 3.25 and a C++20 compiler (GCC 12, Clang 16, Apple Clang 15 or MSVC 19.35+). CUDA 12.0+ is optional (Level 8 uses the CUDA 12 tensor-map API); without it the CUDA tests and benchmarks build against a stub and skip. Measured with GCC 13.3, Apple Clang 17, CUDA 13.2 and CMake 3.28 / 4.1.
+Requires CMake ≥ 3.25 and a C++20 compiler; built and tested on Linux with GCC 13.3 / 14 and on macOS with Apple Clang 17, with CMake 3.28 / 4.1. The CUDA toolkit is optional (tested with 13.2 and 13.4; Level 8 uses the CUDA 12 tensor-map API); without it the CUDA tests and benchmarks build against a stub and skip.
 
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release   # -O3 -march=native -ffast-math; CUDA detected automatically
@@ -137,7 +137,7 @@ On an RTX 50-series GPU, `-DCMAKE_CUDA_ARCHITECTURES=120a` enables the
 full-rate block-scaled FP8 instruction; everything else is the same as the
 default native build.
 
-Options (`HPC_ENABLE_SME`, `HPC_MARCH`, …), Windows, and what runs on which
+Options (`HPC_ENABLE_SME`, `HPC_MARCH`, …) and what runs on which
 machine: [docs/build.md](docs/build.md).
 
 ---
@@ -168,7 +168,7 @@ docs/                         Benchmark results, build guide, kernel design guid
 | [docs/kernel-design.md](docs/kernel-design.md) | File-by-file design: algorithms, layouts, edges, precision, benchmark methodology and supporting files |
 | [docs/kernels/](docs/kernels/README.md) | Register-tile, cache-block and packed-B block sweeps of the AVX2, AVX-512 and NEON kernels on Zen 5 and M4, with the reasons for each default; the tiles of the Metal and CUDA kernels, and which of them were swept |
 | [docs/benchmarks.md](docs/benchmarks.md) | All measurements and their analysis: Apple M4 Max (CPU and GPU), AMD Zen 5 and RTX 5080 |
-| [docs/build.md](docs/build.md) | Build on Linux, macOS and Windows, CMake options, SME/AMX flags, what runs where, CI |
+| [docs/build.md](docs/build.md) | Build on Linux and macOS, CMake options, SME/AMX flags, what runs where, CI |
 | [docs/cache-behavior.md](docs/cache-behavior.md) | Background: cache lines, reuse distance, working sets, memory-bound limits, GPU memory hierarchy |
 
 ---

@@ -20,16 +20,21 @@ A five-part series: the same multiplication on CPU vector units (Apple M4
 and AMD Zen 5), on Apple's SME2 matrix unit, and on an NVIDIA GPU, then in
 16- and 8-bit formats on all of them, each step measured.
 
-{% assign series = site.pages | where_exp: "p", "p.series_part" | sort: "series_part" %}
-<ul class="posts">
-{% for post in series %}
-  <li>
-    <p class="meta">Part {{ post.series_part }} · {{ post.date | date: "%B %-d, %Y" }} · {{ post.content | number_of_words | divided_by: 230 | plus: 1 }} min read</p>
-    <h3><a href="{{ post.url | relative_url }}">{{ post.title }}</a></h3>
-    <p>{{ post.description }}</p>
-  </li>
-{% endfor %}
-</ul>
+1. **[Matrix multiplication with SIMD on Apple M4 and AMD Zen 5](articles/simd-gemm.md)**
+   — loop order, cache blocks, register tiles and packed B take one Zen 5
+   core from 0.4 to 328 GFLOP/s FP32, 91% of peak.
+2. **[Matrix multiplication on Apple M4's SME2 unit](articles/sme2-gemm.md)**
+   — outer products, all four ZA tiles, blocking and packing: 475 to
+   1,645 GFLOP/s on one matrix unit, 91–100% of Accelerate.
+3. **[A power-of-two stride cuts SME2 GEMM throughput by two thirds on Apple M4](articles/sme2-cache-associativity.md)**
+   — B rows 16 KiB apart cause L2 set conflicts; padding or packing B fixes
+   it. On Zen 5 the same effect costs 14–17%.
+4. **[Matrix multiplication on an RTX 5080](articles/cuda-gemm.md)**
+   — nine CUDA kernels, one technique apart, from 3.7 to 120 TFLOP/s; the
+   last, fed by TMA with warp specialisation, matches cuBLAS.
+5. **[Matrix multiplication in bf16, fp16, INT8 and FP8](articles/lowp-gemm.md)**
+   — the speed-up belongs to the instruction, not the bit count: from 0.53×
+   FP32 (bf16 on M4 NEON) to 8.3× (INT8 and FP8 on the RTX 5080).
 
 ## The project
 

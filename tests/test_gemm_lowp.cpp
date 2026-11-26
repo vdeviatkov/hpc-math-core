@@ -237,9 +237,9 @@ TEST(LowpNeon, SweptTilesMatchNaive) {
 #endif
 
 #if HPC_HAS_SME
-// gemm_sme with the widening outer products: M4's measured shape and blocks
-// (benchmarks/sme_params.hpp: 2 × 2 ZA tiles, Mc = 1024, Kc = 2048 k groups,
-// Nc = 4096), other ZA shapes, odd cache blocks (Kc three k groups, so K
+// gemm_sme with the widening outer products at M4's measured blocks
+// (benchmarks/sme_params.hpp: Mc = 1024, Kc = 2048 k groups, Nc = 4096) in
+// the 2 × 2, 1 × 4 (the measured shape), 4 × 1 and 1 × 1 ZA shapes, odd cache blocks (Kc three k groups, so K
 // spans many passes and ends in a partial group), and gemm_sme_mt with
 // uneven chunks and several passes (larger odd blocks: each pass has two
 // barriers across the threads).

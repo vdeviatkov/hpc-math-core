@@ -61,7 +61,7 @@ The AVX2, AVX-512 and NEON register tiles and cache blocks are template paramete
 | AVX2 | 16 × 256-bit YMM: 8 f32 / 4 f64; C tile 6×16 f32, 6×8 f64 as measured (`vector_micro<Ymm<T>, 6, 2>`) | `_mm256_fmadd_ps/pd`, `_mm256_broadcast_ss/sd` |
 | AVX-512 | 32 × 512-bit ZMM: 16 f32 / 8 f64; C tile 8×48 f32, 8×24 f64 as measured (`vector_micro<Zmm<T>, 8, 3>`) | `_mm512_fmadd_ps/pd`, `_mm512_set1_ps/pd` |
 | NEON | 32 × 128-bit Q: 4 f32 / 2 f64; C tile 6×16 f32, 6×8 f64 as measured (`vector_micro<Q<T>, 6, 4>`) | `vfmaq_lane_f32/f64` (A by element, loaded with `LDR`) |
-| SME2 | ZA: 4 f32 / 8 f64 tiles of SVL×SVL; all used; at M4's 512-bit SVL, 32×32 f32 / 16×32 f64 C block | `svmopa_za32/za64_m` (widening: `svmopa_za32_f16/bf16/s8_m`), `svld1_x2`, `svld1/st1_hor_za32/64` |
+| SME2 | ZA: 4 f32 / 8 f64 tiles of SVL×SVL; measured shape 1 × 4 (four tiles in every type); at M4's 512-bit SVL, 16×64 f32 / 8×32 f64 C block | `svmopa_za32/za64_m` (widening: `svmopa_za32_f16/bf16/s8_m`), `svld1_x2`, `svld1/st1_hor_za32/64` |
 | Accelerate | opaque | `cblas_sgemm`, `cblas_dgemm` |
 | KleidiAI | 2VL×2VL (all four f32 ZA tiles) | `kai_run_matmul_clamp_f32_f32p2vlx1_f32p2vlx1biasf32_sme2_mopa` |
 | Metal | 1 output per thread (Level 0) → 8×4 per thread (Level 2) → 4×4 `simdgroup_float8x8` accumulators per simdgroup, 2×2 simdgroups per threadgroup (Levels 3–5) | `threadgroup` memory, `simdgroup_load`, `simdgroup_multiply_accumulate`, `MPSMatrixMultiplication` |

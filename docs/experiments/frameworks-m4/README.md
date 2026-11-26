@@ -57,8 +57,10 @@ particular are lower bounds.
   standalone check. It keeps every core
   busy, E-cores included, so it is the most sensitive to other load. jaxlib
   links no Accelerate; its CPU GEMM is XLA's own (YNNPACK and oneDNN symbols
-  are present). Reaching ~3.2 TFLOP/s implies both SME units, but which
-  library issues the SME instructions was not determined.
+  are present). ~3.2 TFLOP/s is twice what NEON can reach on all 12 P-cores
+  (12 × ~130 GFLOP/s, the measured per-core peak), so the work runs on the
+  matrix units; which of jaxlib's libraries issues the SME instructions
+  is not identified here.
 - JAX f64 peaks at 223 GFLOP/s and falls to 177 at N=4096, about half of
   one SME unit: XLA's f64 dot does not get Accelerate's or the SME units'
   f64 rate.

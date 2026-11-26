@@ -98,9 +98,10 @@ compiler leaves them rolled on its own, which puts the 32 × 32 kernels at
 
 ## How far the kernels get
 
-Measured FMA peak in the same run: 14.2 TFLOP/s FP32 (14.9 run alone).
-fp16 FMA runs at the same rate: on M1–M4 GPUs simdgroup matrices run on
-the ordinary FP32 ALUs, with no separate matrix unit. Level 3 at N = 2048
-reaches 10.5 TFLOP/s, 74% of that peak, and the best f32 kernel reaches
-86–100% of MPS (`MPSMatrixMultiplication`) from N = 2048 to 8192. All levels and MPS:
+Measured FMA peak, 2026-11-25: 14.9 TFLOP/s FP32 and 15.8 fp16: fp16 runs
+at the FP32 rate, and simdgroup matrices run on the ordinary FP32 ALUs
+(the M4's GPU has no separate matrix unit). With the measured tiles,
+Level 3 at N = 2048 reaches 12.3 TFLOP/s, 83% of that peak, and the best
+f32 kernel reaches 91–95% of MPS (`MPSMatrixMultiplication`) from
+N = 2048 to 8192. All levels and MPS:
 [benchmarks.md](../benchmarks.md#apple-m4-max-gpu--metal).

@@ -1,8 +1,8 @@
 # Build Guide
 
 Everything needed to configure, build, test and benchmark the suite on
-Linux, macOS and Windows, plus the details behind the ISA-specific build
-options and what runs (or is skipped) on each class of machine.
+Linux and macOS, plus the details behind the ISA-specific build options
+and what runs (or is skipped) on the machines it has been built on.
 
 Contents
 
@@ -19,11 +19,17 @@ Contents
 
 ## Prerequisites
 
-| Tool | Minimum version | Notes |
+CMake 3.25 or newer (`cmake_minimum_required`) and a C++20 compiler. The
+toolchains the suite has been built and tested with:
+
+| Machine | Compiler | CUDA |
 |---|---|---|
-| CMake | 3.25 | |
-| C++ compiler | GCC 12 / Clang 16 / Apple Clang 15 / MSVC 19.35+ | C++20 required |
-| CUDA toolkit | 12.0+ (optional) | GPU kernels only; CPU-only build works without it. Level 8 needs CUDA 12's tensor-map API (`cuTensorMapEncodeTiled`); tested with 13.2 |
+| Apple M4 Max, macOS 26 | Apple Clang 17 | — |
+| AMD Ryzen 9 9950X + RTX 5080, Ubuntu 24.04 | GCC 13.3; Clang 18.1 (CPU benchmarks only) | 13.2 and 13.4 |
+| CI: `ubuntu-24.04` x86-64 and arm64, `macos-14` | GCC 14; Apple Clang | — (stub) |
+
+The CUDA toolkit is optional: without it a CPU-only stub is built. Level 8
+uses the CUDA 12 tensor-map API (`cuTensorMapEncodeTiled`).
 
 ---
 
@@ -50,23 +56,8 @@ ctest --test-dir build --output-on-failure
 ./build/benchmarks/bench_gemm_metal       # Apple GPU (SKIPPED elsewhere)
 ```
 
-### Windows (MSVC x64)
-
-```powershell
-# 1. Configure (MSVC uses a multi-config generator — no CMAKE_BUILD_TYPE needed)
-#    Release defaults to /arch:AVX2 and requires a compatible x64 CPU.
-cmake -B build
-
-# 2. Build in Release mode (--config Release is essential for optimised numbers)
-cmake --build build --config Release --parallel
-
-# 3. Run all tests
-ctest --test-dir build --build-config Release --output-on-failure
-
-# 4. Run the CPU and CUDA benchmarks
-.\build\benchmarks\Release\bench_gemm.exe
-.\build\benchmarks\Release\bench_gemm_cuda.exe
-```
+The CMake files carry MSVC flags (`/arch:AVX2`, `/arch:AVX512`), but no
+Windows build has been run or tested.
 
 ---
 
@@ -110,7 +101,7 @@ Two cases need care:
 
 **The GPU is newer than the CUDA toolkit.** nvcc refuses any architecture newer than itself, so `native` fails outright (e.g. CUDA 12.0, which predates Blackwell, on an RTX 50-series card: `Unsupported gpu architecture 'compute_120'`). The configure step probes for this and falls back to the newest *virtual* architecture the toolkit can emit, which the driver JIT-compiles forward onto the actual GPU. The kernels then run correctly, at the cost of a JIT pause on first launch — but do not benchmark in this configuration; install a toolkit new enough to target the card.
 
-Measured on an RTX 5080, CUDA 12.0 (`90-virtual` PTX) against CUDA 13.2 (native `sm_120`), compute-only at N=4096: cuBLAS dense-FP16 ran at 21.7 vs 114.0 TFLOP/s — a 5.2× difference, because CUDA 12.0's cuBLAS has no Blackwell kernels to dispatch to. Hand-written kernel codegen moved far less, and not always in the same direction: `gemm_cuda_reg_tile` gained 18% from native compilation, while `gemm_cuda_wmma_pipelined` was 4.7% *faster* under the JIT (80.6 vs 76.6 TFLOP/s, σ = 0.003 ms over 5 repetitions; measured before its shared-memory padding, which brought it to ~100 TFLOP/s). So the toolkit version matters enormously for anything touching cuBLAS, and is roughly a wash for this project's own kernels. The configure step prints a warning when this happens, and always reports the final choice:
+Measured on an RTX 5080, CUDA 12.0 (`90-virtual` PTX) against CUDA 13.2 (native `sm_120`), compute-only at N=4096: cuBLAS dense-FP16 ran at 21.7 vs 114.0 TFLOP/s, because CUDA 12.0's cuBLAS has no Blackwell kernels to dispatch to. The configure step prints a warning when this happens, and always reports the final choice:
 
 ```
 -- CUDA architectures: 90-virtual
@@ -170,18 +161,15 @@ Which kernel families exist in a build is decided once, at compile time, by the 
   `cuda_device_count()` returns 0 / `metal_available()` false and the CUDA /
   Metal tests and benchmarks skip.
 
-| Machine | Runs | Skipped |
-|---|---|---|
-| **Apple M-series** (default build — `HPC_ENABLE_AMX` and `HPC_ENABLE_METAL` default ON) | Scalar · NEON · Scalar-Pf · NEON-Pf · **AMX** · **Metal** | AVX2 · AVX-512 · SME · CUDA |
-| **Apple M4 Max, `-DHPC_ENABLE_SME=ON`** (the run recorded in [benchmarks.md](benchmarks.md)) | Scalar · NEON · Scalar-Pf · NEON-Pf · **SME** (incl. `gemm_sme_mt`) · **AMX** · **KleidiAI** · **Metal** | AVX2 · AVX-512 · CUDA |
-| Intel Mac (Accelerate present; internal dispatch depends on the CPU) | Scalar · supported x86 SIMD/Pf · **AMX**\* | Unsupported x86 SIMD · NEON · SME · CUDA |
-| Intel Skylake (Linux/Windows, AVX2, no AVX-512, no GPU) | Scalar · AVX2 · Scalar-Pf · AVX2-Pf | AVX-512 · NEON · SME · AMX · CUDA |
-| Intel Skylake + NVIDIA GPU | Scalar · AVX2 · Scalar-Pf · AVX2-Pf · **CUDA** | AVX-512 · NEON · SME · AMX |
-| Intel Sapphire Rapids + NVIDIA GPU | Scalar · AVX2 · AVX-512 · all Pf · **CUDA** | NEON · SME · AMX |
-| AWS Graviton3 / Neoverse V1 | Scalar · NEON · all Pf variants | AVX2 · AVX-512 · SME · AMX · CUDA |
-| Fujitsu A64FX | Scalar · NEON · all Pf variants | AVX2 · AVX-512 · SME · AMX · CUDA |
+The builds that have been run:
 
-\* Expected to work, since Accelerate ships with every macOS SDK, but not run: no Intel Mac was available. The two Apple Silicon rows are verified.
+| Build | Runs | Skipped |
+|---|---|---|
+| Apple M4 Max, default (`HPC_ENABLE_AMX` and `HPC_ENABLE_METAL` default ON) | Scalar · NEON · Scalar-Pf · NEON-Pf · **AMX** · **Metal** | AVX2 · AVX-512 · SME · CUDA |
+| Apple M4 Max, `-DHPC_ENABLE_SME=ON` (the M4 runs in [benchmarks.md](benchmarks.md)) | Scalar · NEON · Scalar-Pf · NEON-Pf · **SME** (incl. `gemm_sme_mt`) · **AMX** · **KleidiAI** · **Metal** | AVX2 · AVX-512 · CUDA |
+| AMD Ryzen 9 9950X + RTX 5080, `-DHPC_ENABLE_AVX512=ON` (native) | Scalar · AVX2 · AVX-512 · all Pf · **CUDA** | NEON · SME · AMX · Metal |
+| AMD Ryzen 9 9950X, `-DHPC_MARCH=x86-64-v3` (16 YMM registers) | Scalar · AVX2 · Scalar-Pf · AVX2-Pf | AVX-512 · NEON · SME · AMX · Metal |
+| CI `linux-x86` (`x86-64-v3`), `linux-arm`, `macos` | see [Continuous Integration](#continuous-integration) | CUDA (stub) |
 
 ---
 

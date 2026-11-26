@@ -11,6 +11,7 @@ Cache blocks held at the defaults (`SmeParams<T>` in
 | File | Program | What |
 |---|---|---|
 | [`tiles_m4.json`](tiles_m4.json), [`tiles_m4_load.txt`](tiles_m4_load.txt) | `bench_gemm --benchmark_filter='^SmeTile'` | `gemm_sme` with the FP32 shapes 1×4, 2×2, 4×1 and the FP64 shapes 1×4, 2×4, 2×2, 4×1 at N = 256, 512, 1024, 4096; seven randomly interleaved repetitions, minimum time 0.1 s; load average 12–13 |
+| [`tiles_m4_all_paired.json`](tiles_m4_all_paired.json), [`tiles_m4_all_paired_load.txt`](tiles_m4_all_paired_load.txt) | `bench_gemm --benchmark_filter='^SmeTile[0-9]+x[0-9]+/' --benchmark_repetitions=3 --benchmark_enable_random_interleaving=true` | every legal shape (8 FP32, 20 FP64) at N = 64 … 4096, every shape with paired loads; 2026-11-26, load average 4–6, coefficient of variation ≤ 4.9%: the full tables in [docs/kernels/sme.md](../../kernels/sme.md#shape-sweep-m4-max) |
 | [`microkernel_m4.csv`](microkernel_m4.csv) | [`sme_microkernel`](../../../benchmarks/experiments/sme_microkernel.cpp) | the macro-kernel alone on cache-resident packed A (MC × K) and B (K × NC), FP32 1×4 / 2×2 / 4×1 and FP64 1×4 / 2×4 / 2×2 / 4×2, K = 256, 512, 2048; best of 7 runs of ≥ 0.2 s; GFLOP/s and share of the measured FMOPA peak (1,963 / 500). Every shape reaches 99–100% at K = 2048 |
 
 Matrix allocation and packing inside each GEMM are timed; input allocation
