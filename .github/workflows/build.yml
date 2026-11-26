@@ -42,7 +42,7 @@ jobs:
           - name: linux-arm
             runner: ubuntu-24.04-arm
           - name: macos
-            runner: macos-14
+            runner: macos-15
 
     steps:
       - uses: actions/checkout@v4

@@ -26,7 +26,7 @@ toolchains the suite has been built and tested with:
 |---|---|---|
 | Apple M4 Max, macOS 26 | Apple Clang 17 | — |
 | AMD Ryzen 9 9950X + RTX 5080, Ubuntu 24.04 | GCC 13.3; Clang 18.1 (CPU benchmarks only) | 13.2 and 13.4 |
-| CI: `ubuntu-24.04` x86-64 and arm64, `macos-14` | GCC 14; Apple Clang | — (stub) |
+| CI: `ubuntu-24.04` x86-64 and arm64, `macos-15` | GCC 14; Apple Clang | — (stub) |
 
 The CUDA toolkit is optional: without it a CPU-only stub is built. Level 8
 uses the CUDA 12 tensor-map API (`cuTensorMapEncodeTiled`).
@@ -206,7 +206,7 @@ sources are cached between runs.
 |---|---|---|---|
 | `linux-x86` | `ubuntu-24.04` | GCC 14, `HPC_MARCH=x86-64-v3` | scalar, AVX2, prefetch |
 | `linux-arm` | `ubuntu-24.04-arm` | GCC 14 | scalar, NEON, prefetch |
-| `macos` | `macos-14` | Apple Clang | scalar, NEON, prefetch, AMX via Accelerate |
+| `macos` | `macos-15` | Apple Clang | scalar, NEON, prefetch, AMX via Accelerate |
 
 These jobs do not enable SME. The configured hosted runners are expected
 to have no CUDA toolkit/GPU, so every
