@@ -1,0 +1,2 @@
+neon start: 23:16  up 248 days, 23:18, 5 users, load averages: 14.97 11.27 9.27
+neon end:   23:22  up 248 days, 23:24, 5 users, load averages: 13.00 9.40 8.64

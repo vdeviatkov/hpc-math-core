@@ -66,6 +66,9 @@ bits.
 
 ## Limitations
 
-No hardware counters: `perf_event_paranoid` is 4 on this machine and no
-root access was used, so cache misses are inferred from latency and
-throughput thresholds, not counted. One core, one compiler, FP32 only.
+The data in this folder has no counters (`perf_event_paranoid` was 4 when
+it was taken); cache misses for the same configurations were counted
+later with `perf` in [zen5-counters](../zen5-counters/) (`b_stride.txt`,
+`height.csv`): short strips (≤ 64 rows) lose to L1 conflicts (L1 misses
++44–79%), strips of 256 rows and more to L2 conflicts (L2 demand misses
++27–88%, L1 within 13%). One core, one compiler, FP32 only.

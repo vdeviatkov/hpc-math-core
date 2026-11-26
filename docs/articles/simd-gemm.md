@@ -40,7 +40,7 @@ independent accumulators the inner loop keeps in registers.
   measured cache blocks peaks at **328 GFLOP/s, 91% of peak**.
 - With the tile shape a template parameter, every family is swept over
   9–10 shapes. The winners: 6 × 2 for AVX2 (+12–37% over 4 × 2 at
-  N ≥ 256), 8 × 3 for AVX-512 (+10–16% FP32 and +26–38% FP64 at N ≥ 1024
+  N ≥ 256), 8 × 3 for AVX-512 (+12–29% FP32 and +24–31% FP64 at N ≥ 1024
   over 8 × 2), and on the M4 a 6 × 4 tile with A loaded by `LDR` instead
   of `LD1R` (+23–30% for that tile): 86% / 87% of peak with its measured
   block.
@@ -180,8 +180,11 @@ tile of B is reused from cache by 64 rows of A:
 | M4 | 83.0 | 80.5 | 41.1 | 28.8 |
 
 On Zen 5 throughput is now flat, 1.4× the reordered loop at N = 4096, but
-at N = 256 it is half the reordered loop's speed (the cause was not
-isolated; the inner loops are only 64 elements long). On the M4 it is
+at N = 256 it is half the reordered loop's speed. Counted with `perf`, it
+executes 2.8× the instructions per FLOP of the reordered loop (0.44
+against 0.16) at an IPC of 3.9 and with the same L1 misses: the short
+64-element inner loops cost instructions, not memory traffic
+([data](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/experiments/zen5-counters/blocked_vs_reordered.txt)). On the M4 it is
 fast up to N = 256 and then decays, to below the reordered loop at
 N = 4096. Its 64 rows of each B tile are N elements apart, but the
 row-stride penalty the M4's micro-kernel shows in isolation is small (7%
@@ -243,7 +246,7 @@ instruction.
 ### Why the tile has 8 rows: a code-generation trap
 
 A 4 × 2 AVX-512 tile has 8 accumulators, which the FMA measurement says is
-enough for 92% of peak. In the full multiplication it runs at 60% (218.5
+enough for 92% of peak. In the full multiplication it runs at 60% (219.3
 GFLOP/s at N = 256). To find out why, [`simd_microkernel`](https://github.com/vdeviatkov/hpc-math-core/blob/main/benchmarks/experiments/simd_microkernel.cpp) runs the micro-kernel alone on data that stays in
 L1, varying the number of rows:
 
@@ -266,7 +269,9 @@ vfmadd231ps  (%rdx),%zmm10,%zmm1       # … and again for every row
 
 Every FMA re-loads its vector of B: 8 loads of B plus 4 broadcasts per k
 step for 8 FMAs, 12 loads where 6 suffice. Zen 5 performs at most two
-512-bit loads per cycle (AMD's documented limit, not measured here), so
+vector loads per cycle (measured with a loop of independent L1 loads:
+2.0 per cycle at 128, 256 and 512 bits,
+[`x86_load_ports`](https://github.com/vdeviatkov/hpc-math-core/blob/main/benchmarks/experiments/x86_load_ports.cpp)), so
 such a k step cannot take fewer than 6 cycles,
 while its 8 FMAs need 4. Measured, it takes 6.7 cycles in the library
 kernel, at the load bound, and 10.2 in the isolated micro-kernel, which
@@ -276,14 +281,15 @@ units, set the pace. With
 per two steps) and every FMA is register-only.
 
 So every fast tile has at least 6 rows. In the full multiplication (the
-tile sweep, [docs/kernels/avx512.md](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/kernels/avx512.md)):
+tile sweep at the cache blocks chosen [below](#cache-blocks-measured-too),
+[docs/kernels/avx512.md](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/kernels/avx512.md)):
 
 | `gemm_simd_blocked<Zmm>`, GFLOP/s | N = 256 | 512 | 1024 | 4096 |
 |---|--:|--:|--:|--:|
-| FP32, 4 × 2 tile | 218.5 | 211.4 | 140.0 | 117.9 |
-| FP32, 8 × 2 tile | **327.6** | **325.0** | **281.8** | **197.8** |
-| FP64, 4 × 2 tile | 106.2 | 57.3 | 55.3 | 50.6 |
-| FP64, 8 × 2 tile | **158.9** | **102.7** | **90.1** | **76.8** |
+| FP32, 4 × 2 tile | 219.3 | 215.7 | 141.8 | 134.6 |
+| FP32, 8 × 2 tile | **328.1** | **324.7** | **282.1** | **228.4** |
+| FP64, 4 × 2 tile | 106.7 | 70.7 | 69.4 | 67.6 |
+| FP64, 8 × 2 tile | **160.5** | **141.2** | **115.7** | **116.2** |
 
 The NEON FP64 micro-kernel shows the opposite problem: no folding, but a
 4 × 2 tile has only 8 accumulators for a core that needs 12–16. On
@@ -333,30 +339,31 @@ register pressure, rather than merely rotating the same output rectangle.
 
 Measured on the whole multiplication: the library kernel
 `gemm_simd_blocked<Ymm, R, V, …>` with each shape (`bench_gemm`'s `Avx2Tile`
-benchmarks, built for 16 YMM registers, x86-64-v3; FP32 GFLOP/s, median
-of 3; all shapes and FP64 in
+benchmarks, built for 16 YMM registers, x86-64-v3, at the default cache
+block; FP32 GFLOP/s, median of 3; all shapes and FP64 in
 [docs/kernels/avx2.md](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/kernels/avx2.md)):
 
 | Tile | Accumulators | N = 256 | 1024 | 4096 |
 |---|--:|--:|--:|--:|
-| 4 × 2 | 8 | 151.2 | 92.7 | 75.9 |
-| 2 × 4 (same accumulators, twice the B traffic) | 8 | 135.5 | 63.0 | 60.0 |
-| 8 × 1 | 8 | 143.4 | 92.2 | 74.9 |
-| 5 × 2 | 10 | 163.2 | 111.4 | 85.7 |
-| **6 × 2** | **12** | **169.0** | **126.7** | 94.1 |
-| 4 × 3 | 12 | 154.2 | 108.2 | 87.9 |
-| 3 × 4 | 12 | 152.1 | 108.0 | **94.3** |
-| 7 × 2 (needs 17 registers: spills) | 14 | 97.1 | 90.7 | 83.8 |
+| 4 × 2 | 8 | 152.1 | 93.5 | 81.2 |
+| 2 × 4 (same accumulators, twice the B traffic) | 8 | 135.3 | 61.9 | 61.2 |
+| 8 × 1 | 8 | 146.1 | 92.2 | 78.1 |
+| 5 × 2 | 10 | 162.7 | 112.5 | 93.2 |
+| **6 × 2** | **12** | **170.8** | **128.4** | 103.8 |
+| 4 × 3 | 12 | 155.6 | 109.4 | 97.1 |
+| 3 × 4 | 12 | 155.5 | 113.2 | **108.6** |
+| 7 × 2 (needs 17 registers: spills) | 14 | 99.2 | 96.4 | 91.0 |
 
 6 × 2 needs 15 registers and does not spill (GCC 13 alternates two
 broadcast registers and uses all 16); 7 × 2 needs 17 and spills
-accumulators to the stack in the inner loop. (With the 32 registers of
-the native Zen 5 build, 7 × 2 does not spill and is 3–8% faster from
-N = 512–1024 up; 6 × 2 is kept because it is the fastest that never
+accumulators to the stack in the inner loop. At N = 4096, 3 × 4 is 4.6%
+ahead of 6 × 2, but at N ≤ 1024 6 × 2 leads it by 10–13%. (With the 32
+registers of the native Zen 5 build, 7 × 2 does not spill and is 9–12%
+faster at N ≥ 1024; 6 × 2 is kept because it is the fastest that never
 spills on an AVX2-only CPU. The 3 × 3 shape, also swept, is not shown:
-149.5 / 84.6 / 73.9.) The library kernel uses 6 × 2. The native build
+152.1 / 87.9 / 80.5.) The library kernel uses 6 × 2. The native build
 (32 YMM registers on Zen 5, the build every other table here uses) gives
-the same order: 6 × 2 is 13–34% faster than 4 × 2 from N = 256 up.
+the same order: 6 × 2 is 14–35% faster than 4 × 2 from N = 256 up.
 
 ### AVX-512 and NEON, swept the same way
 
@@ -367,23 +374,28 @@ has all of them).
 
 **AVX-512: 8 × 3.** The rule from the trap above holds across the sweep:
 every shape with 4 or fewer rows (4 × 2, 2 × 4, 4 × 4) has GCC fold the B
-loads into the FMAs and runs 20–68% behind the best shape at N ≤ 512. Of
+loads into the FMAs and runs 20–65% behind the best shape at N ≤ 512. Of
 the rest, a third vector on the 8-row tile pays where B's rows are 4 KiB
 apart and B comes from L2:
 
 | `gemm_simd_blocked<Zmm>`, GFLOP/s | N = 256 | 512 | 1024 | 4096 |
 |---|--:|--:|--:|--:|
-| FP32, 8 × 2 tile | **327.6** | 325.0 | 281.8 | 197.8 |
-| FP32, 8 × 3 tile | 324.6 | **328.2** | **309.9** | **229.6** |
-| FP64, 8 × 2 tile | 158.9 | 102.7 | 90.1 | 76.8 |
-| FP64, 8 × 3 tile | **162.0** | **150.9** ¹ | **124.1** | **97.1** |
+| FP32, 8 × 2 tile | **328.1** | 324.7 | 282.1 | 228.4 |
+| FP32, 8 × 3 tile | 325.5 | **328.8** | **315.1** | **294.4** |
+| FP64, 8 × 2 tile | 160.5 | 141.2 | 115.7 | 116.2 |
+| FP64, 8 × 3 tile | **162.1** | **158.9** | **151.2** | **144.2** |
 
-¹ At this size the result depends on where the matrices land in memory;
-run alone, 8 × 3 measures 126–128 and 8 × 2 101–103.
+8 × 3 uses 28 of the 32 registers, and the library kernel uses it.
+Counted with `perf`, the third vector does not reduce L1 misses where it
+helps most (FP32 N = 1024); it cuts L1 TLB misses by 35–39% and
+load-queue stall cycles by 55–69%. Each micro-kernel call walks 256 rows
+of B, each in its own 4 KiB page, and 8 × 3 does 1.5× the FMAs per page
+walked
+([data](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/experiments/zen5-counters/third_vector.txt)).
 
-8 × 3 uses 28 of the 32 registers, and the library kernel uses it. The
-sweep does not show why the third vector helps so much where B misses L1,
-and hardware counters were not available on this machine to find out.
+The folding of B into the FMAs is GCC's: Clang 18 keeps B in registers in
+every shape, and with Clang 4 × 2 runs 31% faster at N = 256 (287 against
+219 GFLOP/s), while 8 × 3 runs the same with both compilers.
 
 **NEON: 6 × 4, and `LDR` instead of `LD1R`.** On the M4 the way A is
 loaded matters. For `vdupq_n_f32` + `vfmaq_f32` Clang broadcasts A with
@@ -519,9 +531,11 @@ FP32 from N = 512 to 1024, where B's stride is one cost among several.
 isolates it on this core: with only the stride changed, B rows 4, 8 and
 16 KiB apart cost a GEMM with this micro-kernel (8 × 2 tile, 64-row
 blocks) 14–17% against the same rows padded by one
-64-byte line. At any multiple of 4 KiB a strip's rows all map to one L1
-set, so they share its 12 ways (L1 has 64 sets × 12 ways); L2 conflicts, which cost the M4's SME2 kernel
-two thirds, appear to be absorbed by Zen 5's L3. The cure is to pad B's
+64-byte line. Counted with `perf`, the 256-row strips this kernel uses
+lose to L2 conflicts: L2 demand misses rise 1.6–1.7× at N = 1024, 2048
+and 4096, and from N = 2048 L1 misses rise 9–14% too; the missed lines
+come from Zen 5's L3, 45 cycles away, which keeps the cost far below the
+M4's two thirds ([part 3](sme2-cache-associativity.md#the-same-experiment-on-amd-zen-5)). The cure is to pad B's
 rows or copy each strip of B into a contiguous buffer before the
 micro-kernel uses it, as part 2 does for the SME2 kernel. The next step
 does the copy.
@@ -592,11 +606,16 @@ Packed against in place, GFLOP/s (Zen 5: 3 runs, M4: 5 runs, medians):
   of its speed whenever B's rows are a multiple of 4 KiB apart. Packed, it
   runs at 166–169 GFLOP/s FP32 and 81–83 FP64 at every size from 1000 to
   4096, **+32% to +60%** at the 4 KiB strides, and at N = 4096 within 3%
-  of its best small-N figure.
+  of its best small-N figure. Counted at N = 2048, packing cuts AVX2's L1
+  misses 2.4× and its TLB misses 10×.
 - **AVX-512 gains 3–8%** at N ≥ 2000, and 15% at N = 1000, where the
   in-place kernel is unusually slow (rows 4,000 B apart, just short of
   4 KiB). At N = 4096 it runs at 318.7 GFLOP/s, 88% of the measured
-  peak, against 81% in place.
+  peak, against 81% in place. Here the gain is not from set conflicts:
+  counted, L1 and L2 misses are about equal in place and packed, and TLB
+  misses fall 10× (packed strips are contiguous; in place each row of a
+  strip is a page of its own); the gain is the same at N = 2000 as at
+  2048.
 - **NEON gains 16–19% at N = 4096**, and in FP64 8–16% from N = 2000. On
   the M4 the FP64 gain at N = 2000 and 4000 is as large as at the powers of
   two, so the stride is not the only thing the copy fixes there; what else
@@ -658,9 +677,11 @@ the same `-ffast-math` build as the benchmarks. All pass on both machines.
   the core clock moved between 3.96 and 4.13 GHz from one program to the
   next in the scalar runs and was 4.48–4.50 GHz in the register-tile runs.
   Treat M4 figures as ±5%, and compare across the two in cycles.
-- **No hardware counters on the CPUs.** macOS has no public counter API,
-  and the Linux machine restricts them. The explanations rest on controlled
-  experiments and on reading the generated machine code.
+- **Hardware counters on Zen 5 only.** The Zen 5 explanations (B stride,
+  the third vector, packed B, load ports) are counted with `perf`
+  ([zen5-counters](https://github.com/vdeviatkov/hpc-math-core/tree/main/docs/experiments/zen5-counters)).
+  macOS has no public counter API, so the M4 explanations rest on
+  controlled experiments and on reading the generated machine code.
 
 ## Takeaways
 

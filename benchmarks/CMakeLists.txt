@@ -2,8 +2,12 @@ add_executable(bench_gemm bench_gemm.cpp)
 target_link_libraries(bench_gemm PRIVATE hpc_math_core benchmark::benchmark)
 
 # CUDA kernels, or the stub when there is no CUDA toolkit (every row SKIPPED).
+# The kernels' tile sizes are template parameters: cuda_instances.cpp
+# instantiates them with cuda_params.hpp's values and cuda_variants.hpp's
+# sweep variants, once for both CUDA benchmarks.
+hpc_add_cuda_instances(hpc_cuda_bench_instances cuda_instances.cpp)
 add_executable(bench_gemm_cuda bench_gemm_cuda.cpp)
-target_link_libraries(bench_gemm_cuda PRIVATE hpc_math_cuda benchmark::benchmark)
+target_link_libraries(bench_gemm_cuda PRIVATE hpc_cuda_bench_instances hpc_math_cuda benchmark::benchmark)
 
 # Metal kernels on Apple GPUs, or the stub (every row SKIPPED).
 add_executable(bench_gemm_metal bench_gemm_metal.cpp)
@@ -18,7 +22,7 @@ target_link_libraries(lowp_accuracy PRIVATE hpc_math_core)
 add_executable(bench_gemm_lowp bench_gemm_lowp.cpp)
 target_link_libraries(bench_gemm_lowp PRIVATE hpc_math_core benchmark::benchmark)
 add_executable(bench_gemm_lowp_cuda bench_gemm_lowp_cuda.cpp)
-target_link_libraries(bench_gemm_lowp_cuda PRIVATE hpc_math_cuda benchmark::benchmark)
+target_link_libraries(bench_gemm_lowp_cuda PRIVATE hpc_cuda_bench_instances hpc_math_cuda benchmark::benchmark)
 
 # Experiments behind the articles in docs/articles/; their data and method
 # are in docs/experiments/.
@@ -38,6 +42,8 @@ endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
     add_executable(avx512_b_stride experiments/avx512_b_stride.cpp)
     target_link_libraries(avx512_b_stride PRIVATE hpc_math_core)
+    add_executable(x86_load_ports experiments/x86_load_ports.cpp)
+    target_link_libraries(x86_load_ports PRIVATE hpc_math_core)
 endif()
 if(CMAKE_CUDA_COMPILER)
     add_executable(cuda_peak experiments/cuda_peak.cu)
@@ -48,6 +54,12 @@ if(_HPC_SME_FOUND)
     add_executable(sme_b_stride_probe experiments/sme_b_stride_probe.cpp)
     add_executable(sme_fmopa experiments/sme_fmopa.cpp)
     add_executable(sme_block_sweep experiments/sme_block_sweep.cpp)
+    add_executable(sme_microkernel experiments/sme_microkernel.cpp)
+    add_executable(amx_sme_share experiments/amx_sme_share.cpp)
+    add_executable(sme_probe experiments/sme_probe.cpp)
+    target_link_libraries(sme_probe PRIVATE hpc_math_core)
+    target_link_libraries(amx_sme_share PRIVATE hpc_math_core)
+    target_link_libraries(sme_microkernel PRIVATE hpc_math_core)
     target_link_libraries(sme_block_sweep PRIVATE hpc_math_core)
     target_link_libraries(sme_fmopa PRIVATE hpc_math_core)
     target_link_libraries(sme_b_layout PRIVATE hpc_math_core)

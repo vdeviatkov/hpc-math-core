@@ -10,6 +10,8 @@ Machine, sysctl values, compiler, commands and source hashes:
 | [`latency.csv`](latency.csv) | [`cache_chase sizes`](../../../benchmarks/experiments/cache_chase.cpp) | load latency over a random chase in a working set of 8 KiB … 1 GiB |
 | [`tlb.csv`](tlb.csv) | [`cache_chase tlb`](../../../benchmarks/experiments/cache_chase.cpp) | one line per 16 KiB page against the same lines packed densely |
 | [`fmopa.csv`](fmopa.csv) | [`sme_fmopa`](../../../benchmarks/experiments/sme_fmopa.cpp) | FMOPA latency and throughput, 1 … 12 threads |
+| [`fmopa_ecores.csv`](fmopa_ecores.csv) | `taskpolicy -b sme_fmopa`: background QoS, which macOS runs on the efficiency cores | the FMOPA loop on the 4 E-cores (1.66 GHz): 180–265 GFLOP/s FP32 in total, an SME unit on the efficiency cluster |
+| [`amx_sme_share.csv`](amx_sme_share.csv) | [`amx_sme_share`](../../../benchmarks/experiments/amx_sme_share.cpp), `VECLIB_MAXIMUM_THREADS=1`, load average 6–13 | gemm_sme and Accelerate's cblas_sgemm (N = 2048, FP32) alone and at once: one thread each, two gemm_sme threads as the placement control, and six of each with both P-clusters busy. Two threads keep their solo rates in every pairing (macOS spreads them over the clusters); with both clusters saturated the total stays at one group's (6 SME 3.72–3.76 TFLOP/s, 6 Accelerate 3.45–3.49, both 3.85–3.86): Accelerate's AMX work runs on the SME units |
 
 ## What macOS reports
 

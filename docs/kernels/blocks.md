@@ -130,8 +130,14 @@ the 48 KiB L1 for the B lines each call streams. TileK = 256 is the best
 or within 2% of it in every family.
 
 A few blocks far larger than L2 do well at N = 4096 alone (AVX2 FP32
-512 × 1024, 2 MiB: 116 GFLOP/s at N = 4096, but 72 at N = 1024); the sweep
-does not explain them, and they lose at every other size.
+512 × 1024, 2 MiB: 116 GFLOP/s at N = 4096, but 72 at N = 1024), and lose
+at every other size. Counted with `perf` (per 1,000 FLOP, against the
+default 256 × 256 block;
+[data](../experiments/zen5-counters/large_blocks.txt)): at N = 4096 the
+large block has 14% fewer L1 misses (7.78 against 9.02) and 7× the L2
+misses (0.354 against 0.050), which L3 serves, and runs 12% faster; at
+N = 1024 its L1 misses rise 15% instead, with the same 7.7× L2 misses,
+and it runs 44% slower.
 
 On the M4, whose L2 is 16 MiB per cluster, the B block size makes no
 difference up to 1 MiB (NEON, TileM = 384, three runs):

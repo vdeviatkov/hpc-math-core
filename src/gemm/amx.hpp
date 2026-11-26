@@ -11,8 +11,12 @@
  * instruction set or intrinsics; its encodings are known only from reverse
  * engineering. The supported way to use it is Accelerate's BLAS
  * (cblas_sgemm / cblas_dgemm), which Apple's guidance recommends for matrix
- * math and which is understood to dispatch to the coprocessor. On M4 it most
- * likely runs on the same matrix unit SME exposes (sme.hpp).
+ * math and which is understood to dispatch to the coprocessor. On the M4 it
+ * shares the matrix units SME exposes (sme.hpp): with both P-clusters busy,
+ * six gemm_sme threads reach 3.72–3.76 TFLOP/s FP32 alone, six Accelerate
+ * threads 3.45–3.49, and both groups together 3.85–3.86 in total, each
+ * about half (benchmarks/experiments/amx_sme_share.cpp,
+ * docs/experiments/sme2-machine/amx_sme_share.csv).
  *
  * So gemm_amx is a thin wrapper around a vendor library, not a hand-written
  * kernel: it measures what Apple's own implementation achieves, as a ceiling

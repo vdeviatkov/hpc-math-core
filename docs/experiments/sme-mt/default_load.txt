@@ -1,0 +1,2 @@
+start:  0:00  up 249 days, 2 mins, 5 users, load averages: 2.74 2.35 3.90
+end:  0:03  up 249 days, 4 mins, 5 users, load averages: 6.05 3.42 4.05

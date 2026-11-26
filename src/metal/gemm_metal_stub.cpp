@@ -14,6 +14,7 @@ namespace {
 bool metal_available() noexcept { return false; }
 std::string metal_device_name() { return {}; }
 std::vector<std::string> metal_kernel_variants() { return {}; }
+unsigned metal_max_threads_per_threadgroup(const std::string&) { no_metal(); }
 
 struct MetalGemm::Impl {};
 MetalGemm::MetalGemm(std::size_t, std::size_t, std::size_t) { no_metal(); }

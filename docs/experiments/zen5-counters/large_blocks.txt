@@ -1,0 +1,5 @@
+# bench_gemm --benchmark_filter=^<row>$ --benchmark_min_time=2s under perf stat, taskset -c 2, Zen 5, native build, 2026-11-25
+Avx2Block384x256x256/f32/N=4096      GFLOP/s=104.921G L1->L2 9.024  L2 miss 0.0502  DTLB 6.055  DRAM fills 0.0334 (per kFLOP)
+Avx2Block384x512x1024/f32/N=4096     GFLOP/s=117.301G L1->L2 7.775  L2 miss 0.3537  DTLB 5.737  DRAM fills 0.0659 (per kFLOP)
+Avx2Block384x256x256/f32/N=1024      GFLOP/s=127.143G L1->L2 5.899  L2 miss 0.0507  DTLB 5.940  DRAM fills 0.0017 (per kFLOP)
+Avx2Block384x512x1024/f32/N=1024     GFLOP/s=71.8093G L1->L2 6.756  L2 miss 0.3911  DTLB 5.543  DRAM fills 0.0032 (per kFLOP)

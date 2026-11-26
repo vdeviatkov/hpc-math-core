@@ -101,7 +101,18 @@ void register_all() {
 
     for (const std::string& fn : metal_kernel_variants())
         add("MetalVariant/" + fn, [fn](MetalGemm& g, int reps) { return g.run_variant_ms(fn, reps); },
-            fn.find("f16") != std::string::npos ? 16 : 32, {2048, 4096});
+            fn.find("f16") != std::string::npos ? 16 : 32, {256, 1024, 2048, 4096});
+
+    // Register-pressure probe: each function's maxTotalThreadsPerThreadgroup.
+    for (const std::string& fn : metal_kernel_variants())
+        benchmark::RegisterBenchmark("MetalMaxThreads/" + fn, [fn](benchmark::State& state) {
+            if (skip(state))
+                return;
+            unsigned t = 0;
+            for (auto _ : state)
+                t = metal_max_threads_per_threadgroup(fn);
+            state.counters["max_threads"] = t;
+        })->Iterations(1);
 
     for (const bool f16 : {false, true})
         benchmark::RegisterBenchmark(std::string("MetalFmaPeak/") + (f16 ? "f16" : "f32"),

@@ -2,13 +2,16 @@
 
 Raw data behind the article
 [*A power-of-two stride cuts SME2 GEMM throughput by two thirds on Apple M4*](../../articles/sme2-cache-associativity.md).
-Apple M4 Max, single thread, FP32. Machine, compiler, commands and source
-hashes: [`metadata.json`](metadata.json). The size and padding sweeps of
+Apple M4 Max, single thread, FP32. The phase, height and width
+runs use the 2 × 2 tile arrangement (32-column B strips); `f64_kc.csv` uses
+the 1 × 4 arrangement. Machine, compiler, commands and source hashes:
+[`metadata.json`](metadata.json). The size and padding sweeps of
 `bench_gemm --benchmark_filter=BStride` are in
 [`docs/benchmarks.md`](../../benchmarks.md#sme-b-row-stride).
 
 | File | Program | What it measures |
 |---|---|---|
+| [`f64_kc.csv`](f64_kc.csv) | [`sme_probe f64`](../../../benchmarks/experiments/sme_probe.cpp) | FP64 blocked driver with B in place, N = 4096, rows padded by 0 / 128 / 256 / 512 B, strips of 256 … 2048 rows, median of 5: only 128-byte padding recovers 2,048-row strips |
 | [`phases.csv`](phases.csv) | [`sme_b_layout`](../../../benchmarks/experiments/sme_b_layout.cpp) | full driver, end to end and by phase, B in place vs packed, ldb = 4096 / 4128 / 4160 |
 | [`height.csv`](height.csv) | [`sme_b_stride_probe height`](../../../benchmarks/experiments/sme_b_stride_probe.cpp) | macro-kernel only, strip height Kc = 8 … 2048 rows, B rows 16 KiB vs 16,512 B apart |
 | [`width.csv`](width.csv) | [`sme_b_stride_probe width`](../../../benchmarks/experiments/sme_b_stride_probe.cpp) | macro-kernel only, N = 1024 … 4224, B in place with one line of padding vs packed |

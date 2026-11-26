@@ -8,17 +8,17 @@
  * 0-4 run on the FMA (SIMT) cores in f32 and f64, Levels 5-8 on Tensor Cores:
  *
  *   0  gemm_cuda_naive           one thread per C(i,j), global memory only
- *   1  gemm_cuda_blocked         16x16 shared-memory tiles
- *   2  gemm_cuda_reg_tile        128x128 block tile, 8x8 register tile per thread
+ *   1  gemm_cuda_blocked         shared-memory tiles
+ *   2  gemm_cuda_reg_tile        block tile, register tile per thread
  *   3  gemm_cuda_double_buf      Level 2 + double-buffered shared memory (cp.async on sm_80+)
  *   4  gemm_cuda_vectorized      Level 2 + 128-bit loads + XOR-swizzled shared memory
- *   5  gemm_cuda_wmma            Tensor Cores through the wmma:: API, 64x64 tiles
+ *   5  gemm_cuda_wmma            Tensor Cores through the wmma:: API, a 16x16 fragment per warp
  *   6  gemm_cuda_mma_ldmatrix    Level 5 through raw ldmatrix + mma.sync PTX
- *   7  gemm_cuda_wmma_pipelined  wmma:: with 128x128 tiles, 8 fragments per warp,
+ *   7  gemm_cuda_wmma_pipelined  wmma:: with larger block and warp tiles,
  *                                cp.async double buffering
  *   8  gemm_cuda_tma             raw mma.sync fed by TMA into swizzled shared
- *                                memory, 4-6-stage mbarrier pipeline, producer warp,
- *                                128x256 tiles (128x128 for small grids)
+ *                                memory, mbarrier pipeline, producer warp,
+ *                                two block tiles chosen per launch
  *
  * Levels 5-8 are float-only: fp32 in and out, fp16 multiply, fp32
  * accumulate (input rounding at roughly the 1e-3 scale; output relative
@@ -28,7 +28,7 @@
  *   Level 4  needs K, N multiples of 4 (f32) / 2 (f64)       else Level 2
  *   Level 5  needs sm_70+                                   else Level 3
  *   Level 6  needs sm_80+                                   else Level 5
- *   Level 7  needs sm_70+, M and N multiples of 128, K of 32 else Level 5
+ *   Level 7  needs sm_70+, M, N, K multiples of its tile      else Level 5
  *   Level 8  needs sm_90+ (TMA)                              else Level 7
  *
  * Low-precision formats. Level 8's kernel and a cp.async kernel (Level 6's
@@ -105,31 +105,76 @@ int cuda_lowp_k_multiple(CudaLowp format) noexcept;
 bool cuda_lowp_fp8_block_scaled();
 
 // ---------------------------------------------------------------------------
+// Tile parameters
+//
+// Every kernel entry point below takes a parameter struct P as its first
+// template argument; the kernels hold no sizes of their own. P has these
+// members (the measured values are hpc::bench::CudaParams in
+// benchmarks/cuda_params.hpp; docs/kernels/cuda.md has the sweeps):
+//
+//   P::Tile                       Levels 0-1: Tile x Tile threads per block
+//   P::RegTile<T>::{BM,BN,BK,TM,TN}
+//                                 Level 2, per element type: BM x BN block
+//                                 tile, BK k step, TM x TN outputs per thread
+//   P::Vectorized<T>::{BM,BN,BK,TM,TN}
+//                                 Level 4, the same sizes; also BM == BN, a
+//                                 power-of-two number of 128-bit slots per
+//                                 row, and TM, TN, BK whole vectors
+//   P::DoubleBuf<T>::{BM,BN,BK,TM,TN,MinBlocks}
+//                                 Level 3, per element type (two buffers
+//                                 must fit 48 KB of static shared memory);
+//                                 MinBlocks is the __launch_bounds__ minimum
+//   P::WarpGrid::{WarpsM,WarpsN,MinBlocks}
+//                                 Levels 5-6: WarpsM x WarpsN warps of 16 x 16
+//   P::Pipe::{BM,BN,BK,WarpM,WarpN}
+//                                 Level 7: block tile, k step, warp tile
+//                                 (all multiples of 16)
+//   P::Lowp::{BM,BN,WarpM,WarpsN,Stages,GroupM}
+//                                 the low-precision cp.async kernel
+//   P::Tma::{BM,StagesWide,StagesNarrow,GroupM,Tile,WideMarginPct}
+//                                 Level 8: BM x 256 ("wide") and BM x 128
+//                                 tiles and their pipeline depths; Tile = 0
+//                                 chooses between them per launch by wave
+//                                 quantisation (wide unless the narrow tile
+//                                 fills the waves more than WideMarginPct
+//                                 percent better), 256 or 128 forces one
+//
+// The entry points are defined in src/cuda/gemm_kernels.cuh and explicitly
+// instantiated, for the P each target uses, with the macros of
+// src/cuda/gemm_instantiate.hpp (benchmarks/cuda_instances.cpp,
+// tests/cuda_instances.cpp).
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // Matrix-based entry points: any shape, B as an ordinary K x N matrix.
 // ---------------------------------------------------------------------------
 
 /// Level 0: one thread per C(i, j).
-template <typename T>
+template <typename P, typename T>
 void gemm_cuda_naive(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C);
-/// Level 1: 16 x 16 shared-memory tiles.
-template <typename T>
+/// Level 1: shared-memory tiles.
+template <typename P, typename T>
 void gemm_cuda_blocked(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C);
-/// Level 2: 128 x 128 block tile, 8 x 8 register tile per thread.
-template <typename T>
+/// Level 2: block tile with a register tile per thread.
+template <typename P, typename T>
 void gemm_cuda_reg_tile(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C);
 /// Level 3: Level 2, double-buffered.
-template <typename T>
+template <typename P, typename T>
 void gemm_cuda_double_buf(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C);
 /// Level 4: Level 2 with 128-bit loads and swizzled shared memory.
-template <typename T>
+template <typename P, typename T>
 void gemm_cuda_vectorized(const Matrix<T>& A, const Matrix<T>& B, Matrix<T>& C);
 /// Level 5: wmma:: Tensor Cores, fp32 inputs converted to fp16 per tile.
+template <typename P>
 void gemm_cuda_wmma(const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C);
 /// Level 6: Level 5 through ldmatrix + mma.sync PTX.
+template <typename P>
 void gemm_cuda_mma_ldmatrix(const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C);
 /// Level 7: pipelined wmma::, inputs converted to fp16 on the GPU first.
+template <typename P>
 void gemm_cuda_wmma_pipelined(const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C);
 /// Level 8: TMA + mbarrier pipeline, inputs rounded to fp16, padded and B transposed on the host.
+template <typename P>
 void gemm_cuda_tma(const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C);
 
 /// cuBLAS SGEMM / DGEMM.
@@ -143,14 +188,19 @@ void gemm_cuda_cublas_fp16(const Matrix<float>& A, const Matrix<float>& B, Matri
 /// Low-precision GEMMs through `impl`. They pad with zeros to tile
 /// multiples, transpose B, copy to the GPU and back. fp16_acc16 results are
 /// widened to float on the host.
+template <typename P>
 void gemm_cuda_bf16(const Matrix<bf16>& A, const Matrix<bf16>& B, Matrix<float>& C,
                     CudaLowpImpl impl = CudaLowpImpl::mma);
+template <typename P>
 void gemm_cuda_fp16(const Matrix<fp16>& A, const Matrix<fp16>& B, Matrix<float>& C,
                     CudaLowpImpl impl = CudaLowpImpl::mma);
+template <typename P>
 void gemm_cuda_fp16_acc16(const Matrix<fp16>& A, const Matrix<fp16>& B, Matrix<float>& C,
                           CudaLowpImpl impl = CudaLowpImpl::mma);
+template <typename P>
 void gemm_cuda_i8(const Matrix<std::int8_t>& A, const Matrix<std::int8_t>& B, Matrix<std::int32_t>& C,
                   CudaLowpImpl impl = CudaLowpImpl::mma);
+template <typename P>
 void gemm_cuda_fp8(const Matrix<fp8_e4m3>& A, const Matrix<fp8_e4m3>& B, Matrix<float>& C,
                    CudaLowpImpl impl = CudaLowpImpl::mma);
 
@@ -169,38 +219,44 @@ void gemm_cuda_fp8(const Matrix<fp8_e4m3>& A, const Matrix<fp8_e4m3>& B, Matrix<
 // ---------------------------------------------------------------------------
 
 /// Level 0 on device buffers: A M x K, B K x N, C M x N.
-template <typename T>
+template <typename P, typename T>
 void gemm_cuda_naive_device(const T* dA, const T* dB, T* dC, int M, int K, int N);
 /// Level 1 on device buffers.
-template <typename T>
+template <typename P, typename T>
 void gemm_cuda_blocked_device(const T* dA, const T* dB, T* dC, int M, int K, int N);
 /// Level 2 on device buffers.
-template <typename T>
+template <typename P, typename T>
 void gemm_cuda_reg_tile_device(const T* dA, const T* dB, T* dC, int M, int K, int N);
 /// Level 3 on device buffers.
-template <typename T>
+template <typename P, typename T>
 void gemm_cuda_double_buf_device(const T* dA, const T* dB, T* dC, int M, int K, int N);
 /// Level 4 on device buffers.
-template <typename T>
+template <typename P, typename T>
 void gemm_cuda_vectorized_device(const T* dA, const T* dB, T* dC, int M, int K, int N);
 /// Level 5 on device buffers.
+template <typename P>
 void gemm_cuda_wmma_device(const float* dA, const float* dB, float* dC, int M, int K, int N);
 /// Level 6 on device buffers.
+template <typename P>
 void gemm_cuda_mma_ldmatrix_device(const float* dA, const float* dB, float* dC, int M, int K, int N);
 /// Level 7 on fp16 A (M x K) and B (K x N); convert them with
 /// gemm_cuda_convert_f32_to_f16_device. No fallback: M and N multiples of
-/// 128, K of 32, sm_70+.
+/// P::Pipe::BM / BN, K of P::Pipe::BK, sm_70+.
+template <typename P>
 void gemm_cuda_wmma_pipelined_device(const void* dA16, const void* dB16, float* dC, int M, int K, int N);
 /// Level 8 on fp16 A (M x K) and fp16 B transposed (N x K): the layout its
-/// TMA copies and non-transposing ldmatrix read. No fallback: M and N
-/// multiples of 128, K of 32, sm_90+.
+/// TMA copies and non-transposing ldmatrix read. No fallback: M a multiple
+/// of P::Tma::BM, N of 128, K of 32, sm_90+.
+template <typename P>
 void gemm_cuda_tma_device(const void* dA16, const void* dBt16, float* dC, int M, int K, int N);
 
 /// The low-precision cp.async kernel. A: M x K, Bt: N x K, C: M x N, element
-/// types by format (see the table above). M and N must be multiples of 128,
-/// K of cuda_lowp_k_multiple(format).
+/// types by format (see the table above). M and N must be multiples of
+/// P::Lowp::BM and BN, K of cuda_lowp_k_multiple(format).
+template <typename P>
 void gemm_cuda_lowp_device(CudaLowp format, const void* dA, const void* dBt, void* dC, int M, int K, int N);
-/// Level 8 for every low-precision format; requirements as above, sm_90+.
+/// Level 8 for every low-precision format; requirements as for gemm_cuda_tma_device.
+template <typename P>
 void gemm_cuda_lowp_tma_device(CudaLowp format, const void* dA, const void* dBt, void* dC, int M, int K, int N);
 
 /// cuBLAS SGEMM / DGEMM on device buffers.
@@ -239,20 +295,10 @@ void gemm_cuda_memcpy_d2h(void* dst, const void* src, std::size_t bytes);
 /// cudaDeviceSynchronize; throws on a pending error.
 void gemm_cuda_device_synchronize();
 
-// ---------------------------------------------------------------------------
-// Explicit instantiation declarations (definitions in src/cuda/gemm.cu)
-// ---------------------------------------------------------------------------
-#define HPC_CUDA_EXTERN(fn)                                                                         \
-    extern template void fn<float>(const Matrix<float>&, const Matrix<float>&, Matrix<float>&);     \
-    extern template void fn<double>(const Matrix<double>&, const Matrix<double>&, Matrix<double>&); \
-    extern template void fn##_device<float>(const float*, const float*, float*, int, int, int);    \
-    extern template void fn##_device<double>(const double*, const double*, double*, int, int, int);
-HPC_CUDA_EXTERN(gemm_cuda_naive)
-HPC_CUDA_EXTERN(gemm_cuda_blocked)
-HPC_CUDA_EXTERN(gemm_cuda_reg_tile)
-HPC_CUDA_EXTERN(gemm_cuda_double_buf)
-HPC_CUDA_EXTERN(gemm_cuda_vectorized)
-HPC_CUDA_EXTERN(gemm_cuda_cublas)
-#undef HPC_CUDA_EXTERN
+// cuBLAS references: instantiated in src/cuda/gemm.cu (or the stub).
+extern template void gemm_cuda_cublas<float>(const Matrix<float>&, const Matrix<float>&, Matrix<float>&);
+extern template void gemm_cuda_cublas<double>(const Matrix<double>&, const Matrix<double>&, Matrix<double>&);
+extern template void gemm_cuda_cublas_device<float>(const float*, const float*, float*, int, int, int);
+extern template void gemm_cuda_cublas_device<double>(const double*, const double*, double*, int, int, int);
 
 }  // namespace hpc::gemm

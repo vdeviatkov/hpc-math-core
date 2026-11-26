@@ -101,12 +101,12 @@
  * accumulator, so the loop runs at FMOPA latency, not throughput. The
  * micro-kernel keeps every tile busy with independent outer products:
  *
- *   f32: 2×2 tiles → 32×32 C block, per k: 2 A + 2 B vectors → 4 FMOPA
- *   f64: 2×4 tiles → 16×32 C block, per k: 2 A + 4 B vectors → 8 FMOPA
+ *   f32: 1×4 tiles → 16×64 C block, per k: 1 A + 4 B vectors → 4 FMOPA
+ *   f64: 1×4 tiles →  8×32 C block, per k: 1 A + 4 B vectors → 4 FMOPA
  *
- * Each loaded vector feeds 2 (or 4) FMOPAs. The tile columns (2 or 4) are
- * the only shape difference between the types; a 2×2 layout for f64 too (4
- * of 8 tiles) measured 9% slower at N=4096. The A and B vectors of one k
+ * The shape is a template parameter; these are the values measured fastest
+ * on the M4 (docs/kernels/sme.md), ahead of the balanced 2×2 / 2×4 that
+ * load fewer vectors per FMOPA. The A and B vectors of one k
  * step are fetched two at a time with SME2's svld1_x2 (LD1W/LD1D {z0-z1}),
  * halving the load count, in every R×V shape (an odd last vector is the
  * inactive half of a pair); SME2 is therefore required (HPC_HAS_SME checks
@@ -118,29 +118,29 @@
  *    for pc (Kc = 2048)     pack_b → 32 MiB B panel       normal mode
  *     for ic (Mc = 1024)    pack_a → 8 MiB A block        normal mode
  *      macro_kernel:                                      streaming mode
- *       for jr              one B strip, 256 KiB
- *        for ir             32 A strips, each re-reads the same B strip
+ *       for jr              one B strip (64 columns at 1×4), 512 KiB
+ *        for ir             64 A strips (16 rows), each re-reads the B strip
  *         C tile → ZA       (zeroed when pc == 0, else loaded from C)
- *         for k = 0..2047   2 A + 2 B vectors → 4 FMOPA
+ *         for k = 0..2047   1 A + 4 B vectors → 4 FMOPA
  *         ZA → C tile
  *
  * Each level holds one operand fixed while the levels inside it reuse it
- * (f32, N=4096; f64 has 16-row A strips and Mc = 512, so also 32 ir steps,
- * an 8 MiB A block, 512 KiB B strips and a 64 MiB B panel):
+ * (f32 at 1×4, N=4096; f64 has 8-row A strips and Mc = 512, so also 64 ir
+ * steps, an 8 MiB A block, 512 KiB B strips and a 64 MiB B panel):
  *
  *   loop  trips  fixed during it       size      reused by        lives in
  *   k     2048   C micro-tile          4 KiB     2,048 k steps    ZA
- *   ir    32     B strip kc×nr         256 KiB   32 A strips      L2
- *   jr    128    A block mc×kc         8 MiB     128 B strips     L2
+ *   ir    64     B strip kc×nr         512 KiB   64 A strips      L2
+ *   jr    64     A block mc×kc         8 MiB     64 B strips      L2
  *   ic    4      B panel kc×nc         32 MiB    4 A blocks       SLC / DRAM
  *   pc    2      — (splits K)
  *   jc    1      — (splits N)
  *
  *  - k innermost: C stays in ZA for the whole k loop and touches memory
- *    once per pc pass. Per k step f32 loads 256 B for 2,048 flops
- *    (8 flop/B), f64 384 B for 1,024 flops (~2.7 flop/B).
- *  - ir inside jr: a B strip is reused by 32 A strips in a row, so it is
- *    fetched from beyond L2 once and read from L2 31 times. An A strip is
+ *    once per pc pass. Per k step 1×4 loads 320 B (1 A + 4 B vectors):
+ *    2,048 flops f32 (6.4 flop/B), 512 flops f64 (1.6 flop/B).
+ *  - ir inside jr: a B strip is reused by 64 A strips in a row, so it is
+ *    fetched from beyond L2 once and read from L2 63 times. An A strip is
  *    reused once per B strip, after the whole 8 MiB A block has passed:
  *    the A block has to stay in L2, and at half the L2 it does.
  *  - ic inside pc: B is packed once per (jc, pc) and serves all M/Mc A

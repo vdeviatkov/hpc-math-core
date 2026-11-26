@@ -19,38 +19,38 @@
 <path d="M 877.6923076923077 92 V 452" stroke="#dce2e8"/>
 <text x="877.6923076923077" y="472" font-size="12" text-anchor="middle">120</text>
 <text x="238" y="120" font-size="14" text-anchor="end">0  naive</text>
-<rect x="250" y="106" width="19.2" height="20" fill="#245ea8"/>
-<text x="277.2492307692308" y="121" font-size="13" text-anchor="start">3.7</text>
+<rect x="250" y="106" width="19.4" height="20" fill="#245ea8"/>
+<text x="277.3538461538462" y="121" font-size="13" text-anchor="start">3.7</text>
 <text x="238" y="152" font-size="14" text-anchor="end">1  shared-memory tiles</text>
 <rect x="250" y="138" width="17.7" height="20" fill="#245ea8"/>
 <text x="275.68" y="153" font-size="13" text-anchor="start">3.4</text>
 <text x="238" y="184" font-size="14" text-anchor="end">2  register tile</text>
-<rect x="250" y="170" width="122.9" height="20" fill="#245ea8"/>
-<text x="380.9230769230769" y="185" font-size="13" text-anchor="start">23.5</text>
+<rect x="250" y="170" width="127.2" height="20" fill="#245ea8"/>
+<text x="385.15999999999997" y="185" font-size="13" text-anchor="start">24.3</text>
 <text x="238" y="216" font-size="14" text-anchor="end">3  + double buffer</text>
-<rect x="250" y="202" width="134.1" height="20" fill="#245ea8"/>
-<text x="392.11692307692306" y="217" font-size="13" text-anchor="start">25.6</text>
+<rect x="250" y="202" width="138.9" height="20" fill="#245ea8"/>
+<text x="396.9292307692308" y="217" font-size="13" text-anchor="start">26.6</text>
 <text x="238" y="248" font-size="14" text-anchor="end">4  + 128-bit loads</text>
-<rect x="250" y="234" width="140.4" height="20" fill="#245ea8"/>
-<text x="398.44615384615383" y="249" font-size="13" text-anchor="start">26.9</text>
+<rect x="250" y="234" width="148.5" height="20" fill="#245ea8"/>
+<text x="406.5015384615385" y="249" font-size="13" text-anchor="start">28.4</text>
 <text x="238" y="280" font-size="14" text-anchor="end">5  WMMA</text>
-<rect x="250" y="266" width="76.5" height="20" fill="#be4d14"/>
-<text x="334.5261538461539" y="281" font-size="13" text-anchor="start">14.6</text>
+<rect x="250" y="266" width="116.1" height="20" fill="#be4d14"/>
+<text x="374.12307692307695" y="281" font-size="13" text-anchor="start">22.2</text>
 <text x="238" y="312" font-size="14" text-anchor="end">6  mma.sync</text>
-<rect x="250" y="298" width="88.7" height="20" fill="#be4d14"/>
-<text x="346.71384615384613" y="313" font-size="13" text-anchor="start">17.0</text>
+<rect x="250" y="298" width="97.3" height="20" fill="#be4d14"/>
+<text x="355.2923076923077" y="313" font-size="13" text-anchor="start">18.6</text>
 <text x="238" y="344" font-size="14" text-anchor="end">7  pipelined WMMA</text>
-<rect x="250" y="330" width="505.8" height="20" fill="#be4d14"/>
-<text x="763.7630769230769" y="345" font-size="13" text-anchor="start">96.7</text>
+<rect x="250" y="330" width="547.5" height="20" fill="#be4d14"/>
+<text x="805.5046153846154" y="345" font-size="13" text-anchor="start">105</text>
 <text x="238" y="376" font-size="14" text-anchor="end">8  TMA + warp-specialised</text>
-<rect x="250" y="362" width="557.3" height="20" fill="#be4d14"/>
-<text x="815.3384615384615" y="377" font-size="13" text-anchor="start">107</text>
+<rect x="250" y="362" width="557.9" height="20" fill="#be4d14"/>
+<text x="815.9138461538462" y="377" font-size="13" text-anchor="start">107</text>
 <text x="238" y="408" font-size="14" text-anchor="end">cuBLAS SGEMM</text>
-<rect x="250" y="394" width="198.3" height="20" fill="#8c96a3"/>
-<text x="456.29846153846154" y="409" font-size="13" text-anchor="start">37.9</text>
+<rect x="250" y="394" width="199.7" height="20" fill="#8c96a3"/>
+<text x="457.71076923076924" y="409" font-size="13" text-anchor="start">38.2</text>
 <text x="238" y="440" font-size="14" text-anchor="end">cuBLAS FP16</text>
-<rect x="250" y="426" width="591.0" height="20" fill="#8c96a3"/>
-<text x="848.9723076923077" y="441" font-size="13" text-anchor="start">113</text>
+<rect x="250" y="426" width="601.4" height="20" fill="#8c96a3"/>
+<text x="859.4338461538462" y="441" font-size="13" text-anchor="start">115</text>
 <path d="M 562.2769230769231 92 V 452" stroke="#7a8794" stroke-dasharray="6 5"/>
 <text x="556.2769230769231" y="86" font-size="12" text-anchor="end">FP32 peak 59.7</text>
 <path d="M 900.7076923076924 92 V 452" stroke="#7a8794" stroke-dasharray="6 5"/>

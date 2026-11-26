@@ -91,17 +91,25 @@ struct LowpParams<gemm::QMmla> {
     static constexpr std::size_t Kc = 2048 / sizeof(In);  // 1,024 bf16, 2,048 INT8
 };
 
-// Apple M4. 4 rows (the lanes of A) × 4 accumulators: 4 × 16 (FMLAL) or
-// 4 × 32 (FMLA .8h) elements of C.
+// Apple M4. 4 rows (the lanes of A) × 6 accumulators, a 4 × 24 block of C:
+// measured 8–10% faster than 4 × 4 at N = 256 … 4096 (bench_gemm_lowp's
+// NeonFmlalTile rows, docs/experiments/lowp/sweeps-m4).
 template <>
 struct LowpParams<gemm::QFmlal> {
-    static constexpr int R = 4, V = 4;
+    static constexpr int R = 4, V = 6;
     static constexpr std::size_t Mc = 256, Nc = 512;
     template <typename In>
     static constexpr std::size_t Kc = 512;
 };
+// Apple M4. 4 rows × 5 FP16 accumulators, a 4 × 40 block of C: 4–10% faster
+// than 4 × 4 and within 1% of 4 × 6 (NeonFp16AccTile rows).
 template <>
-struct LowpParams<gemm::QFmlaF16> : LowpParams<gemm::QFmlal> {};
+struct LowpParams<gemm::QFmlaF16> {
+    static constexpr int R = 4, V = 5;
+    static constexpr std::size_t Mc = 256, Nc = 512;
+    template <typename In>
+    static constexpr std::size_t Kc = 512;
+};
 
 /// gemm_simd_lowp at its measured parameters, as a function pointer.
 template <template <typename> class Ops, typename In>

@@ -6,6 +6,8 @@
  *   ./build/benchmarks/avx512_b_stride ldb    > ldb.csv
  *   ./build/benchmarks/avx512_b_stride size   > size.csv
  *   ./build/benchmarks/avx512_b_stride height > height.csv
+ *   perf stat -e ... ./build/benchmarks/avx512_b_stride run N ldb pack reps
+ *   perf stat -e ... ./build/benchmarks/avx512_b_stride run M K N ldb kc pack reps
  *
  * chase   A dependent pointer chase over `lines` cache lines placed `stride`
  *         bytes apart, in random order, on 2 MiB transparent huge pages (so
@@ -228,6 +230,22 @@ int main(int argc, char** argv) {
         chase();
         return 0;
     }
+    // One configuration only, for perf stat:
+    //   run N ldb pack reps              (M = K = N, kc = 256)
+    //   run M K N ldb kc pack reps       (the strip-height experiment's shapes)
+    if (mode == "run" && (argc == 6 || argc == 9)) {
+        const bool full     = argc == 9;
+        const std::size_t N = std::stoul(argv[full ? 4 : 2]);
+        const std::size_t M = full ? std::stoul(argv[2]) : N, K = full ? std::stoul(argv[3]) : N;
+        const std::size_t ldb = std::stoul(argv[full ? 5 : 3]), kc = full ? std::stoul(argv[6]) : 256;
+        const bool pack = std::stoi(argv[full ? 7 : 4]) != 0;
+        const int reps  = std::stoi(argv[full ? 8 : 5]);
+        Problem p(M, K, N, ldb);
+        for (int r = 0; r < reps; ++r)
+            p.run(kc, pack);
+        std::printf("run M=%zu K=%zu N=%zu ldb=%zu kc=%zu pack=%d reps=%d\n", M, K, N, ldb, kc, int(pack), reps);
+        return 0;
+    }
     const char* header = "M,K,N,ldb,stride_bytes,kc,in_place_gflops,packed_gflops,in_place_over_packed\n";
     if (mode == "ldb") {
         std::printf("%s", header);
@@ -246,7 +264,7 @@ int main(int argc, char** argv) {
             for (const std::size_t kc : {16, 32, 48, 64, 96, 128, 192, 256, 384, 512, 768, 1024})
                 measure(512, 2048, 1024, ldb, kc);
     } else {
-        std::fprintf(stderr, "usage: %s chase|ldb|size|height\n", argv[0]);
+        std::fprintf(stderr, "usage: %s chase|ldb|size|height|run N ldb pack reps|run M K N ldb kc pack reps\n", argv[0]);
         return 2;
     }
 }

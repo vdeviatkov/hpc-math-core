@@ -1,0 +1,5 @@
+# bench_gemm --benchmark_filter=^<row>$ --benchmark_min_time=2s under perf stat, taskset -c 2, Zen 5, 2026-11-25
+Blocked/f32/N=256        IPC 3.90  instr/FLOP 0.442  FLOP/cycle 8.82  branch-miss/kFLOP 0.1321  L1miss/kFLOP 32.898
+Reordered/f32/N=256      IPC 2.78  instr/FLOP 0.157  FLOP/cycle 17.71  branch-miss/kFLOP 0.0086  L1miss/kFLOP 31.635
+Blocked/f32/N=4096       IPC 3.53  instr/FLOP 0.452  FLOP/cycle 7.80  branch-miss/kFLOP 0.1332  L1miss/kFLOP 42.369
+Reordered/f32/N=4096     IPC 0.68  instr/FLOP 0.120  FLOP/cycle 5.69  branch-miss/kFLOP 0.0054  L1miss/kFLOP 15.720

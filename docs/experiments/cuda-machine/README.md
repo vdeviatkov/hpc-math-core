@@ -3,16 +3,17 @@
 Raw data behind the article
 [*Matrix multiplication on an RTX 5080*](../../articles/cuda-gemm.md).
 NVIDIA GeForce RTX 5080 (sm_120, 84 SMs), driver 615.71.09, VBIOS
-98.03.3B.00.B4, CUDA 13.2, Ubuntu 24.04, host idle.
+98.03.3B.00.B4, Ubuntu 24.04, host idle. The GEMM run and the tile sweeps
+used CUDA 13.4; the peaks and profiles CUDA 13.2.
 
 | File | Program | What it measures |
 |---|---|---|
 | [`peak.csv`](peak.csv) | [`cuda_peak`](../../../benchmarks/experiments/cuda_peak.cu) | FP32 / FP64 FMA, FP16 Tensor Core (`mma.sync.m16n8k16`, fp32 accumulate) and DRAM copy rates |
 | [`clocks.csv`](clocks.csv) | `cuda_peak hold <test> 8` + `nvidia-smi` | SM and memory clock, power and temperature under each load |
-| [`bench_gemm_cuda.txt`](bench_gemm_cuda.txt) | [`bench_gemm_cuda`](../../../benchmarks/bench_gemm_cuda.cpp) | every level and cuBLAS, GPU time of the GEMM alone, N = 256 … 16384 |
-| [`bench_gemm_cuda_level8.txt`](bench_gemm_cuda_level8.txt) | same, build `CMAKE_CUDA_ARCHITECTURES=120a` | Level 8 (`CudaTma`) with Level 7, cuBLAS SGEMM and cuBLAS FP16 in the same run (median of 3; Level 7 and cuBLAS FP16 within 0.5% of `bench_gemm_cuda.txt` at N ≥ 4096, 0.9% at N = 1024; cuBLAS SGEMM within 1%) |
+| [`bench_gemm_cuda.json`](bench_gemm_cuda.json), [`bench_gemm_cuda_info.txt`](bench_gemm_cuda_info.txt) | [`bench_gemm_cuda`](../../../benchmarks/bench_gemm_cuda.cpp) `--benchmark_filter=-Var/ --benchmark_repetitions=3 --benchmark_enable_random_interleaving=true`, build `CMAKE_CUDA_ARCHITECTURES=120a` | every level at its measured tile sizes (`CudaParams`, [`benchmarks/cuda_params.hpp`](../../../benchmarks/cuda_params.hpp)) and the cuBLAS references, GPU time of the GEMM alone, N = 256 … 16384; median of 3, coefficient of variation ≤ 2.4%; GPU, driver and load in the info file. The table in [docs/benchmarks.md](../../benchmarks.md#nvidia-rtx-5080--cuda) and the article's ladder |
+| [`tile-sweeps/`](tile-sweeps/README.md) | `bench_gemm_cuda`, `bench_gemm_lowp_cuda` `*Var/` rows | the tile-size sweeps of every level ([docs/kernels/cuda.md](../../kernels/cuda.md)) |
 | [`profile_level8_N8192.csv`](profile_level8_N8192.csv) | Nsight Compute | Level 8 (`kernel_tma`) at N = 8192: time, registers, occupancy limits, Tensor and FMA pipe activity, instructions, L2 hit rate, DRAM bytes |
-| [`profile.csv`](profile.csv) | Nsight Compute 2026 (`ncu`) | per-level counters at N = 4096, f32 |
+| [`profile.csv`](profile.csv) | Nsight Compute 2026 (`ncu`) | per-level counters at N = 4096, f32 (tile sizes below) |
 
 ## Peaks
 
@@ -60,7 +61,12 @@ clock). The metrics:
 | `l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_ld.sum` / `…_wavefronts_mem_shared_op_ld.sum` | shared-memory load bank conflicts / load wavefronts |
 | `dram__bytes.sum`, `lts__t_sector_hit_rate.pct`, `l1tex__t_sector_hit_rate.pct` | DRAM traffic, L2 and L1 hit rates |
 
-Summary at N = 4096 (full data in `profile.csv`):
+Summary at N = 4096 (full data in `profile.csv`). The profiles were taken
+with Level 2 at BK 16, Level 4 at 8 × 8 per thread, Levels 5–6 at 4 × 4
+warps (64 × 64 blocks) and Level 7 at 32 × 64 warp tiles; the measured
+parameters differ for those levels ([docs/kernels/cuda.md](../../kernels/cuda.md)),
+so the times and counters below describe those configurations, not the
+rates in `bench_gemm_cuda.json`.
 
 | Level | Time, ms | Regs | Occupancy | FMA pipe | Tensor pipe | Shared-load conflicts | DRAM, MB |
 |---|--:|--:|--:|--:|--:|--:|--:|
@@ -89,5 +95,6 @@ written) and 134 MB with fp16 inputs.
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build --target cuda_peak bench_gemm_cuda
 ./build/benchmarks/cuda_peak > peak.csv
-./build/benchmarks/bench_gemm_cuda > bench_gemm_cuda.txt
+./build/benchmarks/bench_gemm_cuda --benchmark_filter=-Var/ --benchmark_repetitions=3 \
+    --benchmark_enable_random_interleaving=true --benchmark_format=json > bench_gemm_cuda.json
 ```

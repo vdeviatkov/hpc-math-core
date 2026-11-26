@@ -28,10 +28,14 @@ struct SmeParams {
     /// 32-bit ZA tiles (FP32 and the widening types) or 64-bit (FP64).
     static constexpr bool kWord32 = sizeof(gemm::sme_word_t<T>) == 4;
 
-    // Every ZA tile, in two rows: 2 × 2 za32 (a 32 × 32 C block at M4's SVL)
-    // or 2 × 4 za64 (16 × 32). A 2 × 2 FP64 layout (4 of 8 tiles) measured
-    // 9% slower at N = 4096 (sme.hpp, "gemm_sme").
-    static constexpr int R = 2, V = kWord32 ? 2 : 4;
+    // 1 × 4 ZA tiles in every type: one A vector and four B vectors per k
+    // step (a 16 × 64 C block for FP32 and the widening types, 8 × 32 FP64,
+    // at M4's SVL). 7 interleaved repetitions with paired loads for every
+    // shape (docs/kernels/sme.md): against 2 × 2 FP32 +7.3% at N = 1024 and
+    // +2.9% at 4096 (−0.8% at 512); against 2 × 4 FP64 +0.4–3.7% at
+    // N = 256 … 4096; against 2 × 2 bf16 / fp16 / INT8 +0.8–6.1% at every
+    // size (docs/experiments/lowp/sweeps-m4).
+    static constexpr int R = 1, V = 4;
 
     // Swept over Mc 128–2048, Kc 1024–4096, Nc 1024–4096 at N = 512 … 4096:
     // the A block (Mc × Kc) is 8 MiB in both FP types, half the L2, and each

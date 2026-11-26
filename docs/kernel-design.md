@@ -297,7 +297,7 @@ K to a multiple of G. Article: [part 5](articles/lowp-gemm.md).
 | `ZmmDot<In>` (`avx512.hpp`) | `VDPBF16PS` (bf16), `VPDPBUSD` (INT8). One accumulator is 1 × 16 of C; measured tile 8 × 2 (8 × 32 of C), swept by `bench_gemm_lowp`'s `Avx512{Dpbf16,Vnni}Tile*` rows. Only B is packed (G rows interleaved, as the instructions need); A is broadcast in place. `VPDPBUSD` is unsigned × signed, so B is packed + 128 and each row's accumulators start at −128 · Σ_k A(i, k): exact. `VPDPBUSD` is one inline `asm` instruction because GCC 13 wraps the intrinsic in register copies that cost 16–26%. Edges: masked C loads and stores. Measured blocks: Mc = 128, Kc = 1024 bytes of k, Nc = 512. |
 | `QMmla<In>`, `QFmlal<In>`, `QFmlaF16<In>` (`neon.hpp`) | `BFMMLA` (bf16) and `SMMLA` (INT8): 2 × 2-tile matrix instructions, one accumulator per 2 × 2 of C, A and B both packed; measured as an 8 × 8 C block in 16 registers (R = V = 4). `FMLAL` (fp16, FP32 accumulate) and `FMLA .8h` (fp16 accumulate, converted on load and store) multiply by element: A is packed 4 rows per k and row r uses lane r, so R = 4; measured with 16 accumulators. Edges through a buffer. |
 | `src/gemm/sme.hpp`: `gemm_sme<fp16 \| bf16 \| int8_t>` | `gemm_sme` and `gemm_sme_mt` with widening `FMOPA` / `SMOPA` into the four 32-bit ZA tiles: the FP32 kernels with a 32-bit word of G = 2 or 4 elements in place of an element (G = 1 for FP32 / FP64), so one `pack_a` (NEON transposes of 32-bit words), one `macro_kernel` and one driver serve all five types; `pack_b` zips G rows. Any R × V ZA shape and cache block, as for FP32 (TileK in elements, a multiple of G). The measured blocks (`SmeParams`) keep FP32's sizes in k groups (8 MiB A block). |
-| `src/gemm/cuda.hpp`, `src/cuda/gemm.cu` | One `mma.sync` kernel template per format struct (`Bf16`, `Fp16`, `Fp16Acc16`, `Int8`, `Fp8`), in two kernels: `kernel_lowp` (cp.async, 2 stages, padded rows, 128 × 128) and `kernel_tma` (Level 8). Both take A and B K-major (B transposed), so one non-transposing `ldmatrix` serves 8- and 16-bit formats. FP8 uses the block-scaled `kind::mxf8f6f4` instruction with unit scales in an `sm_120a` build (full rate), the sm_89 form otherwise. cuBLAS / cuBLASLt references on the same buffers. Matrix wrappers pad, transpose B and select the implementation (`CudaLowpImpl`). |
+| `src/gemm/cuda.hpp`, `src/cuda/gemm_kernels.cuh` | One `mma.sync` kernel template per format struct (`Bf16`, `Fp16`, `Fp16Acc16`, `Int8`, `Fp8`), in two kernels: `kernel_lowp` (cp.async, 2 stages, padded rows, 128 × 128) and `kernel_tma` (Level 8). Both take A and B K-major (B transposed), so one non-transposing `ldmatrix` serves 8- and 16-bit formats. FP8 uses the block-scaled `kind::mxf8f6f4` instruction with unit scales in an `sm_120a` build (full rate), the sm_89 form otherwise. cuBLAS / cuBLASLt references on the same buffers. Matrix wrappers pad, transpose B and select the implementation (`CudaLowpImpl`). |
 | `src/cuda/gemm_stub.cpp` | The same symbols without CUDA; every format reports unsupported and kernels throw. |
 
 ## CUDA interface and implementation
@@ -306,7 +306,13 @@ K to a multiple of G. Article: [part 5](articles/lowp-gemm.md).
 
 The header exposes Matrix wrappers, device-buffer launchers, capability
 queries, copies, allocation and event timing without including CUDA headers.
-Only float/double template instantiations are supplied. Matrix wrappers copy
+Every kernel entry point takes a tile-parameter struct P as its first
+template argument (the header lists the members P needs); the kernels hold
+no sizes. The targets that call them instantiate them for their P with the
+macros of `src/cuda/gemm_instantiate.hpp`: `benchmarks/cuda_instances.cpp`
+with the measured `CudaParams` (`benchmarks/cuda_params.hpp`) and the sweep
+variants, `tests/cuda_instances.cpp` with those and a set in which every
+size differs. Matrix wrappers copy
 inputs to the selected GPU and return a completed CPU result. Device
 launchers enqueue on the default stream; the caller owns buffer lifetimes,
 alignment, non-aliasing and synchronization. Dimensions and linear element
@@ -322,11 +328,14 @@ FP16 buffers are void* so CPU-only builds can compile this header. Use
 cudaMalloc supplies sufficient alignment. Compile architectures appropriate
 to the GPU; runtime detection cannot add instructions omitted at compile time.
 
-### `src/cuda/gemm.cu`
+### `src/cuda/gemm_kernels.cuh`, `src/cuda/gemm.cu`
 
-One file holds every CUDA kernel (Levels 0-8 and the low-precision
-formats), so their layouts and shared building blocks can be compared
-directly. Device helpers come first: `load_tile` coalesces global reads,
+`gemm_kernels.cuh` holds every CUDA kernel (Levels 0-8 and the
+low-precision formats) and its launcher as templates over the sizes of P,
+so their layouts and shared building blocks can be compared directly;
+`gemm.cu` compiles the size-independent rest once (device queries,
+cuBLAS / cuBLASLt, fp32 → fp16 conversion, timing, memory). Device helpers
+come first: `load_tile` coalesces global reads,
 optionally transposes stores and zero-fills edges (through
 `cp_async_or_zero` on sm_80+ when source and destination types agree);
 `copy_tile_16B` copies whole tiles in 16-byte `cp_async_16` chunks;
@@ -339,15 +348,15 @@ share `warp_mma_k32` (ldmatrix + mma for one 32-byte k step, over a
 
 | Level / kernel | Idea and data flow | Limits and tradeoffs |
 |---|---|---|
-| 0 `kernel_naive` | 16x16 threads; each owns one dot product using global A/B | A warp covers two adjacent 16-column row segments, not one 32-column row. Caches absorb reuse, but each FMA needs two source loads. |
-| 1 `kernel_blocked` | Cooperative 16x16 shared tiles, one C value per thread | Two barriers per 16 FMAs; synchronization can outweigh saved global loads. The padding separates the two double-precision A broadcasts across banks. |
-| 2 `kernel_reg_tile` | 128x128 outputs, 256 threads, 8x8 register tile each; shared A transposed and B natural | More reuse per shared load, but register pressure limits occupancy. +1 padding addresses A's transposed stores; B reads still conflict. |
-| 3 `kernel_double_buf` | Prefetch the next shared tile while accumulating the current tile | cp.async overlap requires sm_80+; older targets copy synchronously. Double uses 64x64 outputs and 64 threads to stay within static shared-memory limits. |
-| 4 `kernel_vectorized` | 128-bit global/shared loads, XOR-swizzled vector slots, same register tile as level 2 | K/N must be multiples of 4 float / 2 double, otherwise level 2 runs. It builds on level 2, not the double-buffered kernel. |
-| 5 `kernel_wmma` | 64x64 outputs, 16 warps; one 16x16 accumulator per warp; float converted to half in shared memory | sm_70+; else level 3. Uniform warp participation is required. Partial output tiles stage through per-warp shared memory before clipped stores. |
+| 0 `kernel_naive` | P::Tile x P::Tile threads (16 x 16); each owns one dot product using global A/B | A warp covers two adjacent 16-column row segments, not one 32-column row. Caches absorb reuse, but each FMA needs two source loads. |
+| 1 `kernel_blocked` | Cooperative Tile x Tile shared tiles, one C value per thread | Two barriers per 16 FMAs; synchronization can outweigh saved global loads. The padding separates the two double-precision A broadcasts across banks. |
+| 2 `kernel_reg_tile` | P::RegTile<T>: BM x BN outputs, a TM x TN register tile per thread (FP32 128x128, BK 32, 8x8); shared A transposed and B natural | More reuse per shared load, but register pressure limits occupancy. +1 padding addresses A's transposed stores; B reads still conflict. |
+| 3 `kernel_double_buf` | P::DoubleBuf<T>; prefetch the next shared tile while accumulating the current tile | cp.async overlap requires sm_80+; older targets copy synchronously. Two buffers must fit 48 KB of static shared memory (double uses 64x64). |
+| 4 `kernel_vectorized` | P::Vectorized<T> (FP32 128x128, 16x8 per thread); 128-bit global/shared loads, XOR-swizzled vector slots | K/N must be multiples of 4 float / 2 double, otherwise level 2 runs. It builds on level 2, not the double-buffered kernel. |
+| 5 `kernel_wmma` | P::WarpGrid warps (2x8: a 32x128 tile); one 16x16 accumulator per warp; float converted to half in shared memory | sm_70+; else level 3. Uniform warp participation is required. Partial output tiles stage through per-warp shared memory before clipped stores. |
 | 6 `kernel_mma_ldmatrix` | Same output decomposition as level 5, with explicit lane mapping and two m16n8k16 MMAs per warp | sm_80+; else level 5. A uses row-major shared layout; B's ldmatrix is transposed. When compiled below sm_80, the kernel body uses the shared WMMA implementation, including when older PTX is JIT-compiled on a newer GPU. |
-| 7 `kernel_wmma_pipelined` | 128x128 output, BK=32; eight warps own 2x4 WMMA fragments each; two shared stages with padded strides | Half inputs are converted once before timing. Matrix wrapper falls back to level 5 unless M/N are multiples of 128 and K of 32. Raw device path has no shape fallback. |
-| 8 `kernel_tma` | 128x256 (8 consumer warps, 4 stages) or 128x128 (4 consumer warps, 6 stages) output, chosen by wave fill; 64x64 per consumer warp; one producer warp issues TMA copies with 64-byte swizzle; full/empty mbarriers per stage | sm_90+; the Matrix wrapper runs level 7 otherwise. Takes A (MxK) and B transposed (NxK); the Matrix wrapper converts to fp16, transposes and pads. Tensor maps are encoded on the host and cached per buffer. Shared with the low-precision formats. |
+| 7 `kernel_wmma_pipelined` | P::Pipe: 128x128 output, BK=32, eight warps of 64x32 (4x2 WMMA fragments); two shared stages with padded strides | Half inputs are converted once before timing. Matrix wrapper falls back to level 5 unless M, N, K are multiples of the tile. Raw device path has no shape fallback. |
+| 8 `kernel_tma` | P::Tma: BMx256 or BMx128 output (128x256 with 4 stages, 128x128 with 6), chosen by wave fill; 64x64 per consumer warp; one producer warp issues TMA copies with 64-byte swizzle; full/empty mbarriers per stage | sm_90+; the Matrix wrapper runs level 7 otherwise. Takes A (MxK) and B transposed (NxK); the Matrix wrapper converts to fp16, transposes and pads. Tensor maps are encoded on the host and cached per buffer. Shared with the low-precision formats. |
 
 The buffered kernels go through `cp_async_pipeline`: commit copies, wait
 for each thread's copies, then one block barrier per tile makes the data
@@ -371,9 +380,12 @@ measures the interval between stream markers; for short launches it can
 include GPU idle gaps while the host submits work. It is not a direct
 hardware-counter measurement of only the kernel body.
 
-### `src/cuda/gemm_stub.cpp`
+### `src/cuda/gemm_stub.cpp`, `src/cuda/gemm_stub_templates.hpp`
 
-This supplies the same linkable symbols when no toolkit is found. Device
+These supply the same linkable symbols when no toolkit is found: the stub
+`.cpp` the size-independent functions, the header throwing definitions of
+the parameterised entry points, which the instantiation files compile
+instead of the kernels. Device
 count is zero, capability queries are false, free is harmless, and compute,
 copies, synchronization, allocation and timing throw. This preserves build
 coverage and explicit skip behavior without pretending CPU work is CUDA.

@@ -1,0 +1,12 @@
+# bench_gemm --benchmark_filter=^<row>$ --benchmark_min_time=2s under perf stat, taskset -c 2,
+# Zen 5, native build, 2026-11-25, idle. Events per 1,000 retired FP operations:
+# l2_cache_req_stat.dc_access_in_l2, .ls_rd_blk_c, ls_l1_d_tlb_miss.all,
+# de_dispatch_stall_cycle_dynamic_tokens_part1.load_queue_rsrc_stall
+Avx512Tile8x2/f32/N=1024   L1D->L2 4.512  L2 demand miss 0.0411  L1 DTLB miss 2.405  load-queue stall cyc 0.194 (per kFLOP)
+Avx512Tile8x3/f32/N=1024   L1D->L2 4.483  L2 demand miss 0.0507  L1 DTLB miss 1.492  load-queue stall cyc 0.087 (per kFLOP)
+Avx512Tile8x2/f32/N=4096   L1D->L2 6.550  L2 demand miss 0.0680  L1 DTLB miss 2.608  load-queue stall cyc 0.312 (per kFLOP)
+Avx512Tile8x3/f32/N=4096   L1D->L2 5.354  L2 demand miss 0.0562  L1 DTLB miss 1.696  load-queue stall cyc 0.114 (per kFLOP)
+Avx512Tile8x2/f64/N=512    L1D->L2 9.485  L2 demand miss 0.1021  L1 DTLB miss 4.823  load-queue stall cyc 0.449 (per kFLOP)
+Avx512Tile8x3/f64/N=512    L1D->L2 9.428  L2 demand miss 0.1412  L1 DTLB miss 2.951  load-queue stall cyc 0.168 (per kFLOP)
+Avx512Tile8x2/f64/N=4096   L1D->L2 12.549  L2 demand miss 0.2007  L1 DTLB miss 5.227  load-queue stall cyc 0.722 (per kFLOP)
+Avx512Tile8x3/f64/N=4096   L1D->L2 10.745  L2 demand miss 0.1585  L1 DTLB miss 3.301  load-queue stall cyc 0.225 (per kFLOP)

@@ -1,0 +1,36 @@
+# avx512_b_stride run N ldb 0 reps (B in place, 8x2 tile, 64x256x512 blocks), taskset -c 2,
+# perf stat, Zen 5 (Ryzen 9 9950X), 2026-11-25, idle. Events per 1,000 retired FP operations
+# (fp_ret_sse_avx_ops.all).
+#
+# L1D fills by source (ls_any_fills_from_sys.*)
+N,ldb,all_L1D_fills,from_L2,from_L3,from_DRAM
+1024,1024,6.754,6.589,0.149,0.0076
+1024,1040,6.916,6.830,0.094,0.0061
+2048,2048,7.657,7.423,0.145,0.0322
+2048,2064,6.885,6.762,0.089,0.0319
+4096,4096,8.067,7.701,0.138,0.2260
+4096,4112,6.964,6.665,0.061,0.2346
+#
+# L2 (l2_cache_req_stat.dc_access_in_l2, .dc_hit_in_l2, .ls_rd_blk_c; l2_pf_miss_l2_hit_l3.l2_hwpf)
+N,ldb,L1D_to_L2_requests,L2_hits,L2_demand_misses,L2_prefetch_misses
+1024,1024,6.731,6.576,0.1463,0.8259
+1024,1040,6.893,6.784,0.0884,0.8303
+2048,2048,7.564,7.428,0.1378,0.9420
+2048,2064,6.918,6.836,0.0797,0.8761
+4096,4096,7.781,7.633,0.1423,0.5120
+4096,4112,6.842,6.754,0.0887,0.5264
+#
+# N = 1024 other candidates (40 reps): no difference between strides
+event,ldb_1024,ldb_1040
+ls_bad_status2.stli_other,0.0038,0.0039
+ls_stlf,0.0746,0.0635
+ls_l1_d_tlb_miss.all,2.3607,2.2161
+de_dispatch_stall...load_queue_rsrc_stall,0.6722,0.7493
+ls_misal_loads.ma4k,0.1807,0.1066
+#
+# Throughput (same binary, wall time minus a reps=0 run, three rounds): GFLOP/s
+N,ldb,round1,round2,round3
+1024,1024,238.6,238.6,243.1
+1024,1040,299.6,299.6,299.6
+2048,2048,221.7,221.7,221.7
+2048,2064,286.3,286.3,286.3

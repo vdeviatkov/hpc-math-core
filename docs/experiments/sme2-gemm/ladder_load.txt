@@ -1,0 +1,2 @@
+sme start: 23:46  up 248 days, 23:47, 5 users, load averages: 5.32 5.72 6.79
+sme end: 23:48  up 248 days, 23:50, 5 users, load averages: 3.29 4.62 6.14

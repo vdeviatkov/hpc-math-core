@@ -12,6 +12,7 @@
  * Tensor Core / TF32 ones also on GPUs older than they need.
  */
 
+#include "cuda_test_params.hpp"
 #include "gemm/cuda.hpp"
 #include "gemm/naive.hpp"
 #include "hpc/matrix.hpp"
@@ -19,6 +20,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <deque>
 #include <cmath>
 #include <cstddef>
 #include <random>
@@ -66,7 +68,8 @@ std::vector<Shape> operator+(std::vector<Shape> a, const Shape& b) {
     return a;
 }
 
-std::vector<Shape> operator+(std::vector<Shape> a, const std::vector<Shape>& b) {
+template <typename E>
+std::vector<E> operator+(std::vector<E> a, const std::vector<E>& b) {
     a.insert(a.end(), b.begin(), b.end());
     return a;
 }
@@ -83,44 +86,65 @@ const std::vector<Shape> kEdges = {{17, 33, 65}, {129, 37, 131}, {132, 68, 260}}
 // the vector width);
 // N=192 checks gemm_cuda_wmma_pipelined's fallback (not a multiple of 128)
 // and 384x160x256 its fast path with M, K, N all different.
-const std::vector<Case<float>> kF32 = {
-    {"Naive", gemm_cuda_naive<float>, Needs::kDevice, false, square({32, 64, 128, 256}) + kEdges},
-    {"Blocked", gemm_cuda_blocked<float>, Needs::kDevice, false,
+template <typename P>
+std::vector<Case<float>> cases_f32() {
+    return {
+    {"Naive", gemm_cuda_naive<P, float>, Needs::kDevice, false, square({32, 64, 128, 256}) + kEdges},
+    {"Blocked", gemm_cuda_blocked<P, float>, Needs::kDevice, false,
      square({32, 64, 128, 256}) + Shape{100, 50, 200} + kEdges},
-    {"RegTile", gemm_cuda_reg_tile<float>, Needs::kDevice, false,
+    {"RegTile", gemm_cuda_reg_tile<P, float>, Needs::kDevice, false,
      square({64, 128, 256, 512}) + Shape{200, 100, 300} + kEdges},
-    {"DoubleBuf", gemm_cuda_double_buf<float>, Needs::kDevice, false,
+    {"DoubleBuf", gemm_cuda_double_buf<P, float>, Needs::kDevice, false,
      square({64, 128, 256, 512}) + kEdges},
-    {"Vectorized", gemm_cuda_vectorized<float>, Needs::kDevice, false,
+    {"Vectorized", gemm_cuda_vectorized<P, float>, Needs::kDevice, false,
      square({32, 64, 128, 256, 100}) + Shape{100, 50, 200} + kEdges},
-    {"Wmma", gemm_cuda_wmma, Needs::kTensorCores, true,
+    {"Wmma", gemm_cuda_wmma<P>, Needs::kTensorCores, true,
      square({64, 128, 256, 512, 17, 50, 72, 100}) + Shape{40, 24, 56} + kEdges},
-    {"MmaLdmatrix", gemm_cuda_mma_ldmatrix, Needs::kAmpere, true,
+    {"MmaLdmatrix", gemm_cuda_mma_ldmatrix<P>, Needs::kAmpere, true,
      square({64, 128, 256}) + kEdges},
-    {"WmmaPipelined", gemm_cuda_wmma_pipelined, Needs::kTensorCores, true,
+    {"WmmaPipelined", gemm_cuda_wmma_pipelined<P>, Needs::kTensorCores, true,
      square({128, 256, 512, 192}) + Shape{384, 160, 256}},
     // Level 8 pads to tiles itself (B is transposed on the way), so it takes
     // every shape; without TMA it runs Level 7. K = 544 is 17 k-tiles, at least
     // twice around the 4- or 6-stage ring; 2688 x 1024 is 84 blocks of
     // 128 x 256, Level 8's wide tile on an 84-SM GPU.
-    {"Tma", gemm_cuda_tma, Needs::kTensorCores, true,
+    {"Tma", gemm_cuda_tma<P>, Needs::kTensorCores, true,
      square({128, 256, 512, 192, 100}) + Shape{384, 160, 256} + Shape{256, 544, 128} +
          Shape{2688, 96, 1024} + kEdges},
     {"Cublas", gemm_cuda_cublas<float>, Needs::kDevice, false, square({64, 256, 512})},
     {"CublasTf32", gemm_cuda_cublas_tf32, Needs::kAmpere, true, square({64, 256, 512})},
     {"CublasFp16", gemm_cuda_cublas_fp16, Needs::kTensorCores, true, square({64, 256, 512})},
-};
+    };
+}
 
-const std::vector<Case<double>> kF64 = {
-    {"Naive", gemm_cuda_naive<double>, Needs::kDevice, false, square({32, 64, 128, 256}) + kEdges},
-    {"Blocked", gemm_cuda_blocked<double>, Needs::kDevice, false, square({32, 128}) + kEdges},
-    {"RegTile", gemm_cuda_reg_tile<double>, Needs::kDevice, false, square({64, 256, 512}) + kEdges},
-    {"DoubleBuf", gemm_cuda_double_buf<double>, Needs::kDevice, false,
+template <typename P>
+std::vector<Case<double>> cases_f64() {
+    return {
+    {"Naive", gemm_cuda_naive<P, double>, Needs::kDevice, false, square({32, 64, 128, 256}) + kEdges},
+    {"Blocked", gemm_cuda_blocked<P, double>, Needs::kDevice, false, square({32, 128}) + kEdges},
+    {"RegTile", gemm_cuda_reg_tile<P, double>, Needs::kDevice, false, square({64, 256, 512}) + kEdges},
+    {"DoubleBuf", gemm_cuda_double_buf<P, double>, Needs::kDevice, false,
      square({64, 256, 512}) + kEdges},
-    {"Vectorized", gemm_cuda_vectorized<double>, Needs::kDevice, false,
+    {"Vectorized", gemm_cuda_vectorized<P, double>, Needs::kDevice, false,
      square({32, 128, 99}) + kEdges},
     {"Cublas", gemm_cuda_cublas<double>, Needs::kDevice, false, square({64, 256})},
-};
+    };
+}
+
+template <typename T>
+std::vector<Case<T>> named(std::vector<Case<T>> cases, const char* prefix) {
+    static std::deque<std::string> names;  // Case holds a const char*; a deque never moves its strings
+    for (Case<T>& c : cases) {
+        names.push_back(std::string(prefix) + c.name);
+        c.name = names.back().c_str();
+    }
+    return cases;
+}
+
+const std::vector<Case<float>> kF32 = named(cases_f32<hpc::test::CudaMeasured>(), "") +
+                                      named(cases_f32<hpc::test::CudaOdd>(), "Odd");
+const std::vector<Case<double>> kF64 = named(cases_f64<hpc::test::CudaMeasured>(), "") +
+                                       named(cases_f64<hpc::test::CudaOdd>(), "Odd");
 
 template <typename T>
 void run_case(const Case<T>& c) {
@@ -167,10 +191,11 @@ TEST(CudaDevice, EmptyProductsAndInvalidPipelinedShape) {
     if (cuda_device_count() == 0)
         GTEST_SKIP() << "No CUDA device available";
     using Fn = void (*)(const float*, const float*, float*, int, int, int);
-    const Fn kernels[] = {gemm_cuda_naive_device<float>, gemm_cuda_blocked_device<float>,
-                          gemm_cuda_reg_tile_device<float>, gemm_cuda_double_buf_device<float>,
-                          gemm_cuda_vectorized_device<float>, gemm_cuda_wmma_device,
-                          gemm_cuda_mma_ldmatrix_device, gemm_cuda_cublas_device<float>,
+    using P              = hpc::test::CudaMeasured;
+    const Fn kernels[] = {gemm_cuda_naive_device<P, float>, gemm_cuda_blocked_device<P, float>,
+                          gemm_cuda_reg_tile_device<P, float>, gemm_cuda_double_buf_device<P, float>,
+                          gemm_cuda_vectorized_device<P, float>, gemm_cuda_wmma_device<P>,
+                          gemm_cuda_mma_ldmatrix_device<P>, gemm_cuda_cublas_device<float>,
                           gemm_cuda_cublas_tf32_device};
     Matrix<float> out(3, 4);
     auto* device = static_cast<float*>(gemm_cuda_malloc(out.size() * sizeof(float)));
@@ -190,9 +215,9 @@ TEST(CudaDevice, EmptyProductsAndInvalidPipelinedShape) {
         EXPECT_THROW(fn(nullptr, nullptr, nullptr, -1, 5, 3), std::invalid_argument);
     }
     EXPECT_NO_THROW(gemm_cuda_convert_f32_to_f16_device(nullptr, nullptr, 0));
-    EXPECT_THROW(gemm_cuda_wmma_pipelined_device(nullptr, nullptr, device, 3, 32, 4),
+    EXPECT_THROW(gemm_cuda_wmma_pipelined_device<P>(nullptr, nullptr, device, 3, 32, 4),
                  std::invalid_argument);
-    gemm_cuda_wmma_pipelined_device(nullptr, nullptr, device, 3, 0, 4);
+    gemm_cuda_wmma_pipelined_device<P>(nullptr, nullptr, device, 3, 0, 4);
     gemm_cuda_cublas_fp16_device(nullptr, nullptr, device, 3, 0, 4);
     gemm_cuda_device_synchronize();
 }

@@ -1,0 +1,2 @@
+18:16  up 248 days, 18:18, 5 users, load averages: 9.59 7.47 8.28
+18:17  up 248 days, 18:19, 5 users, load averages: 5.65 6.73 7.97

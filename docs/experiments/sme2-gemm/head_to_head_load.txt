@@ -1,0 +1,2 @@
+single-core start: 23:59  up 249 days, 1 min, 5 users, load averages: 2.59 2.25 4.01
+end:  0:00  up 249 days, 2 mins, 5 users, load averages: 2.74 2.35 3.90

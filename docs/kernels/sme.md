@@ -3,10 +3,10 @@
 `gemm_sme<T, R, V, TileM, TileK, TileN>` multiplies on the SME2 matrix
 unit with an R × V arrangement of ZA tiles, each holding an S × S block of
 C, where S is the streaming vector length in elements (16 FP32, 8 FP64 on
-the M4). The measured defaults are **2 × 2 FP32** (a 32 × 32 block of C)
-and **2 × 4 FP64** (16 × 32), with cache blocks 1024 × 2048 × 4096 FP32
-and 512 × 2048 × 4096 FP64. This page gives the measurements behind those
-choices on an Apple M4 Max, one SME unit, and the multi-threaded kernel
+the M4). The measured defaults are **1 × 4** in both types (a 16 × 64
+block of C in FP32, 8 × 32 in FP64), with cache blocks 1024 × 2048 × 4096
+FP32 and 512 × 2048 × 4096 FP64; the widening types use 2 × 2. This page
+gives the measurements behind those choices on an Apple M4 Max, one SME unit, and the multi-threaded kernel
 that uses both units. Code: [`sme.hpp`](../../src/gemm/sme.hpp); measured
 values: [`benchmarks/sme_params.hpp`](../../benchmarks/sme_params.hpp)
 (`SmeParams<T>`). The other families: [AVX2](avx2.md),
@@ -16,11 +16,11 @@ values: [`benchmarks/sme_params.hpp`](../../benchmarks/sme_params.hpp)
 
 ```cpp
 // T, ZA tile rows R, ZA tile columns V, TileM, TileK, TileN; no defaults.
-gemm_sme<float, 2, 2, 1024, 2048, 4096>(A, B, C);           // packs A and B
-gemm_sme<double, 2, 4, 512, 2048, 4096>(A64, B64, C64);
-gemm_sme_blocked<float, 2, 2, 1024, 2048, 4096>(A, B, C);   // packs A, reads B in place
-gemm_sme_tiles<double, 2, 4>(A64, B64, C64);                // no cache blocking
-gemm_sme_mt<float, 2, 2, 1024, 2048, 4096>(A, B, C, 8);     // several SME units
+gemm_sme<float, 1, 4, 1024, 2048, 4096>(A, B, C);           // packs A and B
+gemm_sme<double, 1, 4, 512, 2048, 4096>(A64, B64, C64);
+gemm_sme_blocked<float, 1, 4, 1024, 2048, 4096>(A, B, C);   // packs A, reads B in place
+gemm_sme_tiles<double, 1, 4>(A64, B64, C64);                // no cache blocking
+gemm_sme_mt<float, 1, 4, 1024, 2048, 4096>(A, B, C, 8);     // several SME units
 ```
 
 All of them overwrite C and reload the partial sums between K blocks.
@@ -53,88 +53,72 @@ indexed at run time.
 
 ## Shape sweep, M4 Max
 
-`bench_gemm`'s `SmeTile` benchmarks: `gemm_sme` with every legal shape and
-the default cache blocks, GFLOP/s, median of 3 interleaved repetitions
-([data](../experiments/sme-tiles/README.md)). Best per column in bold.
+`bench_gemm`'s `SmeTile` benchmarks: `gemm_sme` with every 4-tile FP32
+shape and the leading FP64 shapes at the default cache blocks, GFLOP/s,
+median of 7 interleaved repetitions (load average 12–13; coefficient of
+variation ≤ 2.7%; [data](../experiments/sme-tiles/README.md)). Best per
+column in bold.
 
-**In this sweep only the default shapes used paired loads**; the others
-loaded one vector at a time. The kernel now pairs loads for every shape,
-so the non-default rows may understate it.
+| Type | ZA shape | C block | N = 256 | N = 512 | N = 1024 | N = 4096 |
+|---|---|---|--:|--:|--:|--:|
+| FP32 | **1 × 4** (default) | 16 × 64 | **768.5** | 1,322.7 | **1,574.8** | **1,602.9** |
+| FP32 | 2 × 2 | 32 × 32 | 758.4 | **1,333.2** | 1,467.2 | 1,557.6 |
+| FP32 | 4 × 1 | 64 × 16 | 663.4 | 1,143.7 | 1,365.0 | 1,422.6 |
+| FP64 | **1 × 4** (default) | 8 × 32 | **318.8** | **407.3** | **439.7** | **429.5** |
+| FP64 | 2 × 4 | 16 × 32 | 314.9 | 405.7 | 424.2 | 426.3 |
+| FP64 | 2 × 2 | 16 × 16 | **318.8** | 392.8 | 415.4 | 419.2 |
+| FP64 | 4 × 1 | 32 × 8 | 294.9 | 356.8 | 390.8 | 387.0 |
 
-FP32 (all eight shapes):
+## Why 1 × 4
 
-| ZA shape | C block | N = 64 | N = 256 | N = 512 | N = 1024 | N = 4096 |
-|---|---|--:|--:|--:|--:|--:|
-| 1 × 1 | 16 × 16 | 199.1 | 367.6 | 447.4 | 467.3 | 470.8 |
-| 1 × 2 | 16 × 32 | 253.6 | 577.2 | 822.0 | 886.0 | 887.8 |
-| 2 × 1 | 32 × 16 | 240.3 | 549.4 | 782.0 | 831.2 | 834.3 |
-| 1 × 3 | 16 × 48 | 231.6 | 648.4 | 1,095.3 | 1,236.0 | 1,231.0 |
-| 3 × 1 | 48 × 16 | 201.8 | 612.0 | 1,020.3 | 1,164.7 | 1,108.2 |
-| 1 × 4 | 16 × 64 | **298.7** | **784.6** | 1,344.3 | **1,603.6** | **1,560.0** |
-| **2 × 2** (default) | 32 × 32 | 291.1 | 772.2 | **1,345.9** | 1,468.0 | 1,535.9 |
-| 4 × 1 | 64 × 16 | 238.5 | 642.2 | 1,085.4 | 1,265.7 | 1,274.2 |
-
-FP64, the shapes within 10% of the best at N = 1024 (all twenty in the
-[data](../experiments/sme-tiles/README.md)):
-
-| ZA shape | C block | N = 64 | N = 256 | N = 512 | N = 1024 | N = 4096 |
-|---|---|--:|--:|--:|--:|--:|
-| 1 × 4 | 8 × 32 | **89.0** | **323.6** | **409.7** | **443.5** | 421.5 |
-| 1 × 5 | 8 × 40 | 67.4 | 303.8 | 403.3 | 426.2 | 424.0 |
-| 1 × 6 | 8 × 48 | 65.0 | 296.1 | 395.9 | 429.6 | 425.1 |
-| 1 × 7 | 8 × 56 | 63.4 | 299.5 | 377.2 | 424.6 | 424.5 |
-| 2 × 2 | 16 × 16 | 83.1 | 319.4 | 393.8 | 422.6 | 405.4 |
-| 2 × 3 | 16 × 24 | 70.9 | 314.5 | 393.4 | 426.3 | 415.0 |
-| **2 × 4** (default) | 16 × 32 | 88.8 | 318.3 | 404.0 | 430.9 | **429.9** |
-| 3 × 2 | 24 × 16 | 72.0 | 311.7 | 383.5 | 417.5 | 389.4 |
-| 4 × 2 | 32 × 16 | 85.7 | 310.3 | 381.3 | 412.5 | 402.9 |
-
-The leading candidate against the defaults, re-measured with 7
-interleaved repetitions in one session:
-
-| Type | N | Default | 1 × 4 | 1 × 4 vs default |
-|---|--:|--:|--:|--:|
-| FP32 | 256 | 770.3 | 785.1 | +1.9% |
-| FP32 | 1024 | 1,452.2 | 1,589.9 | +9.5% |
-| FP32 | 4096 | 1,547.3 | 1,578.4 | +2.0% |
-| FP64 | 256 | 320.1 | 324.6 | +1.4% |
-| FP64 | 1024 | 422.7 | 441.0 | +4.3% |
-| FP64 | 4096 | 430.9 | 425.1 | −1.4% |
-
-## Why 2 × 2 / 2 × 4
-
-- **All tiles in use.** FP32 shapes with fewer than 4 tiles cannot hide
-  the FMOPA latency and stay at or below 1,236 GFLOP/s. Of the three
-  4-tile shapes, 4 × 1 trails (1,274 at N = 4096); 2 × 2 and 1 × 4 are
-  within 2% of each other at N = 512 and 4096.
-- **FP64: 2 × 4.** The fastest shape at N = 4096 and within 3% of the best
-  at N ≥ 512. 1 × 4 (4 of 8 tiles) leads at N ≤ 1024 by up to 4.3% and
-  trails at N = 4096.
-- **FP32: 1 × 4 is faster at every size re-measured.** In the repeated
-  comparison 1 × 4 leads 2 × 2 by 1.9–9.5%, although it loads one more
-  vector per K step and, in that run, loaded them one at a time. Why it
-  is faster was not investigated. `SmeParams` still uses 2 × 2; switching
-  is a change of template arguments (`gemm_sme<float, 1, 4, …>`), and a
-  re-measurement with today's paired loads is the step before it.
+- **All tiles' worth of chains.** An FMOPA takes 4 cycles before the next
+  one on the same tile can start and the unit issues one per cycle
+  ([sme2-machine](../experiments/sme2-machine/README.md)), so a shape needs
+  4 tiles to keep it busy. FP32 has exactly 4; FP64 needs 4 of its 8, so
+  1 × 4 reaches the full rate in both types.
+- **1 × 4 is the fastest 4-tile shape.** It leads
+  2 × 2 FP32 by 7.3% at N = 1024 and 2.9% at 4096 (−0.8% at 512, within
+  1% at 256), and 2 × 4 FP64 by 0.4–3.7% at every size, although 1 × 4
+  loads 5 vectors per 4 FMOPAs where 2 × 2 loads 4.
+- **The difference is outside the micro-kernel.** On cache-resident packed
+  operands (`sme_microkernel`, the macro-kernel alone, K = 2048) every
+  shape runs at 99–100% of the FMOPA peak: FP32 1 × 4, 2 × 2, 4 × 1 at
+  1,954, 1,961, 1,966 GFLOP/s, FP64 1 × 4, 2 × 4, 2 × 2, 4 × 2 at 496–497
+  ([data](../experiments/sme-tiles/microkernel_m4.csv)). The full GEMM
+  reaches 82% (1 × 4 FP32, N = 4096), so its last 18% and the gap between
+  shapes come from moving data (packing, B from L2, C in and out of ZA),
+  not from the FMOPA schedule. At K = 256 the same kernel reaches 88–89%
+  FP32: C moves in and out of ZA once per call, eight times as often per
+  FMOPA as at K = 2048.
+- **Not the tall shape.** 4 × 1, with the same loads per FMOPA as 1 × 4,
+  is 8–14% behind it in both types.
 
 ## Cache blocks
 
 TileM × TileK × TileN = 1024 × 2048 × 4096 FP32 and 512 × 2048 × 4096
 FP64: the A block (TileM × TileK) is 8 MiB in both types, half the M4
-P-cluster's 16 MiB L2, and each packed B strip is reused by 32 strips of
-A. The values come from the run-time block sweep in
-[sme2-gemm](../experiments/sme2-gemm/README.md) (TileM 128–2048, TileK
-1024–4096, TileN 1024–4096, N = 512 … 4096) and were confirmed by the
-`SmeBlock` grid (TileM 256–1024, TileK and TileN 1024–4096): at N = 4096
-the defaults are the best configuration in the grid, 1,538.2 GFLOP/s FP32
-and 435.2 FP64; at smaller N other blocks lead. The reasoning per size:
+P-cluster's 16 MiB L2, and each packed B strip is reused by 64 strips of
+A (1 × 4: 16 rows FP32, 8 FP64). The values come from a run-time block
+sweep at the 1 × 4 shape (TileM 128–2048, TileK 1024–4096, TileN
+1024–4096, N = 512 … 4096), followed by the six leading blocks compiled in
+and interleaved (`SmeBlock`, 5 repetitions;
+[data](../experiments/sme2-gemm/README.md)): the defaults are the best or
+within 0.6% of the best at N = 512, 1024 and 4096 in both types (FP32
+1,320.8 / 1,574.4 / 1,597.8, FP64 405.4 / 436.8 / 430.2 GFLOP/s). The reasoning per size:
 [sizing.md](sizing.md).
 
 **Widening types (fp16, bf16, INT8).** The same templates apply
 (`gemm_sme<fp16, R, V, TileM, TileK, TileN>`), with packed strips of
 k-group words and TileK in input elements, a multiple of the k group G.
-`SmeParams` uses 2 × 2 and FP32's blocks in k groups (TileK = 2048·G);
-their shapes and blocks have not been swept.
+`SmeParams` uses 1 × 4 and FP32's blocks in k groups (TileK = 2048·G).
+1 × 4 leads 2 × 2 at every size measured, 7 interleaved repetitions
+([data](../experiments/lowp/sweeps-m4/confirm.json)), GFLOP/s or GOP/s:
+
+| Type | N = 256 | 1024 | 2048 | 4096 |
+|---|--:|--:|--:|--:|
+| bf16, 1 × 4 / 2 × 2 | 965.5 / 946.8 | 1,754.0 / 1,739.0 | 1,856.2 / 1,810.2 | 1,858.8 / 1,807.5 |
+| fp16, 1 × 4 / 2 × 2 | 965.7 / 954.5 | 1,753.1 / 1,739.4 | 1,851.0 / 1,807.1 | 1,855.8 / 1,805.6 |
+| INT8, 1 × 4 / 2 × 2 | 1,600.6 / 1,570.8 | 3,382.6 / 3,284.5 | 3,688.7 / 3,646.0 | 3,758.6 / 3,541.1 |
 
 ## Edges and correctness
 
@@ -167,38 +151,43 @@ few busy threads on one cluster until it is full. Dynamic chunks let the
 unit that hosts more threads take more chunks instead of finishing last.
 
 `SmeMtT` benchmarks, GFLOP/s, median of 3 interleaved repetitions,
-wall-clock time, load average 3.9, TileM = 1024 (256 and 512 are within
-4% everywhere) ([data](../experiments/sme-mt/README.md)):
+wall-clock time, load average 6–10, TileM = 1024
+([data](../experiments/sme-mt/README.md)):
 
 | Threads | FP32 N = 1024 | FP32 N = 2048 | FP32 N = 4096 | FP64 N = 1024 | FP64 N = 2048 | FP64 N = 4096 |
 |--:|--:|--:|--:|--:|--:|--:|
-| 1 | 1,425 | 1,530 | 1,529 | 417 | 418 | 415 |
-| 2 | 1,565 | 1,781 | 2,778 | 455 | 710 | 852 |
-| 3 | 1,573 | 2,047 | 2,931 | 533 | 841 | 874 |
-| 4 | 1,709 | 2,094 | 3,241 | 506 | 826 | 877 |
-| 6 | 1,778 | 2,660 | 3,492 | 620 | 865 | 916 |
-| **8** (default) | **2,682** | **3,085** | 3,558 | **764** | **905** | **931** |
-| 12 | 2,545 | 2,974 | **3,597** | 755 | 882 | 923 |
-| Accelerate, all cores | 3,204 | 3,180 | 3,154 | 825 | 785 | 789 |
+| 1 | 1,536 | 1,553 | 1,592 | 423 | 399 | 414 |
+| 2 | 1,690 | 1,868 | 2,921 | 466 | 720 | 839 |
+| 3 | 1,702 | 2,307 | 3,114 | 569 | 826 | 833 |
+| 4 | 1,783 | 2,176 | 3,172 | 475 | 791 | 862 |
+| 6 | 1,812 | 2,802 | 3,350 | 647 | 845 | 915 |
+| 7 | **2,808** | 2,881 | **3,607** | **791** | 892 | 901 |
+| **8** (default) | 2,768 | **3,096** | 3,500 | 767 | 885 | 920 |
+| 10 | 2,680 | 2,933 | 3,570 | 748 | **899** | **935** |
+| 12 | 2,606 | 3,053 | 3,551 | 779 | 876 | 926 |
+| Accelerate, all cores | 3,253 | 3,263 | 3,149 | 825 | 792 | 790 |
 
-- **8 threads** (`SmeParams::Threads`): the best or within 1.1% of the
-  best everywhere. 12 threads, one per P-core, are no faster at N = 4096
-  and 5% slower at N = 1024.
+- **8 threads** (`SmeParams::Threads`): the best at FP32 N = 2048 and
+  within 3.0% of the best elsewhere. 7 threads trail by 7% at FP32
+  N = 2048; 10 and 12 lead by at most 1.6%, and 12 is 6% slower at FP32
+  N = 1024.
 - **Placement.** Up to six threads, small products stay on about one
-  unit; the jump from 6 to 8 threads at N = 1024 (1.8 → 2.7 TFLOP/s) fits
-  threads spilling onto the second cluster. At N = 4096 a call lasts tens
-  of milliseconds, long enough for the scheduler to spread even two
-  threads (1.8× one thread).
-- **TileM** makes no measurable difference: with 8 threads and N ≤ 4096
-  the chunks are at most N / (4 · 8) = 128 rows, below every height
-  swept. `SmeParams::MtMc` stays `gemm_sme`'s TileM.
-- **Against Accelerate.** From N = 2048 up `gemm_sme_mt` matches or beats
-  it: at N = 4096, 3.56 TFLOP/s FP32 (113% of Accelerate, 91% of the two
-  units' 3.93 TFLOP/s peak) and 931 GFLOP/s FP64 (118%, 93% of 1.00). At
-  N = 1024 it reaches 84% / 93% of Accelerate: a call lasts ~1 ms, so
-  creating 8 threads per call and their placement still weigh. Below
-  N ≈ 512 use `gemm_sme`: at N = 64 the multi-threaded kernel measures 26
-  GFLOP/s against 276.
+  unit. Seven, the smallest count that cannot fit one six-core cluster, is
+  where the jump happens: FP32 N = 1024 goes from 1.8 TFLOP/s with 6
+  threads to 2.8 with 7. At N = 4096 a call lasts tens of milliseconds,
+  long enough for the scheduler to spread even two threads (1.9× one
+  thread).
+- **TileM**: with 8 threads and N ≤ 4096 the chunks are at most
+  N / (4 · 8) = 128 rows, below any useful TileM, so `SmeParams::MtMc`
+  stays `gemm_sme`'s TileM.
+- **Against Accelerate** (5 interleaved repetitions,
+  [data](../experiments/sme-mt/default.json)): from N = 2048
+  up `gemm_sme_mt` matches or beats it: at N = 4096, 3.49 TFLOP/s FP32
+  (110% of Accelerate, 89% of the two units' 3.93 TFLOP/s peak) and 910
+  GFLOP/s FP64 (115%, 91% of 1.00). At N = 1024 it reaches 87% / 92% of
+  Accelerate: a call lasts ~1 ms, so creating 8 threads per call and their
+  placement still weigh. Below N ≈ 512 use `gemm_sme`: at N = 64 the
+  multi-threaded kernel measures 16 GFLOP/s against 250.
 
 ## Reproduce
 

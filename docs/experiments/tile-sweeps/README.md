@@ -8,27 +8,28 @@ data. One thread.
 | Machine | Compiler | Flags | Load |
 |---|---|---|---|
 | AMD Ryzen 9 9950X (Zen 5), Ubuntu 24.04 | GCC 13.3 | `-O3 -march=native -ffast-math -funroll-loops` (native), or `-march=x86-64-v3` (16 YMM registers); pinned with `taskset -c 2` | idle, load average < 1.2 |
-| Apple M4 Max, P-core | Apple Clang 17 | `-O3 -mcpu=apple-m4 -ffast-math -funroll-loops` | load average 5–14 on 16 cores (Spotlight indexing and an IDE, 2–3 of 12 P-cores busy) |
+| Apple M4 Max, P-core | Apple Clang 17 | `-O3 -mcpu=apple-m4 -ffast-math -funroll-loops` | load average 9–15 on 16 cores during the tile sweep, 5–14 during the micro-kernel run |
 
 Core clock, measured by `simd_microkernel` at its start and end
 ([`core_clock.hpp`](../../../benchmarks/experiments/core_clock.hpp)):
-5.70 GHz on Zen 5 and 4.48–4.50 GHz on the M4 in every run here.
+5.70 GHz on Zen 5 and 4.48–4.50 GHz on the M4.
 
-The sweeps ran with a 64 × 256 × 256 cache block (AVX-512: 64 × 256 × 512);
-the blocks were swept afterwards with the chosen tiles
-([block-sweeps](../block-sweeps/README.md)).
+The tile sweeps run each shape at the family's default cache block
+(AVX2 384 × 256 × 256 FP32 / 384 × 256 × 128 FP64, AVX-512
+512 × 256 × 512 / 512 × 256 × 256, NEON 384 × 256 × 256;
+[block-sweeps](../block-sweeps/README.md)).
 
-Google Benchmark CSVs hold the mean, median, standard deviation and
+The Zen 5 CSVs hold the mean, median, standard deviation and
 coefficient of variation (`_cv`) of 3 repetitions; GFLOP/s is the last
 column. The docs quote medians.
 
 | File | Program | What |
 |---|---|---|
-| [`tiles_zen5_native.csv`](tiles_zen5_native.csv) | `bench_gemm --benchmark_filter='^(Avx2Tile\|Avx512Tile)'` | Zen 5, every AVX2 and AVX-512 shape, native build (32 vector registers) |
-| [`tiles_zen5_x86-64-v3.csv`](tiles_zen5_x86-64-v3.csv) | `bench_gemm --benchmark_filter='^Avx2Tile'` | Zen 5, every AVX2 shape, 16-register build |
+| [`tiles_zen5_native.csv`](tiles_zen5_native.csv), [`tiles_native_load.txt`](tiles_native_load.txt) | `bench_gemm --benchmark_filter='^(Avx2Tile\|Avx512Tile)'` | Zen 5, every AVX2 and AVX-512 shape, native build (32 vector registers) |
+| [`tiles_zen5_x86-64-v3.csv`](tiles_zen5_x86-64-v3.csv), [`tiles_v3_load.txt`](tiles_v3_load.txt) | `bench_gemm --benchmark_filter='^Avx2Tile'` | Zen 5, every AVX2 shape, 16-register build |
 | [`microkernel_zen5.csv`](microkernel_zen5.csv), [`microkernel_zen5_clock.txt`](microkernel_zen5_clock.txt) | [`simd_microkernel`](../../../benchmarks/experiments/simd_microkernel.cpp) | the micro-kernels on L1-resident data, Zen 5 |
-| [`tiles_m4.csv`](tiles_m4.csv) | `bench_gemm --benchmark_filter='^NeonTile'` | M4, every NEON shape |
-| [`microkernel_m4.csv`](microkernel_m4.csv), [`microkernel_m4_clock.txt`](microkernel_m4_clock.txt), [`load_m4.txt`](load_m4.txt) | `simd_microkernel`, `uptime` | the same run, continued |
+| [`tiles_m4.json`](tiles_m4.json), [`tiles_m4_load.txt`](tiles_m4_load.txt) | `bench_gemm --benchmark_filter='^NeonTile' --benchmark_repetitions=3 --benchmark_enable_random_interleaving=true --benchmark_format=json` | M4, every NEON shape |
+| [`microkernel_m4.csv`](microkernel_m4.csv), [`microkernel_m4_clock.txt`](microkernel_m4_clock.txt), [`load_m4.txt`](load_m4.txt) | `simd_microkernel`, `uptime` | the micro-kernels on L1-resident data, M4 |
 | [`m4_ld1r_ab/`](m4_ld1r_ab/) | `bench_gemm --benchmark_filter='^NeonTile(4x4\|6x3\|6x4)/(f32\|f64)/N=(256\|1024)$'` | A broadcast with `LD1R` against A loaded with `LDR` and multiplied by element ([docs/kernels/neon.md](../../kernels/neon.md#loading-a-ldr-not-ld1r)), the two builds alternated three times (`ld1r_<run>.csv`, `ldr_<run>.csv`), one repetition each |
 
 ## Micro-kernel on L1-resident data
@@ -60,9 +61,6 @@ and every FMA is register-only. That, not the accumulator count, is why
 
 ## Notes
 
-- At Zen 5 AVX-512 FP64 N = 512 (B rows 4 KiB apart) the sweep result
-  depends on where the allocator places the three matrices: `Avx512Tile8x3`
-  measured 150.9 GFLOP/s in the sweep and 126–128 run alone; 8 × 2
-  measures 101–103 either way.
-- One cell has a high coefficient of variation: `Avx512Tile12x2/f64/N=1024`,
-  11.5%. Every other cell is below 2.5%.
+- Coefficient of variation ≤ 3.3% in every Zen 5 cell (highest:
+  `Avx512Tile6x2/f64/N=1024`) and ≤ 3.8% in every M4 cell (highest:
+  `NeonTile8x3/f32/N=512`).

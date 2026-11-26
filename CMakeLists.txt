@@ -398,6 +398,24 @@ else()
     target_link_libraries(hpc_math_cuda PUBLIC hpc_math_core)
 endif()
 
+# The CUDA kernels are templates over their tile sizes
+# (src/cuda/gemm_kernels.cuh); a target that calls them compiles one
+# instantiation file with its parameters. hpc_add_cuda_instances(<name>
+# <source>) builds <source> as an object library <name>: as CUDA, against
+# the kernels, when the toolkit is present; as C++, against the throwing
+# stub templates, otherwise. Link <name> into the executables that use it.
+function(hpc_add_cuda_instances name source)
+    add_library(${name} OBJECT ${source})
+    target_link_libraries(${name} PUBLIC hpc_math_cuda)
+    target_include_directories(${name} PRIVATE ${PROJECT_SOURCE_DIR}/src ${PROJECT_SOURCE_DIR}/benchmarks
+                                               ${CMAKE_CURRENT_SOURCE_DIR})
+    if(CMAKE_CUDA_COMPILER)
+        set_source_files_properties(${source} PROPERTIES LANGUAGE CUDA)
+        set_target_properties(${name} PROPERTIES CUDA_STANDARD 17 CUDA_STANDARD_REQUIRED ON)
+        target_compile_definitions(${name} PRIVATE HPC_CUDA_KERNELS=1)
+    endif()
+endfunction()
+
 # ---------------------------------------------------------------------------
 # Metal (Apple GPUs, on by default on Apple platforms)
 #

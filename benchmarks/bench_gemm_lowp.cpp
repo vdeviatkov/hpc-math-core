@@ -68,7 +68,7 @@ using Out = std::conditional_t<std::is_same_v<In, std::int8_t>, std::int32_t, fl
 template <typename In>
 void add(const std::string& name, const char* format,
          void (*kernel)(const Matrix<In>&, const Matrix<In>&, Matrix<Out<In>>&), bool real_time = false) {
-    for (const std::size_t n : {256, 1024, 2048, 4096}) {
+    for (const std::size_t n : {256, 1024, 2048, 4000, 4096}) {
         auto* b = benchmark::RegisterBenchmark(name + "/" + format + "/N=" + std::to_string(n),
                                      [=](benchmark::State& state) {
                                          const Matrix<In> A = random_matrix<In>(n, 1);
@@ -151,11 +151,100 @@ void add_tiles() {
 #endif
 }
 
+/// gemm_simd_lowp<Ops> with an R × V tile and Mc × KC × Nc blocks (KC in
+/// input elements).
+template <template <typename> class Ops, typename In, int R, int V, std::size_t MC, std::size_t KC, std::size_t NC>
+void neon_lowp_tile(const Matrix<In>& A, const Matrix<In>& B, Matrix<lowp_out_t<In>>& C) {
+    gemm_simd_lowp<Ops, R, V, MC, KC, NC>(A, B, C);
+}
+
+/// Tile and block sweeps of the NEON low-precision kernels:
+///   Neon{Bfmmla,Smmla}Tile<R>x<V>   R row pairs × V column pairs of 2 × 2 accumulators
+///   Neon{Fmlal,Fp16Acc}Tile4x<V>    4 rows (the lanes of A) × V accumulators
+///   Neon<Kernel>Block<Mc>x<KcBytes>x<Nc>   the measured tile with other blocks
+/// Shapes are those kTileFits allows in the 32 vector registers.
+void add_neon_lowp_sweeps() {
+#if HPC_HAS_NEON_LOWP
+    using P = hpc::bench::LowpParams<QMmla>;
+#define HPC_MMLA_TILE(R, V)                                                                                  \
+    add<bf16>("NeonBfmmlaTile" #R "x" #V, "bf16", neon_lowp_tile<QMmla, bf16, R, V, P::Mc, P::Kc<bf16>, P::Nc>); \
+    add<std::int8_t>("NeonSmmlaTile" #R "x" #V, "int8",                                                      \
+                     neon_lowp_tile<QMmla, std::int8_t, R, V, P::Mc, P::Kc<std::int8_t>, P::Nc>)
+    HPC_MMLA_TILE(2, 4); HPC_MMLA_TILE(4, 2); HPC_MMLA_TILE(3, 4); HPC_MMLA_TILE(4, 3);
+    HPC_MMLA_TILE(4, 4); HPC_MMLA_TILE(5, 4); HPC_MMLA_TILE(4, 5); HPC_MMLA_TILE(3, 6);
+    HPC_MMLA_TILE(6, 3); HPC_MMLA_TILE(2, 8); HPC_MMLA_TILE(8, 2);
+#undef HPC_MMLA_TILE
+    using F = hpc::bench::LowpParams<QFmlal>;
+#define HPC_FMLA_TILE(V)                                                                                      \
+    add<fp16>("NeonFmlalTile4x" #V, "fp16", neon_lowp_tile<QFmlal, fp16, 4, V, F::Mc, F::Kc<fp16>, F::Nc>);       \
+    add<fp16>("NeonFp16AccTile4x" #V, "fp16", neon_lowp_tile<QFmlaF16, fp16, 4, V, F::Mc, F::Kc<fp16>, F::Nc>)
+    HPC_FMLA_TILE(2); HPC_FMLA_TILE(4); HPC_FMLA_TILE(6);
+#undef HPC_FMLA_TILE
+    add<fp16>("NeonFp16AccTile4x3", "fp16", neon_lowp_tile<QFmlaF16, fp16, 4, 3, F::Mc, F::Kc<fp16>, F::Nc>);
+    add<fp16>("NeonFp16AccTile4x5", "fp16", neon_lowp_tile<QFmlaF16, fp16, 4, 5, F::Mc, F::Kc<fp16>, F::Nc>);
+
+    // Blocks at the measured tiles: Mc ∈ {128, 256, 512} × k block of
+    // {512, 1024, 2048, 4096} bytes × Nc ∈ {256, 512, 1024}.
+#define HPC_LOWP_BLOCK(MC, KB, NC)                                                                                \
+    add<bf16>("NeonBfmmlaBlock" #MC "x" #KB "x" #NC, "bf16",                                                      \
+              neon_lowp_tile<QMmla, bf16, P::R, P::V, MC, KB / sizeof(bf16), NC>);                                \
+    add<std::int8_t>("NeonSmmlaBlock" #MC "x" #KB "x" #NC, "int8",                                                \
+                     neon_lowp_tile<QMmla, std::int8_t, P::R, P::V, MC, KB, NC>);                                 \
+    add<fp16>("NeonFmlalBlock" #MC "x" #KB "x" #NC, "fp16",                                                       \
+              neon_lowp_tile<QFmlal, fp16, F::R, F::V, MC, KB / sizeof(fp16), NC>);                               \
+    add<fp16>("NeonFp16AccBlock" #MC "x" #KB "x" #NC, "fp16",                                                     \
+              neon_lowp_tile<QFmlaF16, fp16, F::R, F::V, MC, KB / sizeof(fp16), NC>)
+#define HPC_LOWP_BLOCK_K(MC, NC) \
+    HPC_LOWP_BLOCK(MC, 512, NC); HPC_LOWP_BLOCK(MC, 1024, NC); HPC_LOWP_BLOCK(MC, 2048, NC); HPC_LOWP_BLOCK(MC, 4096, NC)
+    HPC_LOWP_BLOCK_K(128, 256); HPC_LOWP_BLOCK_K(128, 512); HPC_LOWP_BLOCK_K(128, 1024);
+    HPC_LOWP_BLOCK_K(256, 256); HPC_LOWP_BLOCK_K(256, 512); HPC_LOWP_BLOCK_K(256, 1024);
+    HPC_LOWP_BLOCK_K(512, 256); HPC_LOWP_BLOCK_K(512, 512); HPC_LOWP_BLOCK_K(512, 1024);
+#undef HPC_LOWP_BLOCK_K
+#undef HPC_LOWP_BLOCK
+#endif
+}
+
+/// gemm_sme on a widening type with an R × V ZA shape and Mc × KG·G × Nc
+/// blocks (KG in k groups).
+template <typename In, int R, int V, std::size_t MC, std::size_t KG, std::size_t NC>
+void sme_widening_tile(const Matrix<In>& A, const Matrix<In>& B, Matrix<sme_out_t<In>>& C) {
+    gemm_sme<In, R, V, MC, KG * kSmeG<In>, NC>(A, B, C);
+}
+
+/// Shape and block sweeps of the SME widening kernels:
+///   SmeWideningTile<R>x<V>/<format>          every 4-tile shape, FP32's blocks in k groups
+///   SmeWideningBlock<Mc>x<KG>x<Nc>/<format>  2 × 2 and 1 × 4 with other blocks (KG k groups)
+void add_sme_widening_sweeps() {
+#if HPC_HAS_SME
+#define HPC_SME_W(NAME, R, V, MC, KG, NC)                                                         \
+    add<fp16>(NAME, "fp16", sme_widening_tile<fp16, R, V, MC, KG, NC>);                           \
+    add<bf16>(NAME, "bf16", sme_widening_tile<bf16, R, V, MC, KG, NC>);                           \
+    add<std::int8_t>(NAME, "int8", sme_widening_tile<std::int8_t, R, V, MC, KG, NC>)
+    HPC_SME_W("SmeWideningTile1x4", 1, 4, 1024, 2048, 4096);
+    HPC_SME_W("SmeWideningTile2x2", 2, 2, 1024, 2048, 4096);
+    HPC_SME_W("SmeWideningTile4x1", 4, 1, 1024, 2048, 4096);
+#define HPC_SME_WB(R, V, MC, KG, NC) \
+    HPC_SME_W("SmeWideningBlock" #R "x" #V "_" #MC "x" #KG "x" #NC, R, V, MC, KG, NC)
+#define HPC_SME_WB_ALL(R, V)                                                                         \
+    HPC_SME_WB(R, V, 512, 1024, 4096); HPC_SME_WB(R, V, 512, 2048, 4096); HPC_SME_WB(R, V, 512, 4096, 4096); \
+    HPC_SME_WB(R, V, 1024, 1024, 4096); HPC_SME_WB(R, V, 1024, 4096, 4096);                          \
+    HPC_SME_WB(R, V, 2048, 1024, 4096); HPC_SME_WB(R, V, 2048, 2048, 4096);                          \
+    HPC_SME_WB(R, V, 1024, 2048, 2048); HPC_SME_WB(R, V, 512, 2048, 2048)
+    HPC_SME_WB_ALL(2, 2);
+    HPC_SME_WB_ALL(1, 4);
+#undef HPC_SME_WB_ALL
+#undef HPC_SME_WB
+#undef HPC_SME_W
+#endif
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     register_all();
     add_tiles();
+    add_neon_lowp_sweeps();
+    add_sme_widening_sweeps();
     benchmark::Initialize(&argc, argv);
     if (benchmark::ReportUnrecognizedArguments(argc, argv))
         return 1;

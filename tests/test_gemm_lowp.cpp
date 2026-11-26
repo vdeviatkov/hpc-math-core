@@ -209,6 +209,31 @@ TEST(LowpNeon, OtherTilesMatchNaive) {
     expect_matches_naive<fp16>(lowp<QFmlal, fp16, 4, 6, 30, 14, 100>, "neon fp16 4x6");
     expect_matches_naive<fp16>(lowp<QFmlaF16, fp16, 4, 2, 30, 14, 100>, "neon fp16 acc 4x2", 0x1p-11);
 }
+// Every shape bench_gemm_lowp sweeps (Neon*Tile rows), on odd blocks.
+template <int R, int V>
+void expect_mmla_tile_matches_naive() {
+    const std::string tile = std::to_string(R) + "x" + std::to_string(V);
+    expect_matches_naive<bf16>(lowp<QMmla, bf16, R, V, 50, 64, 60>, ("neon bf16 " + tile).c_str());
+    expect_matches_naive<std::int8_t>(lowp<QMmla, std::int8_t, R, V, 50, 64, 60>, ("neon int8 " + tile).c_str());
+}
+template <int V>
+void expect_fmla_tile_matches_naive() {
+    const std::string tile = "4x" + std::to_string(V);
+    if constexpr (V % 2 == 0)
+        expect_matches_naive<fp16>(lowp<QFmlal, fp16, 4, V, 30, 14, 100>, ("neon fp16 " + tile).c_str());
+    expect_matches_naive<fp16>(lowp<QFmlaF16, fp16, 4, V, 30, 14, 100>, ("neon fp16 acc " + tile).c_str(),
+                               0x1p-11);
+}
+TEST(LowpNeon, SweptTilesMatchNaive) {
+    expect_mmla_tile_matches_naive<2, 4>(); expect_mmla_tile_matches_naive<4, 2>();
+    expect_mmla_tile_matches_naive<3, 4>(); expect_mmla_tile_matches_naive<4, 3>();
+    expect_mmla_tile_matches_naive<5, 4>(); expect_mmla_tile_matches_naive<4, 5>();
+    expect_mmla_tile_matches_naive<3, 6>(); expect_mmla_tile_matches_naive<6, 3>();
+    expect_mmla_tile_matches_naive<2, 8>(); expect_mmla_tile_matches_naive<8, 2>();
+    expect_fmla_tile_matches_naive<2>(); expect_fmla_tile_matches_naive<3>();
+    expect_fmla_tile_matches_naive<4>(); expect_fmla_tile_matches_naive<5>();
+    expect_fmla_tile_matches_naive<6>();
+}
 #endif
 
 #if HPC_HAS_SME

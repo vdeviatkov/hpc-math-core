@@ -1,9 +1,8 @@
 # Low-precision GEMM: bf16, fp16, INT8 and FP8
 
-Data behind [part 5](../../articles/lowp-gemm.md). The M4 NEON kernels
-(with the FP32 kernel of the same core, one session) are in
-[`block-sweeps/lowp_m4_defaults.csv`](../block-sweeps/lowp_m4_defaults.csv);
-everything else is here.
+Data behind [part 5](../../articles/lowp-gemm.md). The tile and block
+sweeps of the CPU kernels are in [`sweeps-m4/`](sweeps-m4/README.md) and
+[`sweeps-zen5/`](sweeps-zen5/README.md).
 
 ## Machines and builds
 
@@ -14,9 +13,9 @@ everything else is here.
 | CMake | `-DHPC_ENABLE_SME=ON` | default | `-DCMAKE_CUDA_ARCHITECTURES=120a` (and `120` for the sm_89 FP8 row) |
 | Clock during the peak runs | 4.47 GHz (core) | 5.70 GHz | not pinned; board power limit 360 W |
 
-The M4 ran with background load (Spotlight indexing, an IDE): load average
-4–11. Repetitions agreed to under 1% (coefficient of variation ≤ 0.9% on
-every M4 row), but treat M4 figures as ±5%, as in parts 1–2.
+The M4 ran with background load (load average 3–4 for the GEMM run, up to
+13 for the sweeps; see the `*load.txt` files). Treat M4 figures as ±5%, as
+in parts 1–2.
 
 ## Files
 
@@ -24,7 +23,7 @@ every M4 row), but treat M4 figures as ±5%, as in parts 1–2.
 |---|---|---|
 | `lowp_peak_m4.csv`, `lowp_peak_zen5.csv` | [`lowp_peak`](../../../benchmarks/experiments/lowp_peak.cpp) | Latency (1 accumulator) and throughput (8, 16 accumulators; 1 and 4 ZA tiles) of every multiply-accumulate instruction used, with FP32 on the same unit |
 | `cuda_peak_sm120.csv`, `cuda_peak_sm120a.csv`, `cuda_peak_device.txt` | [`cuda_peak`](../../../benchmarks/experiments/cuda_peak.cu) | Tensor Core `mma.sync` throughput per format; the block-scaled FP8 row exists only in the sm_120a build |
-| `bench_lowp_m4.csv` | [`bench_gemm_lowp`](../../../benchmarks/bench_gemm_lowp.cpp) | the SME kernels (`Sme`, `SmeWidening`), square N = 256 … 4096; 3 repetitions, mean / median / stddev / cv |
+| `bench_lowp_m4.json`, `bench_lowp_m4_load.txt` | [`bench_gemm_lowp`](../../../benchmarks/bench_gemm_lowp.cpp) `--benchmark_filter='^(Sme\|SmeWidening\|SmeMt\|SmeWideningMt\|NeonBlocked\|NeonBfmmla\|NeonSmmla\|NeonFmlal\|NeonFp16Acc)/'` | every M4 kernel (SME, SME on 8 threads, NEON, with the FP32 kernel of each unit), square N = 256 … 4096, each at its measured tile; one session, 3 interleaved repetitions, load average 3–4 |
 | `bench_lowp_zen5.csv` | same | the three Zen 5 kernels (`Avx512Blocked` f32, `Avx512Dpbf16`, `Avx512Vnni`), one session, 3 repetitions |
 | `bench_lowp_cuda_sm120a.csv` | [`bench_gemm_lowp_cuda`](../../../benchmarks/bench_gemm_lowp_cuda.cpp) | `Mma/…` the cp.async kernel, `Tma/…` Level 8, `Cublas/…` cuBLAS (`cublasGemmEx`; `cublasLtMatmul` for FP8); five formats, N = 1024 … 16384, one session |
 | `bench_lowp_cuda_fp8_sm120.csv` | same | Both FP8 kernels built for plain sm_120 (sm_89 `mma` form) |

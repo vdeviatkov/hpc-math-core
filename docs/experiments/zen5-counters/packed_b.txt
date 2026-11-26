@@ -1,0 +1,8 @@
+Avx512BlockedCmp/f32/N=2000  GFLOP/s=308.644G L1D->L2 5.381  L2 demand miss 0.0562  DTLB miss 1.585  DRAM fills 0.0187
+Avx512PackedCmp/f32/N=2000   GFLOP/s=324.265G L1D->L2 5.041  L2 demand miss 0.0511  DTLB miss 0.171  DRAM fills 0.0166
+Avx512BlockedCmp/f32/N=2048  GFLOP/s=303.385G L1D->L2 4.598  L2 demand miss 0.0531  DTLB miss 1.632  DRAM fills 0.0195
+Avx512PackedCmp/f32/N=2048   GFLOP/s=323.695G L1D->L2 5.228  L2 demand miss 0.0659  DTLB miss 0.159  DRAM fills 0.0156
+Avx512BlockedCmp/f32/N=4096  GFLOP/s=295.054G L1D->L2 5.343  L2 demand miss 0.0582  DTLB miss 1.692  DRAM fills 0.0493
+Avx512PackedCmp/f32/N=4096   GFLOP/s=317.364G L1D->L2 5.192  L2 demand miss 0.0672  DTLB miss 0.163  DRAM fills 0.0270
+Avx2BlockedCmp/f32/N=2048    GFLOP/s=106.403G L1D->L2 8.999  L2 demand miss 0.0512  DTLB miss 6.070  DRAM fills 0.0106
+Avx2PackedCmp/f32/N=2048     GFLOP/s=166.946G L1D->L2 3.736  L2 demand miss 0.0630  DTLB miss 0.576  DRAM fills 0.0100

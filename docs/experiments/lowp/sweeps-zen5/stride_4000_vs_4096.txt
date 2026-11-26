@@ -1,0 +1,10 @@
+[100%] Built target bench_gemm_lowp
+"Avx512Dpbf16/bf16/N=4000_median",6.1965e+11
+"Avx512Blocked/f32/N=2048_median",3.03167e+11
+"Avx512Vnni/int8/N=4000_median",1.13749e+12
+"Avx512Vnni/int8/N=4096_median",1.07296e+12
+"Avx512Blocked/f32/N=4000_median",3.09896e+11
+"Avx512Vnni/int8/N=2048_median",1.1864e+12
+"Avx512Blocked/f32/N=4096_median",2.94257e+11
+"Avx512Dpbf16/bf16/N=2048_median",6.2757e+11
+"Avx512Dpbf16/bf16/N=4096_median",5.96464e+11

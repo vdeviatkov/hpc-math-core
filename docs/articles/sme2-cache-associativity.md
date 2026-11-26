@@ -32,10 +32,11 @@ cliff to its cause and measures both fixes.
   time by 8–9% even when the stride is already padded.
 - **On AMD Zen 5 the same mechanism costs much less.** Part 1's AVX-512
   kernel (then with an 8 × 2 tile) loses 14–17% at N = 1024, 2048 and
-  4096 against the same rows padded by 64 B, against 68% here. At every
-  multiple of 4 KiB a strip's rows all map to one L1 set and share its
-  12 ways; the L2
-  limits behind the M4's cliff are there too, but a fast L3 backs them.
+  4096 against the same rows padded by 64 B, against 68% here. Counted
+  with `perf`: short strips of B lose to L1 conflicts (a strip's rows
+  share one L1 set's 12 ways), the 256-row strips the kernel uses to L2
+  conflicts (L2 demand misses +27–88%), whose lines come back from an L3
+  45 cycles away.
   Packing B in GotoBLAS order ([part 1, Step 5](simd-gemm.md#step-5-pack-b))
   removes it there too.
 
@@ -44,8 +45,11 @@ cliff to its cause and measures both fixes.
 The kernel computes `C = A × B` for row-major matrices. SME's `FMOPA`
 instruction adds the outer product of two vectors into ZA, a 2-D
 accumulator. With M4's 512-bit streaming vector length (16 FP32 lanes), ZA
-holds four 16 × 16 FP32 tiles, which together accumulate a 32 × 32 block
-of C:
+holds four 16 × 16 FP32 tiles. The experiments in this article arrange
+them 2 × 2, a 32 × 32 block of C (the library's measured arrangement is
+1 × 4, whose 64-column B strips have 256-byte rows; its in-place kernel
+shows the same cliff, 516 against 1,616 GFLOP/s packed at N = 4096,
+[part 2](sme2-gemm.md#packing-b-control-over-the-stride)):
 
 ```text
 for k in 0 .. Kc-1:
@@ -348,10 +352,10 @@ mean of the neighbouring sizes: −13% at N = 1024 (992: 258, 1024: 222, 1056: 2
 −17% at 2048 and −16% at 4096. The M4 lost 68% at N = 4096; Zen 5 loses a
 sixth.
 
-### Which cache: L1 here, not L2
+### Which cache: L1 for short strips, L2 from 256 rows
 
-The strip-height sweep separates the two. It changes only how many rows
-(Kc) the reused block of B has, for several strides (M = 512, K = 2048,
+The strip-height sweep changes only how many rows (Kc) the reused block
+of B has, for several strides (M = 512, K = 2048,
 N = 1024, GFLOP/s):
 
 | Rows per block | 4 KiB | 8 KiB | 16 KiB | 6 KiB | 4,352 B | 4 KiB + 64 B | 8 KiB + 64 B | 16 KiB + 64 B |
@@ -365,23 +369,27 @@ N = 1024, GFLOP/s):
 
 (One run per cell, [`height.csv`](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/experiments/zen5-b-stride/height.csv); the CSV also has 32, 48, 96, 128, 192 and 768 rows.)
 
-- **Up to 384 rows**, while the block (rows × 2 KiB) fits L2 by capacity,
-  power-of-two strides lose 13–33% against the same stride padded by 64 B
-  from 32 rows up (41% at 4 KiB for strips of only 16 rows, which L2 holds
-  at any of these strides). A 6 KiB stride, which gives a strip's rows two
-  groups of L1 sets (24 lines) instead of one (12), runs within about 3% of
-  a fully spread 4,352-byte stride from 64 to 384 rows. The loss follows the L1 limit, which
-  is the same at every multiple of 4 KiB.
-- **The L2 limits do not show.** If L2 sets were the cause, the loss would
-  step up where the block passes what L2 keeps at that stride: 256, 128
-  and 64 rows at 4, 8 and 16 KiB. It does not: at 8 KiB, 64 rows (inside
-  the limit) lose 26% and 256 rows (twice over) 22%; at 16 KiB, 64 rows
-  (at the limit) lose 24% and 256 rows (four times over) 15%. Rows that L2 conflicts evict
-  come back from an L3 45 cycles away that does not conflict at these
-  strides, and the kernel streams B in order, which the hardware
-  prefetchers can follow; on the M4 the level behind L2 is the system
-  cache at about 150 cycles (part 2). That explanation is an inference: no
-  counters were read.
+Counted with `perf` on the same configurations (per 1,000 FP operations,
+each power-of-two stride against the same stride + 64 B;
+[data](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/experiments/zen5-counters/height.csv)):
+
+| Rows per block | L1 misses, 4 / 8 / 16 KiB | L2 demand misses, 4 / 8 / 16 KiB |
+|---:|---|---|
+| 16 | +65% / +79% / +77% | +15% / −54% / −56% |
+| 64 | +44% / +67% / +65% | +55% / +38% / +29% |
+| 256 | 0% / +11% / +13% | +42% / +27% / +39% |
+| 512 | −8% / +2% / +4% | +81% / +88% / +72% |
+
+- **Short strips lose to L1 conflicts.** At 16 rows a strip's lines
+  already exceed the 12 L1 ways its rows share, and L1 misses rise
+  65–79% while L2 misses do not; the GEMM loses 18–41%.
+- **From 256 rows the loss is L2 conflicts.** L1 misses change by at most
+  13%, because the 256 KiB-and-larger block misses L1 at any stride, but
+  L2 demand misses rise 27–88%: the strip's rows use 256, 128 or 64 of
+  L2's lines at 4, 8 or 16 KiB, fewer than the strip holds. The library
+  kernel's TileK is 256, in this regime. The missed lines come from L3
+  (fills from DRAM do not change), which keeps the cost at 12–22% here
+  instead of the M4's two thirds.
 - **From 512 rows** the block fills L2 itself (1 MiB) with nothing left
   for A and C, and is streamed from L3 at every reuse. Every stride slows
   down, and power-of-two strides lose 17–44% against padded ones, 6 KiB
@@ -549,8 +557,10 @@ evicted by an L2 conflict comes back from the victim L3 at 45. Every
 level the kernel falls back to is close and does not conflict at these strides. On the M4 the
 conflicting level is L2 itself, and the next copy of the line is in the SLC
 (or DRAM) about 150 cycles away: an L2 conflict reload costs about three
-times what it does on Zen 5, and ten times an L1 conflict reload there. As in the rest of this article, this is an inference from
-latencies and documented policies, not from counted evictions.
+times what it does on Zen 5, and ten times an L1 conflict reload there.
+On Zen 5 the misses are counted (above: L1 misses for short strips, L2
+demand misses filled from L3 for long ones); the M4 side is an inference
+from latencies and documented policies, since macOS exposes no counters.
 
 ## Limitations
 
@@ -567,11 +577,11 @@ What the experiments do not establish:
 - **One kernel configuration.** The thresholds belong to these matrix
   shapes, this micro-kernel and these block sizes; other shapes and blocks
   may move them.
-- **Inferred, not counted.** The case for L2 conflicts on the M4, and for
-  L1 conflicts on Zen 5, rests on throughput and latency thresholds
-  matching across experiments. No hardware performance counters were read
-  on either machine (macOS has no public counter API; the Linux machine
-  restricts them), so cache misses were not counted directly.
+- **Counted on Zen 5, inferred on the M4.** The Zen 5 mechanism is
+  measured with hardware counters (L1 and L2 misses, above). The case for
+  L2 conflicts on the M4 rests on throughput and latency thresholds
+  matching across experiments; macOS has no public counter API, so cache
+  misses were not counted there.
 
 ## Rules of thumb
 

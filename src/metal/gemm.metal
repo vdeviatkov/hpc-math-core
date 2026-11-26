@@ -6,7 +6,7 @@
 // src/gemm/metal.hpp.
 //
 //   0  gemm_naive            one thread per C(i,j), device memory only
-//   1  gemm_tiled            16×16 threadgroup-memory tiles
+//   1  gemm_tiled            32×32 threadgroup-memory tiles
 //   2  gemm_reg_tile         64×64 block tile, 8×4 outputs per thread, float4 loads
 //   3  gemm_simd             simdgroup_float8x8 MMA straight from device memory
 //   4  gemm_simd_tg          simdgroup MMA fed from threadgroup memory
@@ -114,12 +114,15 @@ kernel void gemm_naive(device const float* A [[buffer(0)]], device const float* 
 }
 
 // ===========================================================================
-// Level 1: 16×16 tiles of A and B staged in threadgroup memory, one output
-// per thread. Bounds-checked, so it serves as the fallback for any shape.
+// Level 1: T1×T1 tiles of A and B staged in threadgroup memory, one output
+// per thread, T1×T1 threads. Bounds-checked, so it serves as the fallback for
+// any shape. The default is 32×32 (1,024 threads), measured 4–15% faster
+// than 16×16 at N = 256 … 4096 (docs/kernels/metal.md); 8×8 and 16×16 are
+// variants.
 // ===========================================================================
-constant constexpr uint kT1 = 16;
 
 /// Level 0's one output per thread, with A and B staged through threadgroup memory.
+template <uint kT1>
 kernel void gemm_tiled(device const float* A [[buffer(0)]], device const float* B [[buffer(1)]],
                        device float* C [[buffer(2)]], constant Dims& d [[buffer(3)]],
                        uint2 tid [[thread_position_in_threadgroup]],
@@ -140,6 +143,14 @@ kernel void gemm_tiled(device const float* A [[buffer(0)]], device const float* 
     if (row < d.M && col < d.N)
         C[row * d.N + col] = acc;
 }
+
+#define HPC_TILED(name, T1)                                                                     \
+    template [[host_name(name)]] kernel void gemm_tiled<T1>(device const float*, device const float*, \
+                                                            device float*, constant Dims&, uint2, uint2);
+HPC_TILED("gemm_tiled", 32)
+HPC_TILED("gemm_tiled_8", 8)
+HPC_TILED("gemm_tiled_16", 16)
+#undef HPC_TILED
 
 // ===========================================================================
 // Level 2: BM×BN block tile per threadgroup, TM×TN outputs per thread.
@@ -239,6 +250,12 @@ kernel void gemm_simd(device const float* A [[buffer(0)]], device const float* B
 HPC_SIMD("gemm_simd", 2, 2, 32, 32)
 HPC_SIMD("gemm_simd_2x2_16x32", 2, 2, 16, 32)
 HPC_SIMD("gemm_simd_2x2_32x16", 2, 2, 32, 16)
+HPC_SIMD("gemm_simd_1x1_32x32", 1, 1, 32, 32)
+HPC_SIMD("gemm_simd_1x4_32x32", 1, 4, 32, 32)
+HPC_SIMD("gemm_simd_4x1_32x32", 4, 1, 32, 32)
+HPC_SIMD("gemm_simd_2x4_32x32", 2, 4, 32, 32)
+HPC_SIMD("gemm_simd_4x2_32x32", 4, 2, 32, 32)
+HPC_SIMD("gemm_simd_4x4_32x32", 4, 4, 32, 32)
 #undef HPC_SIMD
 
 // ===========================================================================

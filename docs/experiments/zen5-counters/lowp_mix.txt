@@ -1,0 +1,4 @@
+# bench_gemm_lowp --benchmark_filter=^<row>$ --benchmark_min_time=50x under perf stat, taskset -c 2, Zen 5, 2026-11-25
+# per 1,000 operations (51 calls x 2N^3: 50 timed + the warm-up)
+Avx512Dpbf16/bf16/N=1024   IPC 3.59  instr/kOP 30.39  ops(uops)/kOP 29.87  OP/cycle 118.0  L1miss/kOP 1.364  backend-stall slots/kOP 36.95
+Avx512Vnni/int8/N=1024     IPC 4.11  instr/kOP 20.01  ops(uops)/kOP 18.82  OP/cycle 205.2  L1miss/kOP 0.500  backend-stall slots/kOP 19.06

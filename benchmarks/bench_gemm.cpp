@@ -417,7 +417,9 @@ void add_sme_mt_sweep() {
     for_mc.template operator()<3>();
     for_mc.template operator()<4>();
     for_mc.template operator()<6>();
+    for_mc.template operator()<7>();
     for_mc.template operator()<8>();
+    for_mc.template operator()<10>();
     for_mc.template operator()<12>();
 }
 

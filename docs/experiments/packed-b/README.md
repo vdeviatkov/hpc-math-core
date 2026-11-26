@@ -76,9 +76,11 @@ N = 1000–4096.
 
 ## Limitations
 
-No hardware counters (as in [zen5-b-stride](../zen5-b-stride/README.md)),
-so cache-set conflicts are inferred from where the gains appear (power-of-
-two row strides) rather than counted. On M4 the FP64 gain is as large at
-N = 2000 and 4000 as at 2048 and 4096, so there the copy helps for some
-reason beyond the power-of-two stride; it was not isolated. One compiler
-per machine.
+Zen 5 is counted with `perf` ([zen5-counters/packed_b.txt](../zen5-counters/packed_b.txt),
+per 1,000 FP operations): AVX2 at N = 2048 has 2.4× fewer L1 misses and
+10× fewer TLB misses packed (set conflicts, as the stride pattern
+suggests); AVX-512 has about equal L1 and L2 misses packed and in place
+but 10× fewer TLB misses, at N = 2000 as at 2048 and 4096: its gain is the
+TLB, not set conflicts. The M4 has no counters; its FP64 gain at N = 2000
+and 4000, as large as at 2048 and 4096, is not explained by the stride.
+One compiler per machine.

@@ -1,114 +1,41 @@
-# SME ZA shape and cache-block sweeps
+# SME ZA shapes
 
 Apple M4 Max, macOS, one calling thread, Apple Clang 17.0.0,
 `-O3 -mcpu=apple-m4 -ffast-math -funroll-loops -fno-omit-frame-pointer`.
-Streaming vector length 512 bits (16 float or 8 double elements). Each
-JSON includes system-load context;
-the reported 24 MHz CPU field is the platform timer frequency, not a
-measured core clock, and is not used to derive a throughput peak.
+Streaming vector length 512 bits (16 float or 8 double elements). The
+reported 24 MHz CPU field in the JSON is the platform timer frequency, not
+a measured core clock, and is not used to derive a throughput peak.
+Cache blocks held at the defaults (`SmeParams<T>` in
+`benchmarks/sme_params.hpp`: 1024×2048×4096 FP32, 512×2048×4096 FP64).
 
-"Default" below means the measured values in `SmeParams<T>`
-(`benchmarks/sme_params.hpp`): 2×2 FP32 / 2×4 FP64 ZA shapes,
-1024×2048×4096 / 512×2048×4096 cache blocks.
+| File | Program | What |
+|---|---|---|
+| [`tiles_m4.json`](tiles_m4.json), [`tiles_m4_load.txt`](tiles_m4_load.txt) | `bench_gemm --benchmark_filter='^SmeTile'` | `gemm_sme` with the FP32 shapes 1×4, 2×2, 4×1 and the FP64 shapes 1×4, 2×4, 2×2, 4×1 at N = 256, 512, 1024, 4096; seven randomly interleaved repetitions, minimum time 0.1 s; load average 12–13 |
+| [`microkernel_m4.csv`](microkernel_m4.csv) | [`sme_microkernel`](../../../benchmarks/experiments/sme_microkernel.cpp) | the macro-kernel alone on cache-resident packed A (MC × K) and B (K × NC), FP32 1×4 / 2×2 / 4×1 and FP64 1×4 / 2×4 / 2×2 / 4×2, K = 256, 512, 2048; best of 7 runs of ≥ 0.2 s; GFLOP/s and share of the measured FMOPA peak (1,963 / 500). Every shape reaches 99–100% at K = 2048 |
 
-- `tiles_m4.json`: all eight FP32 and twenty FP64 legal positive rectangular
-  ZA shapes at N=64/256/512/1024/4096, three randomly interleaved repetitions,
-  minimum measured time 0.02 s per repetition. Default cache blocks held fixed.
-- `tiles_m4_stage2.json`: 1×4, 2×2 and (FP64) 2×4 at
-  N=256/1024/4096, seven randomly interleaved repetitions, minimum time
-  0.1 s; the leading candidate against the defaults.
-- `blocks_m4.json`: default ZA shapes, M={256,512,1024},
-  K/N={1024,2048,4096}, N=512/1024/4096, both precisions; three randomly
-  interleaved repetitions, minimum time 0.02 s.
-- `tests.txt`, `lowp-tests.txt`: all 32 regular and 12 low-precision tests
-  pass on actual SME2 hardware. The shape tests exercise every legal shape
-  through packed-B, unpacked-B and unblocked entry points, plus 5×7×13
-  cache blocks, partial tiles, empty dimensions and K accumulation.
-- `validation.json`: source hashes, compiler and benchmark flags.
-
-The binaries run sequentially; no concurrent benchmark or build is part of
-these runs. Matrix allocation/packing inside each GEMM is timed;
-input allocation/initialization in the benchmark harness is excluded.
-The desktop has background work; medians and variability are included in
-the JSON. These are measurements of these implementations, not a proof of
-optimality across all SME CPUs. In these runs only the default shapes used
-paired SME2 loads; the other shapes loaded one vector at a time. The kernel
-uses paired loads for every shape ([SME guide](../../kernels/sme.md)), so
-the non-default rows may understate it.
-
-Reproduction commands and API: [SME guide](../../kernels/sme.md). The
-run-time block sweep that chose the cache blocks is in
+Matrix allocation and packing inside each GEMM are timed; input allocation
+and initialization in the benchmark harness are excluded. The desktop had
+background work; medians and variability are in the JSON. These are
+measurements of these implementations on one M4, not a proof of
+optimality across SME CPUs. Reproduction commands and API:
+[SME guide](../../kernels/sme.md). The cache-block sweep is in
 [sme2-gemm](../sme2-gemm/README.md).
 
-## Cache sweep
+## Results (tiles_m4.json)
 
-At N=4096, the defaults are the best measured cache configurations in this
-grid for both types: FP32 1024×2048×4096 at 1538.2 GFLOP/s, FP64
-512×2048×4096 at 435.2 GFLOP/s. The leading configurations differ at
-smaller sizes.
+Median GFLOP/s of seven interleaved repetitions (coefficient of variation
+≤ 2.7%). A shape's dimensions are counts of ZA tiles, not output elements.
 
-## Full register-shape sweep
+| Type | ZA shape | N=256 | 512 | 1024 | 4096 |
+|---|---|--:|--:|--:|--:|
+| f32 | 1x4 (default) | 768.5 | 1322.7 | 1574.8 | 1602.9 |
+| f32 | 2x2 | 758.4 | 1333.2 | 1467.2 | 1557.6 |
+| f32 | 4x1 | 663.4 | 1143.7 | 1365.0 | 1422.6 |
+| f64 | 1x4 (default) | 318.8 | 407.3 | 439.7 | 429.5 |
+| f64 | 2x4 | 314.9 | 405.7 | 424.2 | 426.3 |
+| f64 | 2x2 | 318.8 | 392.8 | 415.4 | 419.2 |
+| f64 | 4x1 | 294.9 | 356.8 | 390.8 | 387.0 |
 
-Median GFLOP/s. Each table holds that type's default cache blocks fixed.
-A tile's dimensions are counts of ZA tiles, not output elements.
-
-### f32
-
-| ZA shape | N=64 | 256 | 512 | 1024 | 4096 |
-|---|--:|--:|--:|--:|--:|
-| 1x1 | 199.1 | 367.6 | 447.4 | 467.3 | 470.8 |
-| 1x2 | 253.6 | 577.2 | 822.0 | 886.0 | 887.8 |
-| 1x3 | 231.6 | 648.4 | 1095.3 | 1236.0 | 1231.0 |
-| 1x4 | 298.7 | 784.6 | 1344.3 | 1603.6 | 1560.0 |
-| 2x1 | 240.3 | 549.4 | 782.0 | 831.2 | 834.3 |
-| 2x2 (default) | 291.1 | 772.2 | 1345.9 | 1468.0 | 1535.9 |
-| 3x1 | 201.8 | 612.0 | 1020.3 | 1164.7 | 1108.2 |
-| 4x1 | 238.5 | 642.2 | 1085.4 | 1265.7 | 1274.2 |
-
-### f64
-
-| ZA shape | N=64 | 256 | 512 | 1024 | 4096 |
-|---|--:|--:|--:|--:|--:|
-| 1x1 | 48.7 | 113.0 | 120.7 | 120.5 | 119.9 |
-| 1x2 | 78.0 | 199.7 | 225.8 | 234.6 | 229.2 |
-| 1x3 | 68.0 | 262.3 | 316.1 | 344.3 | 329.7 |
-| 1x4 | 89.0 | 323.6 | 409.7 | 443.5 | 421.5 |
-| 1x5 | 67.4 | 303.8 | 403.3 | 426.2 | 424.0 |
-| 1x6 | 65.0 | 296.1 | 395.9 | 429.6 | 425.1 |
-| 1x7 | 63.4 | 299.5 | 377.2 | 424.6 | 424.5 |
-| 1x8 | 68.7 | 183.0 | 209.3 | 216.2 | 215.0 |
-| 2x1 | 54.4 | 190.0 | 220.4 | 229.6 | 222.0 |
-| 2x2 | 83.1 | 319.4 | 393.8 | 422.6 | 405.4 |
-| 2x3 | 70.9 | 314.5 | 393.4 | 426.3 | 415.0 |
-| 2x4 (default) | 88.8 | 318.3 | 404.0 | 430.9 | 429.9 |
-| 3x1 | 53.2 | 245.9 | 297.2 | 316.1 | 293.8 |
-| 3x2 | 72.0 | 311.7 | 383.5 | 417.5 | 389.4 |
-| 4x1 | 74.2 | 272.1 | 336.7 | 343.8 | 349.3 |
-| 4x2 | 85.7 | 310.3 | 381.3 | 412.5 | 402.9 |
-| 5x1 | 51.2 | 260.6 | 348.4 | 364.1 | 352.0 |
-| 6x1 | 47.5 | 257.3 | 349.2 | 361.6 | 350.5 |
-| 7x1 | 44.6 | 261.1 | 328.3 | 340.7 | 341.2 |
-| 8x1 | 56.7 | 270.8 | 334.4 | 361.7 | 362.6 |
-
-
-## Repeated candidate comparison
-
-Seven interleaved repetitions in one session. Median GFLOP/s; percentage
-compares 1×4 to the default (2×2 FP32, 2×4 FP64).
-
-| Type | N | Default | 1×4 | Change |
-|---|--:|--:|--:|--:|
-| f32 | 256 | 770.3 | 785.1 | +1.92% |
-| f32 | 1024 | 1452.2 | 1589.9 | +9.48% |
-| f32 | 4096 | 1547.3 | 1578.4 | +2.01% |
-| f64 | 256 | 320.1 | 324.6 | +1.42% |
-| f64 | 1024 | 422.7 | 441.0 | +4.33% |
-| f64 | 4096 | 430.9 | 425.1 | -1.36% |
-
-The FP32 1×4 shape is a promising alternative, particularly at N=1024
-(+9.48%). FP64 1×4 helps at N=1024 (+4.33%) but loses at N=4096 (−1.36%).
-`SmeParams` keeps the 2×2 / 2×4 shapes; these square-size results do not
-establish a universal shape for rectangular workloads or other machines.
-Selecting `gemm_sme<float, 1, 4, Mc, Kc, Nc>` requires no micro-kernel
-change. The balanced all-tile layout is a sound design, not an established
-shape optimum.
+1×4 leads 2×2 FP32 by 7.3% at N=1024 and 2.9% at 4096 (−0.8% at 512) and
+2×4 FP64 by 0.4–3.7% at every size, so `SmeParams` uses 1×4 for FP32 and
+FP64. The widening types use 2×2; 1×4 has not been measured for them.

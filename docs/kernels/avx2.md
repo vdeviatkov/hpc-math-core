@@ -49,29 +49,29 @@ FP32:
 
 | Tile (rows × vectors) | Accumulators | N = 64 | N = 256 | N = 512 | N = 1024 | N = 4096 |
 |---|--:|--:|--:|--:|--:|--:|
-| 4 × 2 | 8 | 152.0 | 151.2 | 142.6 | 92.7 | 75.9 |
-| 2 × 4 | 8 | 132.6 | 135.5 | 129.5 | 63.0 | 60.0 |
-| 8 × 1 | 8 | 143.8 | 143.4 | 138.0 | 92.2 | 74.9 |
-| 3 × 3 | 9 | 145.7 | 149.5 | 135.6 | 84.6 | 73.9 |
-| 5 × 2 | 10 | 162.1 | 163.2 | 160.1 | 111.4 | 85.7 |
-| **6 × 2** (default) | 12 | **168.1** | **169.0** | **166.6** | **126.7** | 94.1 |
-| 4 × 3 | 12 | 155.4 | 154.2 | 150.9 | 108.2 | 87.9 |
-| 3 × 4 | 12 | 151.1 | 152.1 | 147.5 | 108.0 | **94.3** |
-| 7 × 2 (spills) | 14 | 108.7 | 97.1 | 95.8 | 90.7 | 83.8 |
+| 4 × 2 | 8 | 152.0 | 152.1 | 144.7 | 93.5 | 81.2 |
+| 2 × 4 | 8 | 132.8 | 135.3 | 128.3 | 61.9 | 61.2 |
+| 8 × 1 | 8 | 144.6 | 146.1 | 140.5 | 92.2 | 78.1 |
+| 3 × 3 | 9 | 146.0 | 152.1 | 142.1 | 87.9 | 80.5 |
+| 5 × 2 | 10 | 162.4 | 162.7 | 161.5 | 112.5 | 93.2 |
+| **6 × 2** (default) | 12 | **168.8** | **170.8** | **168.3** | **128.4** | 103.8 |
+| 4 × 3 | 12 | 154.9 | 155.6 | 152.7 | 109.4 | 97.1 |
+| 3 × 4 | 12 | 151.6 | 155.5 | 153.4 | 113.2 | **108.6** |
+| 7 × 2 (spills) | 14 | 108.8 | 99.2 | 98.8 | 96.4 | 91.0 |
 
 FP64:
 
 | Tile (rows × vectors) | Accumulators | N = 64 | N = 256 | N = 512 | N = 1024 | N = 4096 |
 |---|--:|--:|--:|--:|--:|--:|
-| 4 × 2 | 8 | 74.9 | 70.7 | 46.2 | 41.4 | 37.2 |
-| 2 × 4 | 8 | 66.3 | 64.7 | 31.9 | 31.9 | 30.8 |
-| 8 × 1 | 8 | 71.5 | 69.5 | 45.9 | 40.7 | 37.5 |
-| 3 × 3 | 9 | 72.9 | 68.5 | 43.2 | 40.2 | 37.3 |
-| 5 × 2 | 10 | 79.8 | 79.5 | 55.5 | 47.7 | 42.8 |
-| **6 × 2** (default) | 12 | **82.6** | **83.7** | **62.9** | **53.7** | 47.4 |
-| 4 × 3 | 12 | 73.7 | 74.9 | 55.2 | 53.6 | **47.9** |
-| 3 × 4 | 12 | 75.2 | 75.0 | 54.6 | 53.1 | 46.3 |
-| 7 × 2 (spills) | 14 | 53.3 | 47.8 | 45.2 | 43.0 | 41.5 |
+| 4 × 2 | 8 | 75.3 | 70.6 | 46.5 | 41.7 | 40.3 |
+| 2 × 4 | 8 | 66.4 | 63.2 | 31.3 | 31.1 | 32.7 |
+| 8 × 1 | 8 | 71.4 | 68.9 | 45.6 | 40.6 | 39.1 |
+| 3 × 3 | 9 | 72.9 | 69.4 | 43.4 | 40.8 | 40.7 |
+| 5 × 2 | 10 | 79.2 | 78.5 | 55.3 | 48.0 | 47.0 |
+| **6 × 2** (default) | 12 | **82.6** | **84.6** | **63.5** | 54.0 | 52.8 |
+| 4 × 3 | 12 | 73.7 | 75.8 | 53.8 | 49.3 | 48.5 |
+| 3 × 4 | 12 | 75.3 | 75.4 | 56.5 | **54.3** | **53.5** |
+| 7 × 2 (spills) | 14 | 54.3 | 49.1 | 48.0 | 45.7 | 45.6 |
 
 ### 32 YMM registers (`-march=native` on Zen 5), the build of the main tables
 
@@ -79,36 +79,40 @@ FP32:
 
 | Tile (rows × vectors) | Accumulators | N = 64 | N = 256 | N = 512 | N = 1024 | N = 4096 |
 |---|--:|--:|--:|--:|--:|--:|
-| 4 × 2 | 8 | 152.1 | 151.1 | 142.3 | 93.6 | 76.3 |
-| 2 × 4 | 8 | 133.3 | 136.0 | 127.0 | 66.7 | 61.9 |
-| 8 × 1 | 8 | 145.8 | 148.8 | 141.0 | 94.7 | 79.2 |
-| 3 × 3 | 9 | 146.6 | 150.4 | 136.5 | 84.5 | 74.6 |
-| 5 × 2 | 10 | 165.9 | 166.5 | 162.0 | 111.9 | 86.0 |
-| **6 × 2** (default) | 12 | 168.5 | **170.2** | **167.1** | 125.8 | 95.0 |
-| 4 × 3 | 12 | 165.8 | 169.7 | 166.9 | 116.7 | 93.3 |
-| 3 × 4 | 12 | **168.8** | 168.0 | 163.7 | 111.1 | 93.0 |
-| 7 × 2 | 14 | 166.1 | 166.4 | 162.1 | **130.1** | **102.1** |
+| 4 × 2 | 8 | 150.8 | 150.8 | 144.2 | 93.6 | 82.5 |
+| 2 × 4 | 8 | 133.8 | 135.8 | 127.0 | 68.3 | 65.9 |
+| 8 × 1 | 8 | 146.7 | 150.7 | 143.2 | 95.8 | 83.8 |
+| 3 × 3 | 9 | 148.3 | 153.6 | 143.4 | 87.7 | 82.1 |
+| 5 × 2 | 10 | 160.4 | 160.0 | 158.7 | 112.4 | 93.3 |
+| **6 × 2** (default) | 12 | 167.3 | 172.1 | 168.5 | 126.2 | 105.4 |
+| 4 × 3 | 12 | 165.5 | 169.4 | 167.2 | 117.1 | 102.3 |
+| 3 × 4 | 12 | **170.0** | 170.1 | 168.5 | 115.6 | 103.9 |
+| 7 × 2 | 14 | 166.7 | **172.7** | **172.8** | **139.8** | **117.5** |
 
 FP64:
 
 | Tile (rows × vectors) | Accumulators | N = 64 | N = 256 | N = 512 | N = 1024 | N = 4096 |
 |---|--:|--:|--:|--:|--:|--:|
-| 4 × 2 | 8 | 75.0 | 70.9 | 46.6 | 41.8 | 37.5 |
-| 2 × 4 | 8 | 66.6 | 65.2 | 34.9 | 34.6 | 32.2 |
-| 8 × 1 | 8 | 72.2 | 68.4 | 46.8 | 43.3 | 39.4 |
-| 3 × 3 | 9 | 74.3 | 68.5 | 42.5 | 40.3 | 37.7 |
-| 5 × 2 | 10 | 81.9 | 80.5 | 55.0 | 48.2 | 43.2 |
-| **6 × 2** (default) | 12 | 82.2 | **83.8** | 61.6 | 54.3 | 48.1 |
-| 4 × 3 | 12 | 81.1 | 83.0 | 58.1 | 52.4 | 47.6 |
-| 3 × 4 | 12 | **83.6** | 81.7 | 55.2 | 52.6 | 47.3 |
-| 7 × 2 | 14 | 82.5 | 82.0 | **64.8** | **56.9** | **51.2** |
+| 4 × 2 | 8 | 75.2 | 71.0 | 46.9 | 42.2 | 40.6 |
+| 2 × 4 | 8 | 66.9 | 64.9 | 33.8 | 34.2 | 34.5 |
+| 8 × 1 | 8 | 72.5 | 68.8 | 47.0 | 43.2 | 41.3 |
+| 3 × 3 | 9 | 74.3 | 70.1 | 43.8 | 41.1 | 40.9 |
+| 5 × 2 | 10 | 82.0 | 81.1 | 56.6 | 49.0 | 47.8 |
+| **6 × 2** (default) | 12 | 82.9 | 84.8 | 62.4 | 55.4 | 54.1 |
+| 4 × 3 | 12 | 81.2 | 83.4 | 58.5 | 52.1 | 51.6 |
+| 3 × 4 | 12 | **83.9** | 83.2 | 56.7 | 54.2 | 52.8 |
+| 7 × 2 | 14 | 83.0 | **85.5** | **69.6** | **60.5** | **59.3** |
 
-Variation: coefficient of variation ≤ 1.1% in every cell.
+Variation: coefficient of variation ≤ 2.9% in every cell.
 
-The sweep ran with a 64 × 256 × 256 cache block (TileM × TileK × TileN);
-the blocks were swept afterwards with the chosen tile
-([blocks.md](blocks.md)), and the tiles have not been swept at the default
-block.
+The sweep runs each shape at the default cache blocks (384 × 256 × 256
+FP32, 384 × 256 × 128 FP64, TileM × TileK × TileN;
+[blocks.md](blocks.md)).
+
+**B stays in registers in every shape.** Unlike AVX-512 with GCC (see
+[avx512.md](avx512.md)), no AVX2 shape reads B inside its FMAs: in the
+running loop of 4 × 2 and 6 × 2 (`perf annotate`, both builds) every FMA
+is register-only and B arrives through `vmovups`.
 
 ### Registers and spills
 
@@ -127,7 +131,7 @@ alternating two broadcast registers, still with no spill.
 ## Why 6 × 2
 
 - **Accumulators first.** The 8-accumulator shapes (4 × 2, 2 × 4, 8 × 1)
-  sit at exactly latency × pipes with no margin and stay 10–23% below
+  sit at exactly latency × pipes with no margin and stay 11–21% below
   6 × 2 at N = 256. On L1-resident data
   (`simd_microkernel`) the same rule shows without cache effects: 4, 5 and
   6 rows × 2 vectors reach 152.2, 167.6 and 175.0 GFLOP/s FP32, 83%, 92%
@@ -136,21 +140,27 @@ alternating two broadcast registers, still with no spill.
   5.3 bytes of B per FMA, 4 × 3 8 and 3 × 4 10.7. Where B stops fitting in
   L1, at N = 1024 FP32 (4 KiB row stride, see
   [Part 3](../articles/sme2-cache-associativity.md#the-same-experiment-on-amd-zen-5)),
-  6 × 2 leads by 17% (126.7 vs 108.2 / 108.0). 2 × 4, with 16 bytes per
+  6 × 2 leads by 13–17% (128.4 vs 109.4 / 113.2). 2 × 4, with 16 bytes per
   FMA, is the slowest shape everywhere. The L1 micro-kernel with B rows
   4 KiB apart shows the same order: 66.2 / 83.3 / 115.3 GFLOP/s for 4, 5
   and 6 rows.
+- **Large N is a near-tie.** At N = 4096, 3 × 4 leads 6 × 2 by 4.6% FP32
+  (and 1.3% FP64), but at N ≤ 1024 6 × 2 leads 3 × 4 by 10–13% FP32
+  (170.8 against 155.5 at N = 256), so 6 × 2 is kept. Counted with `perf`
+  at N = 4096, 3 × 4's lead does not come from fewer misses: it has 22%
+  more L1 misses than 6 × 2, the same TLB misses and 2.6× the L2
+  prefetches ([data](../experiments/zen5-counters/avx2_3x4.txt)).
 - **Then the register file.** One more row, 7 × 2, needs 17 registers. In
   the 16-register build it spills accumulators to the stack inside the k
-  loop and falls to 96–109 GFLOP/s FP32 at N ≤ 512, −35 to −43% against 6 × 2.
+  loop and falls to 99–109 GFLOP/s FP32 at N ≤ 512, −36 to −42% against 6 × 2.
 - **The default targets 16 registers.** With 32 YMM registers (the native
-  Zen 5 build) 7 × 2 does not spill and is the best at N ≥ 512 FP64 and
-  N ≥ 1024 FP32 (+3–8%), since it reads less B per FMA. But an AVX2 kernel
+  Zen 5 build) 7 × 2 does not spill and is the best from N = 256 up in
+  both types (+9–12% over 6 × 2 at N ≥ 1024). But an AVX2 kernel
   exists for CPUs without AVX-512, which have 16 registers; a CPU with 32
   is better served by `gemm_simd_blocked<Zmm>`. `gemm_simd_blocked<Ymm, 7, 2, …>`
   is there for anyone who wants it.
 
-The 6 × 2 kernel reaches 93% (FP32) and 92% (FP64) of the AVX2 peak at
+The 6 × 2 kernel reaches 94% (FP32) and 93% (FP64) of the AVX2 peak at
 N = 256. Past N = 512 what remains is B's row stride, not the tile:
 [Part 1](../articles/simd-gemm.md#what-remains-bs-row-stride).
 

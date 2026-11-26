@@ -43,6 +43,12 @@ const std::map<std::string, Geometry>& geometries() {
         {"gemm_simd", {64, 64, 8, 128, false}},
         {"gemm_simd_2x2_16x32", {32, 64, 8, 128, false}},
         {"gemm_simd_2x2_32x16", {64, 32, 8, 128, false}},
+        {"gemm_simd_1x1_32x32", {32, 32, 8, 32, false}},
+        {"gemm_simd_1x4_32x32", {32, 128, 8, 128, false}},
+        {"gemm_simd_4x1_32x32", {128, 32, 8, 128, false}},
+        {"gemm_simd_2x4_32x32", {64, 128, 8, 256, false}},
+        {"gemm_simd_4x2_32x32", {128, 64, 8, 256, false}},
+        {"gemm_simd_4x4_32x32", {128, 128, 8, 512, false}},
         {"gemm_simd_tg", {64, 64, 16, 128, false}},
         {"gemm_simd_tg_2x2_32x32_k32", {64, 64, 32, 128, false}},
         {"gemm_simd_tg_2x4_32x32_k16", {64, 128, 16, 256, false}},
@@ -53,6 +59,13 @@ const std::map<std::string, Geometry>& geometries() {
         {"gemm_simd_tg_f16_2x4_32x32_k16", {64, 128, 16, 256, true}},
         {"gemm_simd_tg_f16_2x2_64x32_k16", {128, 64, 16, 128, true}},
     };
+    return table;
+}
+
+/// Level 1's tile edge per function (HPC_TILED in gemm.metal); any shape.
+const std::map<std::string, unsigned>& tiled_edges() {
+    static const std::map<std::string, unsigned> table = {
+        {"gemm_tiled", 32}, {"gemm_tiled_8", 8}, {"gemm_tiled_16", 16}};
     return table;
 }
 
@@ -162,6 +175,9 @@ std::string metal_device_name() {
 
 std::vector<std::string> metal_kernel_variants() {
     std::vector<std::string> names;
+    for (const auto& [name, t] : tiled_edges())
+        if (name != "gemm_tiled")
+            names.push_back(name);
     for (const auto& [name, g] : geometries())
         names.push_back(name);
     return names;
@@ -198,9 +214,13 @@ struct MetalGemm::Impl {
         const Dims d{uint32_t(M), uint32_t(K), uint32_t(N)};
         MTLSize grid, group;
         bool f16 = false;
-        if (name == "gemm_naive" || name == "gemm_tiled") {
+        if (name == "gemm_naive") {
             group = MTLSizeMake(16, 16, 1);
             grid  = MTLSizeMake((N + 15) / 16, (M + 15) / 16, 1);
+        } else if (const auto t = tiled_edges().find(name); t != tiled_edges().end()) {
+            const unsigned e = t->second;
+            group            = MTLSizeMake(e, e, 1);
+            grid             = MTLSizeMake((N + e - 1) / e, (M + e - 1) / e, 1);
         } else {
             const Geometry& g = geometries().at(name);
             if (!fits(g))
@@ -313,6 +333,12 @@ double MetalGemm::run_ms(MetalKernel kernel, int reps) {
 double MetalGemm::run_variant_ms(const std::string& function, int reps) {
     @autoreleasepool {
         return impl_->run_function(function, reps);
+    }
+}
+
+unsigned metal_max_threads_per_threadgroup(const std::string& function) {
+    @autoreleasepool {
+        return unsigned(context().pipeline(function).maxTotalThreadsPerThreadgroup);
     }
 }
 

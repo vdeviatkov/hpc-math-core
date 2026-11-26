@@ -40,7 +40,7 @@ measures what each format costs in accuracy.
   rate. It needs an `sm_120a` build. cuBLAS
   uses it; switching the hand-written kernels to it took FP8 from 214 to
   291 TFLOP/s (cp.async kernel) and from 233 to 387 (part 4's Level 8).
-- **The kernels:** INT8 reaches 3,525 GOP/s on one M4 SME2 unit and 1,138
+- **The kernels:** INT8 reaches 3,676 GOP/s on one M4 SME2 unit and 1,138
   on one Zen 5 core, 2.3× and 3.8× their FP32 kernels at N = 2,048, and
   419 TOP/s on the RTX 5080 at N = 16,384 (98% of cuBLAS). Each CUDA kernel serves all
   five formats; only the `mma.sync` instruction and the element width
@@ -248,9 +248,12 @@ All three kernels in one session:
 
 At N = 4,096 bf16 is 1.9× and INT8 3.5× faster than FP32; best size
 against best size, 2.0× and 3.5×, against peak ratios of 2.0 and 4.0.
-bf16 and INT8 drop from N = 2,048 to 4,096, probably because A is read in
-place: at N = 4,096 its rows are 8 or 4 KiB apart, the stride conflict of
-part 1.
+bf16 and INT8 drop from N = 2,048 to 4,096 (−5% and −10%), mostly because
+A is read in place: at N = 4,096 its rows are 8 or 4 KiB apart, the stride
+conflict of part 1. At N = 4,000, the same size without the power-of-two
+stride, they lose only 1.3% and 4.1% against N = 2,048 (bf16 619.7, INT8
+1,137 against 596.5 and 1,073 at 4,096;
+[data](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/experiments/lowp/sweeps-zen5/stride_4000_vs_4096.txt)).
 
 ### Apple M4, NEON
 
@@ -262,28 +265,30 @@ each (G = 4 bf16 or 8 INT8), and adds their 2 × 2 product to a 2 × 2 tile
 of C held in one register. The micro-kernel arranges 16 such tiles into an
 8 × 8 block of C: per k group, 4 registers of A (row pairs) and 4 of B
 (column pairs) feed 16 instructions, the outer product of part 1 at the
-granularity of 2 × 2 tiles. `FMLAL` and `FMLA .8h` use a 4 × 4 tile
-(part 1's FP32 kernel uses 6 × 4).
+granularity of 2 × 2 tiles. `FMLAL` uses a 4 × 6 tile and `FMLA .8h` a
+4 × 5 tile, each the fastest of the shapes its registers allow (part 1's
+FP32 kernel uses 6 × 4;
+[sweeps](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/kernels/sizing.md)).
 
 | GFLOP/s or GOP/s | N = 256 | 1,024 | 2,048 | 4,096 | best, % of peak |
 |---|--:|--:|--:|--:|--:|
-| FP32, `gemm_simd_blocked<Q>` | **122** | 121 | 118 | 101 | 90% |
-| bf16, `BFMMLA` | **66** | **66** | **66** | 65 | 93% |
-| fp16 → FP32, `FMLAL` | 109 | **114** | 113 | 112 | 80% |
-| fp16 → fp16, `FMLA .8h` | 204 | **216** | 214 | 209 | 81% |
-| INT8, `SMMLA` | 449 | 493 | **503** | 491 | 98% |
+| FP32, `gemm_simd_blocked<Q>` | **122** | 121 | 118 | 100 | 90% |
+| bf16, `BFMMLA` | 65 | 65 | **66** | **66** | 93% |
+| fp16 → FP32, `FMLAL` | 117 | 122 | **123** | **123** | 86% |
+| fp16 → fp16, `FMLA .8h` | 213 | 235 | **236** | 233 | 88% |
+| INT8, `SMMLA` | 444 | 490 | **501** | 484 | 98% |
 
-(All rows from one session, with the FP32 kernel's 6 × 4 tile and default
-cache block.)
+(All rows from one session, each kernel at its measured tile
+and cache block;
+[data](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/experiments/lowp/bench_lowp_m4.json).)
 
 The kernels follow the peaks. bf16 is the slowest kernel in the table
 while running at 93% of its instruction's rate. `FMLAL` has FP32's
-arithmetic rate and moves half the bytes, yet runs 6% below the FP32
-kernel at N = 1,024: the FP32 kernel's larger tile and its `LDR` loads of
-A ([docs/kernels/neon.md](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/kernels/neon.md))
-gained more than the halved bytes; the fp16 kernels have neither. fp16 accumulation runs at 1.8× FP32 at N = 1,024–2,048. `SMMLA` runs at
-98% of its own peak (97% of `SDOT`'s) and 4.1–4.3× the FP32 kernel at
-N = 1,024–2,048: an 8 × 8 C block needs
+arithmetic rate and moves half the bytes; with its 4 × 6 tile it matches
+the FP32 kernel (122 against 121 GFLOP/s at N = 1,024, 123 against 100 at
+4,096, where FP32's B stride costs it). fp16 accumulation runs at
+1.9–2.0× FP32 at N = 1,024–2,048. `SMMLA` runs at 98% of its own peak
+(97% of `SDOT`'s) and 4.0–4.2× the FP32 kernel at N = 1,024–2,048: an 8 × 8 C block needs
 only 8 registers of operands per 16 instructions, so the loads never limit
 it.
 
@@ -291,8 +296,9 @@ it.
 
 Code: [`gemm_sme<fp16 | bf16 | int8_t>`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/sme.hpp).
 
-Part 2's kernel with the widening instruction: four ZA tiles hold a 32 × 32
-FP32 (or INT32) block of C, and each k group issues four widening
+Part 2's kernel with the widening instruction: four ZA tiles, arranged
+1 × 4 (part 2's measured shape), hold a 16 × 64 FP32 (or INT32) block of
+C, and each k group issues four widening
 `FMOPA`s (fp16, bf16) or `SMOPA`s (INT8). The packed strips hold one 32-bit
 word per row and k group. A is packed with part 2's NEON 4 × 4 transposes,
 now of 32-bit words that each carry G inputs; B by zipping G rows together.
@@ -301,22 +307,25 @@ elements, so an A block is still 8 MiB.
 
 | GFLOP/s or GOP/s, one thread | N = 256 | 1,024 | 2,048 | 4,096 | best, % of peak |
 |---|--:|--:|--:|--:|--:|
-| FP32, `gemm_sme` | 779 | 1,440 | **1,540** | 1,535 | 76% |
-| fp16 → FP32 | 967 | 1,689 | 1,732 | **1,756** | 87% |
-| bf16 → FP32 | 967 | 1,691 | 1,737 | **1,774** | 88% |
-| INT8 → INT32 | 1,579 | 3,148 | **3,525** | 3,413 | 87% |
+| FP32, `gemm_sme` | 767 | 1,575 | 1,584 | **1,614** | 82% |
+| fp16 → FP32 | 969 | 1,751 | 1,842 | **1,854** | 92% |
+| bf16 → FP32 | 972 | 1,752 | 1,848 | **1,853** | 92% |
+| INT8 → INT32 | 1,604 | 3,377 | 3,676 | **3,726** | 92% |
 
-The 16-bit kernels are 12–17% faster than FP32 from N = 1,024 on,
+(One session,
+[data](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/experiments/lowp/bench_lowp_m4.json).)
+
+The 16-bit kernels are 11–17% faster than FP32 from N = 1,024 on,
 although their peak is the same. With the same block sizes in bytes, every k step of the
 micro-kernel loads the same 256 bytes of A and B but performs twice the
 multiply-adds, and packing moves half the bytes per operation; the FP32
 kernel's losses to loads and packing shrink, and the widening kernels
-run closer to the unit's peak (87–88% against 76%). INT8 doubles the
+run closer to the unit's peak (92% against 82%). INT8 doubles the
 arithmetic and keeps the same efficiency: 2.3× the FP32 kernel at N = 2,048.
 
 ## The GPU kernel
 
-Code: [`kernel_lowp`, `kernel_tma` and the five `mma` formats](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/cuda/gemm.cu),
+Code: [`kernel_lowp`, `kernel_tma` and the five `mma` formats](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/cuda/gemm_kernels.cuh),
 API in [`cuda.hpp`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/cuda.hpp).
 
 On the GPU the k grouping is inside the instruction: an `mma.sync` fragment
@@ -502,8 +511,12 @@ because all three accumulate the same `mma` instructions in the same k order.
   the GPU rows would differ there.
 - **The M4 ran with background load** (load average 2–11 across runs). Repetitions
   agreed within 1%, but treat M4 figures as ±5%, as in parts 1–2.
-- **The Zen 5 INT8 kernel** reaches 79% of its peak against bf16's 90%;
-  the rest of that gap was not investigated.
+- **The Zen 5 INT8 kernel** reaches 79% of its peak against bf16's 90%.
+  Counted with `perf`, it issues 1.56 other instructions (loads,
+  broadcasts, the sign flip) per `VPDPBUSD` against bf16's 0.95 per
+  `VDPBF16PS`; at an IPC of 4.1 that allows 1.6 multiply-accumulates per
+  cycle, 80% of the two-per-cycle peak
+  ([data](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/experiments/zen5-counters/lowp_mix.txt)).
 
 ## Takeaways
 

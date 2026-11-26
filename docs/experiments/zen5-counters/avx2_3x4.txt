@@ -1,0 +1,7 @@
+Avx2Tile6x2/f32/N=4096   GFLOP/s=104.865G L1D->L2 9.223  L2 demand miss 0.0543  DTLB miss 6.071  load-queue stall 0.445
+Avx2Tile3x4/f32/N=4096   GFLOP/s=109.769G L1D->L2 11.296  L2 demand miss 0.0678  DTLB miss 6.295  load-queue stall 35.867
+Avx2Tile4x3/f32/N=4096   GFLOP/s=97.563G  L1D->L2 14.106  L2 demand miss 0.1695  DTLB miss 6.346  load-queue stall 37.126
+Avx2Tile6x2/f32/N=256    GFLOP/s=171.932G L1D->L2 5.963  L2 demand miss 0.0061  DTLB miss 0.012  load-queue stall 0.256
+Avx2Tile3x4/f32/N=256    GFLOP/s=155.683G L1D->L2 11.161  L2 demand miss 0.0129  DTLB miss 0.016  load-queue stall 21.050
+Avx2Tile6x2/f32/N=4096   L2-pf hit L2 10.079  L2-pf from L3 0.462  L2-pf from DRAM 0.1066  L1 fills from DRAM 0.0317
+Avx2Tile3x4/f32/N=4096   L2-pf hit L2 26.147  L2-pf from L3 0.346  L2-pf from DRAM 0.1375  L1 fills from DRAM 0.0472

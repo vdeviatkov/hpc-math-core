@@ -18,7 +18,7 @@ work on 16 cores (`load_*.txt`).
 | [`blocks_zen5_stage2.csv`](blocks_zen5_stage2.csv), [`blocks_m4_stage2.csv`](blocks_m4_stage2.csv) | the best candidates and the 64-row block, `--benchmark_repetitions=3 --benchmark_enable_random_interleaving=true` | stage 2 of the doc |
 | [`blocks_m4_slices.csv`](blocks_m4_slices.csv) | `^NeonBlock((48\|…\|1536)x256x256\|384x(128\|512\|1024)x256\|384x256x(128\|512\|1024))/`, 3 runs interleaved | the M4 tables that vary one block size around the default; the one-run M4 grid is too noisy for single cells (up to 2× on a few) |
 | [`bench_zen5_defaults.csv`](bench_zen5_defaults.csv), [`lowp_zen5_defaults.csv`](lowp_zen5_defaults.csv) | `bench_gemm --benchmark_filter='^(Avx2Blocked\|Avx512Blocked)'`, `bench_gemm_lowp --benchmark_filter='^Avx512Blocked'`, 3 runs | the library kernels at their default tiles and blocks, and their prefetch variants |
-| [`bench_m4_defaults.csv`](bench_m4_defaults.csv), [`lowp_m4_defaults.csv`](lowp_m4_defaults.csv) | `bench_gemm --benchmark_filter='^NeonBlocked'`, `bench_gemm_lowp --benchmark_filter='^Neon'`, 3 runs | the same on the M4; the low-precision run includes every NEON kernel, one session |
+| [`bench_m4_defaults.csv`](bench_m4_defaults.csv) | `bench_gemm --benchmark_filter='^NeonBlocked'`, 3 runs | the same on the M4 |
 | `load_zen5.txt`, `load_m4.txt`, `load_*_defaults.txt` | `uptime` | load before and after each run |
 
 Coefficient of variation of the time: ≤ 2.7% in every Zen 5 stage-2 cell

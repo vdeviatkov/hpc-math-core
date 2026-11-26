@@ -27,19 +27,26 @@
  * host-side helpers declared in gemm/cuda.hpp, not <cuda_runtime.h>.
  */
 
+#include "cuda_params.hpp"
+#include "cuda_variants.hpp"
 #include "gemm/cuda.hpp"
 #include "hpc/matrix.hpp"
 
 #include <benchmark/benchmark.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <memory>
 #include <random>
 #include <string>
+#include <vector>
 
 namespace {
 
 using namespace hpc::gemm;
+using P = hpc::bench::CudaParams;
+namespace v = hpc::bench::cuda_variants;
 
 template <typename T>
 void fill_random(hpc::Matrix<T>& M, unsigned seed) {
@@ -87,7 +94,7 @@ using DevicePtr = std::unique_ptr<void, DeviceFree>;
 
 template <typename T, bool Fp16>
 struct DeviceProblem {
-    DevicePtr A, B, C;
+    DevicePtr A, B, C, Ref;
 
     explicit DeviceProblem(std::size_t n) {
         hpc::Matrix<T> hA(n, n), hB(n, n);
@@ -97,6 +104,7 @@ struct DeviceProblem {
         A.reset(gemm_cuda_malloc(bytes));
         B.reset(gemm_cuda_malloc(bytes));
         C.reset(gemm_cuda_malloc(bytes));
+        Ref.reset(gemm_cuda_malloc(bytes));
         gemm_cuda_memcpy_h2d(A.get(), hA.data(), bytes);
         gemm_cuda_memcpy_h2d(B.get(), hB.data(), bytes);
         if constexpr (Fp16) {
@@ -115,11 +123,37 @@ struct DeviceProblem {
     DeviceProblem& operator=(const DeviceProblem&) = delete;
 };
 
+/// cuBLAS on the same inputs (fp16 when Fp16) into p.Ref, for the
+/// max_rel_diff counter.
+template <typename T, bool Fp16>
+void reference(DeviceProblem<T, Fp16>& p, int n) {
+    if constexpr (Fp16)
+        gemm_cuda_cublas_fp16_device(p.A.get(), p.B.get(), static_cast<float*>(p.Ref.get()), n, n, n);
+    else
+        gemm_cuda_cublas_device<T>(static_cast<const T*>(p.A.get()), static_cast<const T*>(p.B.get()),
+                                   static_cast<T*>(p.Ref.get()), n, n, n);
+}
+
+/// Largest |C - Ref| / max(|Ref|, 1) over the n x n result.
+template <typename T, bool Fp16>
+double max_rel_diff(DeviceProblem<T, Fp16>& p, std::size_t n) {
+    std::vector<T> c(n * n), r(n * n);
+    gemm_cuda_device_synchronize();
+    gemm_cuda_memcpy_d2h(c.data(), p.C.get(), n * n * sizeof(T));
+    gemm_cuda_memcpy_d2h(r.data(), p.Ref.get(), n * n * sizeof(T));
+    double worst = 0;
+    for (std::size_t i = 0; i < n * n; ++i)
+        worst = std::max(worst, std::abs(double(c[i]) - double(r[i])) / std::max(std::abs(double(r[i])), 1.0));
+    return worst;
+}
+
 /// Register <name>/<type>/N=<n> for each size: launch(A, B, C, n) on device
-/// buffers, timed with GPU events.
+/// buffers, timed with GPU events. With `check`, the max_rel_diff counter
+/// compares the result with cuBLAS on the same inputs (rows whose B layout
+/// differs, Level 8, pass false).
 template <typename T, bool Fp16 = false, typename Launch>
 void add(const std::string& name, Launch launch, Needs needs, int precision_bits,
-         std::initializer_list<std::size_t> sizes) {
+         std::initializer_list<std::size_t> sizes, bool check = true) {
     for (const std::size_t n : sizes) {
         benchmark::RegisterBenchmark(
             name + "/" + type_name<T>() + "/N=" + std::to_string(n),
@@ -130,6 +164,10 @@ void add(const std::string& name, Launch launch, Needs needs, int precision_bits
                 const int N = static_cast<int>(n);
                 auto call   = [&] { launch(p.A.get(), p.B.get(), static_cast<T*>(p.C.get()), N); };
                 gemm_cuda_time_ms(call);  // warm-up, untimed
+                if (check && n <= 4096) {
+                    reference(p, N);
+                    state.counters["max_rel_diff"] = max_rel_diff(p, n);
+                }
                 for (auto _ : state)
                     state.SetIterationTime(gemm_cuda_time_ms(call) / 1e3);
                 const double flops        = 2.0 * double(n) * double(n) * double(n);
@@ -149,10 +187,10 @@ constexpr std::initializer_list<std::size_t> kSizesF64 = {256, 1024, 4096, 8192}
 /// An FMA level (Levels 0-4) in both precisions.
 #define HPC_ADD_FMA(name, fn)                                                                   \
     add<double>(name, [](void* a, void* b, double* c, int n) {                                  \
-        fn<double>(static_cast<const double*>(a), static_cast<const double*>(b), c, n, n, n); }, \
+        fn<P, double>(static_cast<const double*>(a), static_cast<const double*>(b), c, n, n, n); }, \
         Needs::kDevice, 64, kSizesF64);                                                         \
     add<float>(name, [](void* a, void* b, float* c, int n) {                                    \
-        fn<float>(static_cast<const float*>(a), static_cast<const float*>(b), c, n, n, n); },    \
+        fn<P, float>(static_cast<const float*>(a), static_cast<const float*>(b), c, n, n, n); },    \
         Needs::kDevice, 32, kSizesF32)
 
 void register_all() {
@@ -164,22 +202,27 @@ void register_all() {
     HPC_ADD_FMA("CudaVectorized", gemm_cuda_vectorized_device);
 
     add<float>("CudaWmma", [](void* a, void* b, float* c, int n) {
-        gemm_cuda_wmma_device(static_cast<const float*>(a), static_cast<const float*>(b), c, n, n, n); },
+        gemm_cuda_wmma_device<P>(static_cast<const float*>(a), static_cast<const float*>(b), c, n, n, n); },
         Needs::kTensorCores, 16, kSizesF32);
     add<float>("CudaMmaLdmatrix", [](void* a, void* b, float* c, int n) {
-        gemm_cuda_mma_ldmatrix_device(static_cast<const float*>(a), static_cast<const float*>(b), c, n, n, n); },
+        gemm_cuda_mma_ldmatrix_device<P>(static_cast<const float*>(a), static_cast<const float*>(b), c, n, n, n); },
         Needs::kAmpere, 16, kSizesF32);
     // No fallback on the device path: every size here is a multiple of 128.
     add<float, true>("CudaWmmaPipelined", [](void* a, void* b, float* c, int n) {
-        gemm_cuda_wmma_pipelined_device(a, b, c, n, n, n); },
+        gemm_cuda_wmma_pipelined_device<P>(a, b, c, n, n, n); },
         Needs::kTensorCores, 16, kSizesF32);
     // Level 8 reads B as N x K; the inputs are random, so the same buffer
     // serves as either layout.
     add<float, true>("CudaTma", [](void* a, void* b, float* c, int n) {
-        gemm_cuda_tma_device(a, b, c, n, n, n); },
-        Needs::kTma, 16, kSizesF32);
+        gemm_cuda_tma_device<P>(a, b, c, n, n, n); },
+        Needs::kTma, 16, kSizesF32, false);
 
-    HPC_ADD_FMA("CudaCublas",     gemm_cuda_cublas_device);
+    add<double>("CudaCublas", [](void* a, void* b, double* c, int n) {
+        gemm_cuda_cublas_device<double>(static_cast<const double*>(a), static_cast<const double*>(b), c, n, n, n); },
+        Needs::kDevice, 64, kSizesF64, false);
+    add<float>("CudaCublas", [](void* a, void* b, float* c, int n) {
+        gemm_cuda_cublas_device<float>(static_cast<const float*>(a), static_cast<const float*>(b), c, n, n, n); },
+        Needs::kDevice, 32, kSizesF32, false);
     add<float>("CudaCublasTf32", [](void* a, void* b, float* c, int n) {
         gemm_cuda_cublas_tf32_device(static_cast<const float*>(a), static_cast<const float*>(b), c, n, n, n); },
         Needs::kAmpere, 32, kSizesF32);
@@ -189,12 +232,70 @@ void register_all() {
     // clang-format on
 }
 
+/// The tile sweeps (cuda_variants.hpp): FP32 / fp16 rows at N = 1024, 4096
+/// and 8192, each checked against cuBLAS (max_rel_diff).
+void register_variants() {
+    const std::initializer_list<std::size_t> kSweep = {1024, 4096, 8192};
+    const std::initializer_list<std::size_t> kSweepF64 = {1024, 4096};
+#define HPC_VAR_TILE(name, V)                                                                                 \
+    add<float>("CudaNaiveVar/" #name, [](void* a, void* b, float* c, int n) {                                 \
+        gemm_cuda_naive_device<v::V, float>(static_cast<const float*>(a), static_cast<const float*>(b), c, n, n, n); }, \
+        Needs::kDevice, 32, kSweep);                                                                          \
+    add<float>("CudaBlockedVar/" #name, [](void* a, void* b, float* c, int n) {                               \
+        gemm_cuda_blocked_device<v::V, float>(static_cast<const float*>(a), static_cast<const float*>(b), c, n, n, n); }, \
+        Needs::kDevice, 32, kSweep);
+    HPC_CUDA_TILE_VARIANTS(HPC_VAR_TILE)
+#undef HPC_VAR_TILE
+#define HPC_VAR_F64(name, V)                                                                                  \
+    add<double>("CudaRegTileVar/" #name, [](void* a, void* b, double* c, int n) {                             \
+        gemm_cuda_reg_tile_device<v::V, double>(static_cast<const double*>(a), static_cast<const double*>(b), c, n, n, n); }, \
+        Needs::kDevice, 64, kSweepF64);                                                                       \
+    add<double>("CudaDoubleBufVar/" #name, [](void* a, void* b, double* c, int n) {                           \
+        gemm_cuda_double_buf_device<v::V, double>(static_cast<const double*>(a), static_cast<const double*>(b), c, n, n, n); }, \
+        Needs::kDevice, 64, kSweepF64);                                                                       \
+    add<double>("CudaVectorizedVar/" #name, [](void* a, void* b, double* c, int n) {                          \
+        gemm_cuda_vectorized_device<v::V, double>(static_cast<const double*>(a), static_cast<const double*>(b), c, n, n, n); }, \
+        Needs::kDevice, 64, kSweepF64);
+    HPC_CUDA_F64_VARIANTS(HPC_VAR_F64)
+#undef HPC_VAR_F64
+#define HPC_VAR_REGTILE(name, V)                                                                              \
+    add<float>("CudaRegTileVar/" #name, [](void* a, void* b, float* c, int n) {                               \
+        gemm_cuda_reg_tile_device<v::V, float>(static_cast<const float*>(a), static_cast<const float*>(b), c, n, n, n); }, \
+        Needs::kDevice, 32, kSweep);                                                                          \
+    add<float>("CudaVectorizedVar/" #name, [](void* a, void* b, float* c, int n) {                            \
+        gemm_cuda_vectorized_device<v::V, float>(static_cast<const float*>(a), static_cast<const float*>(b), c, n, n, n); }, \
+        Needs::kDevice, 32, kSweep);
+    HPC_CUDA_REGTILE_VARIANTS(HPC_VAR_REGTILE)
+#undef HPC_VAR_REGTILE
+#define HPC_VAR_DOUBLEBUF(name, V)                                                                            \
+    add<float>("CudaDoubleBufVar/" #name, [](void* a, void* b, float* c, int n) {                             \
+        gemm_cuda_double_buf_device<v::V, float>(static_cast<const float*>(a), static_cast<const float*>(b), c, n, n, n); }, \
+        Needs::kDevice, 32, kSweep);
+    HPC_CUDA_DOUBLEBUF_VARIANTS(HPC_VAR_DOUBLEBUF)
+#undef HPC_VAR_DOUBLEBUF
+#define HPC_VAR_WARPGRID(name, V)                                                                             \
+    add<float>("CudaWmmaVar/" #name, [](void* a, void* b, float* c, int n) {                                  \
+        gemm_cuda_wmma_device<v::V>(static_cast<const float*>(a), static_cast<const float*>(b), c, n, n, n); }, \
+        Needs::kTensorCores, 16, kSweep);                                                                     \
+    add<float>("CudaMmaLdmatrixVar/" #name, [](void* a, void* b, float* c, int n) {                           \
+        gemm_cuda_mma_ldmatrix_device<v::V>(static_cast<const float*>(a), static_cast<const float*>(b), c, n, n, n); }, \
+        Needs::kAmpere, 16, kSweep);
+    HPC_CUDA_WARPGRID_VARIANTS(HPC_VAR_WARPGRID)
+#undef HPC_VAR_WARPGRID
+#define HPC_VAR_PIPE(name, V)                                                                                 \
+    add<float, true>("CudaWmmaPipelinedVar/" #name, [](void* a, void* b, float* c, int n) {                   \
+        gemm_cuda_wmma_pipelined_device<v::V>(a, b, c, n, n, n); }, Needs::kTensorCores, 16, kSweep);
+    HPC_CUDA_PIPE_VARIANTS(HPC_VAR_PIPE)
+#undef HPC_VAR_PIPE
+}
+
 #undef HPC_ADD_FMA
 
 }  // namespace
 
 int main(int argc, char** argv) {
     register_all();
+    register_variants();
     benchmark::Initialize(&argc, argv);
     if (benchmark::ReportUnrecognizedArguments(argc, argv))
         return 1;

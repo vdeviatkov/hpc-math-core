@@ -1,0 +1,4 @@
+microkernel start: 18:47  up 248 days, 18:49, 5 users, load averages: 14.00 8.77 7.21
+microkernel end:   18:48  up 248 days, 18:49, 5 users, load averages: 6.92 7.71 6.91
+blocks start: 18:48  up 248 days, 18:49, 5 users, load averages: 6.92 7.71 6.91
+blocks end:   19:26  up 248 days, 19:27, 5 users, load averages: 7.41 6.16 5.90

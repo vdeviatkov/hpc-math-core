@@ -1,0 +1,6 @@
+# x86_load_ports, taskset -c 2, Zen 5 (Ryzen 9 9950X), 2026-11-25, idle; core clock 5.693 GHz
+kind,loads_per_cycle,fmas_per_cycle
+128-bit loads,1.99,0.00
+256-bit loads,1.99,0.00
+512-bit loads,1.99,0.00
+512-bit loads + FMAs,1.92,1.92

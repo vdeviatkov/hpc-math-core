@@ -8,7 +8,7 @@
  * out (Apple GPUs have no FP64):
  *
  *   0  kNaive      one thread per C(i,j), device memory only
- *   1  kTiled      16x16 threadgroup-memory tiles, one output per thread
+ *   1  kTiled      32x32 threadgroup-memory tiles, one output per thread
  *   2  kRegTile    64x64 block tile, 8x4 outputs per thread, float4 loads,
  *                  A transposed in threadgroup memory
  *   3  kSimd       simdgroup_float8x8 multiply-accumulate, fragments loaded
@@ -84,6 +84,11 @@ private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
+
+/// maxTotalThreadsPerThreadgroup of a compiled function's pipeline. Metal
+/// lowers it below the device limit (1024) when the kernel needs more
+/// registers per thread, so it serves as a register-pressure probe.
+unsigned metal_max_threads_per_threadgroup(const std::string& function);
 
 /// C = A·B on the GPU, copying in and out (convenience for tests).
 void gemm_metal(MetalKernel kernel, const Matrix<float>& A, const Matrix<float>& B, Matrix<float>& C);

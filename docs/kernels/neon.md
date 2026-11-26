@@ -63,39 +63,35 @@ FP32:
 
 | Tile (rows × vectors) | Accumulators | N = 64 | N = 256 | N = 512 | N = 1024 | N = 4096 |
 |---|--:|--:|--:|--:|--:|--:|
-| 4 × 2 | 8 | 82.8 | 68.7 | 68.2 | 65.2 | 53.4 |
-| 2 × 4 | 8 | 80.4 | 65.5 | 64.6 | 58.9 | 44.6 |
-| 4 × 4 | 16 | 117.5 | 109.7 | 108.6 | 100.7 | 75.2 |
-| 8 × 2 | 16 | 114.0 | 98.8 | 99.1 | 97.7 | 65.3 |
-| 6 × 3 | 18 | 112.3 | 101.1 | 100.8 | 92.3 | 74.2 |
-| 8 × 3 | 24 | 114.8 | 114.2 | 114.4 | 110.3 | 78.8 |
-| 5 × 4 | 20 | **122.0** | 119.4 | 120.0 | 114.8 | 84.5 |
-| **6 × 4** (default) | 24 | 121.0 | **121.2** | **122.1** | **120.4** | **90.8** |
-| 12 × 2 | 24 | 109.6 | 102.2 | 103.2 | 101.9 | 59.3 |
-| 2 × 8 | 16 | 121.4 | 78.9 | 75.3 | 62.3 | 52.8 |
+| 4 × 2 | 8 | 80.8 | 66.9 | 66.8 | 63.4 | 53.1 |
+| 2 × 4 | 8 | 79.5 | 65.2 | 64.2 | 58.3 | 44.7 |
+| 4 × 4 | 16 | 116.9 | 109.6 | 108.5 | 100.0 | 78.4 |
+| 8 × 2 | 16 | 113.6 | 98.7 | 99.1 | 97.2 | 68.4 |
+| 6 × 3 | 18 | 112.4 | 103.1 | 101.8 | 95.5 | 77.8 |
+| 8 × 3 | 24 | 115.2 | 114.2 | 113.8 | 110.3 | 81.2 |
+| 5 × 4 | 20 | **122.2** | 119.2 | 120.9 | 115.8 | 92.2 |
+| **6 × 4** (default) | 24 | 121.3 | **122.3** | **122.8** | **122.3** | **101.0** |
+| 12 × 2 | 24 | 107.9 | 105.6 | 105.2 | 104.5 | 63.9 |
+| 2 × 8 | 16 | 121.1 | 79.9 | 76.1 | 63.5 | 54.2 |
 
 FP64:
 
 | Tile (rows × vectors) | Accumulators | N = 64 | N = 256 | N = 512 | N = 1024 | N = 4096 |
 |---|--:|--:|--:|--:|--:|--:|
-| 4 × 2 | 8 | 42.7 | 34.9 | 33.5 | 32.8 | 27.0 |
-| 2 × 4 | 8 | 41.3 | 32.7 | 29.8 | 27.5 | 22.3 |
-| 4 × 4 | 16 | 58.3 | 54.1 | 50.7 | 47.1 | 37.3 |
-| 8 × 2 | 16 | 56.5 | 49.5 | 49.1 | 45.3 | 36.0 |
-| 6 × 3 | 18 | 59.5 | 50.5 | 46.2 | 44.1 | 36.8 |
-| 8 × 3 | 24 | 61.0 | 57.7 | 55.4 | 52.7 | 42.9 |
-| 5 × 4 | 20 | **61.7** | 60.2 | 57.2 | 54.2 | 41.7 |
-| **6 × 4** (default) | 24 | 60.7 | **60.9** | **60.0** | **57.8** | **45.2** |
-| 12 × 2 | 24 | 55.5 | 51.8 | 51.5 | 46.2 | 32.6 |
-| 2 × 8 | 16 | 61.5 | 37.5 | 31.0 | 29.2 | 25.9 |
+| 4 × 2 | 8 | 40.4 | 33.4 | 32.1 | 30.8 | 24.9 |
+| 2 × 4 | 8 | 40.5 | 32.1 | 29.0 | 27.1 | 22.1 |
+| 4 × 4 | 16 | 58.1 | 54.0 | 50.3 | 47.2 | 39.1 |
+| 8 × 2 | 16 | 56.4 | 49.4 | 49.0 | 45.3 | 37.8 |
+| 6 × 3 | 18 | 59.5 | 51.1 | 47.0 | 45.3 | 38.9 |
+| 8 × 3 | 24 | 60.9 | 57.8 | 55.2 | 52.9 | 44.7 |
+| 5 × 4 | 20 | **61.9** | 60.1 | 57.4 | 52.9 | 45.1 |
+| **6 × 4** (default) | 24 | 60.8 | **61.2** | **60.4** | **59.1** | **50.6** |
+| 12 × 2 | 24 | 55.5 | 53.5 | 53.3 | 48.3 | 35.5 |
+| 2 × 8 | 16 | 60.5 | 37.8 | 31.5 | 29.4 | 26.7 |
 
-The sweep ran with a 64 × 256 × 256 cache block; the blocks were swept
-afterwards with the chosen tile ([blocks.md](blocks.md)), and the tiles
-have not been swept at the default block.
-
-Variation: coefficient of variation ≤ 1.1% in every cell. Load average
-8–14 on 16 cores during the sweep (Spotlight indexing and an IDE, about
-2.5 of the 12 P-cores busy); core clock 4.48–4.49 GHz.
+The sweep runs each shape at the default cache block (384 × 256 × 256;
+[blocks.md](blocks.md)). Variation: coefficient of variation ≤ 3.8% in
+every cell. Load average 13–15 on 16 cores during the sweep.
 
 No shape spills: Clang uses up to 32 Q registers (8 × 3 and larger), and
 the only stack accesses are the saves of the callee-saved d8–d15 outside
@@ -103,19 +99,19 @@ the loop.
 
 ## Why 6 × 4
 
-- **Accumulators.** The 8-accumulator shapes run at 48–60% of 6 × 4
+- **Accumulators.** The 8-accumulator shapes run at 44–55% of 6 × 4
   from N = 256 up: the M4 needs 12–16 independent FMAs in flight.
 - **Wide rows of B.** Among shapes with enough accumulators, 4 vectors
   per row beat 2 or 3 at the same row count or accumulator count: 6 × 4
   against 8 × 3 and 12 × 2 (24 accumulators each), 4 × 4 against 8 × 2
   (16). The sweep shows this; it does not isolate why. The wide but short
   2 × 8 is fast only at N = 64, where all of B fits in L1; past that it
-  reads 8 bytes of B per FMA and falls to 53–79 GFLOP/s.
+  reads 8 bytes of B per FMA and falls to 54–80 GFLOP/s.
 - **Enough rows.** From 4 × 4 to 5 × 4 to 6 × 4, B's bytes per FMA drop
-  from 4 to 2.7, and the kernel gains 11–21% FP32 and 13–23% FP64 at
+  from 4 to 2.7, and the kernel gains 12–29% FP32 and 13–29% FP64 at
   N ≥ 256. 7 × 4 would need 33 registers.
 
-6 × 4 reaches 85% of the FP32 peak and 85% of FP64 (121.2 and 60.9
+6 × 4 reaches 85% of the FP32 peak and 85% of FP64 (122.3 and 61.2
 GFLOP/s at N = 256) in the sweep. With its default cache block
 ([blocks.md](blocks.md)) it runs at 123.8 / 62.2 at its best size and
 102.1 / 51.0 at N = 4096

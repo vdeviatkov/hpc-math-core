@@ -1,0 +1,2 @@
+start: 22:24  up 248 days, 22:26, 5 users, load averages: 2.04 2.55 4.63
+end:   22:26  up 248 days, 22:28, 5 users, load averages: 8.65 4.63 5.18

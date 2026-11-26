@@ -1,0 +1,16 @@
+# taskpolicy -b ./build/benchmarks/sme_fmopa (background QoS: efficiency cores only), 2026-11-25, load average 13
+core clock: 1.658 GHz
+type,tiles,threads,ns_per_fmopa_per_thread,cycles_per_fmopa_per_thread,gflops_total
+f32,1,1,2.500,4.15,204.8
+f32,2,1,3.142,5.21,163.0
+f32,4,1,2.292,3.80,223.3
+f64,1,1,1.736,2.88,73.7
+f64,2,1,2.272,3.77,56.3
+f64,4,1,2.980,4.94,43.0
+f64,8,1,2.002,3.32,63.9
+f32,4,2,5.148,8.54,198.9
+f32,4,3,5.778,9.58,265.8
+f32,4,4,10.852,18.00,188.7
+f32,4,6,17.008,28.21,180.6
+f32,4,8,23.156,38.40,176.9
+f32,4,12,34.200,56.72,179.6
