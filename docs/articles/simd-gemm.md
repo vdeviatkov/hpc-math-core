@@ -242,9 +242,9 @@ How each shape was chosen is told below, and every shape measured is in
 [docs/kernels](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/kernels/README.md).
 
 This is an outer product computed with vector FMAs: 8 values of A times
-32 values of B, 256 multiply-adds per k step. Part 2 of this series runs
-the same idea on a unit that performs a 16 × 16 outer product in a single
-instruction.
+32 values of B, 256 multiply-adds per k step. [Part 2](sme2-gemm.md) of
+this series runs the same idea on Apple M4's SME2 unit, whose `FMOPA`
+instruction computes a 16 × 16 FP32 outer product in one step.
 
 ### Why the tile has 8 rows: a code-generation trap
 
