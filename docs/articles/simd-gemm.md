@@ -85,10 +85,13 @@ FMAs on C independent register accumulators and no memory traffic. With
 one accumulator each FMA waits for the previous one; with more, they
 overlap until the FMA pipes are full:
 
-| FMAs per cycle (FP32) | 1 | 2 | 4 | 8 | 12 | 16 |
+| Independent accumulators → | 1 | 2 | 4 | 8 | 12 | 16 |
 |---|--:|--:|--:|--:|--:|--:|
-| Zen 5, AVX-512 | 0.25 | 0.50 | 1.00 | 1.83 | **1.98** | 1.98 |
-| M4, NEON | 0.30 | 0.58 | 1.22 | 2.01 | 2.81 | **3.46** |
+| Zen 5, AVX-512: FMAs per cycle | 0.25 | 0.50 | 1.00 | 1.83 | **1.98** | 1.98 |
+| M4, NEON: FMAs per cycle | 0.30 | 0.58 | 1.22 | 2.01 | 2.81 | **3.46** |
+
+*Vector FMA instructions completed per cycle, FP32, against the number of
+independent accumulators in the loop.*
 
 Zen 5 retires two 512-bit FMAs per cycle with a latency of exactly 4
 cycles: 8 accumulators come close and 12 reach the full rate. The M4 core
