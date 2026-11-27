@@ -294,10 +294,34 @@ tile sweep at the cache blocks chosen [below](#cache-blocks-measured-too),
 | FP64, 4 × 2 tile | 106.7 | 70.7 | 69.4 | 67.6 |
 | FP64, 8 × 2 tile | **160.5** | **141.2** | **115.7** | **116.2** |
 
-The NEON FP64 micro-kernel shows the opposite problem: no folding, but a
-4 × 2 tile has only 8 accumulators for a core that needs 12–16. On
-L1-resident data, 8 rows instead of 4 nearly double it (33.6 → 58.6
-GFLOP/s).
+### The same tile on the M4: too few accumulators
+
+On the M4 the 4 × 2 tile is slow for a different reason. AArch64's `FMLA`
+has no memory operand, so the folding above cannot happen: B is loaded
+into registers once per k step whatever the tile. The limit is FMA
+latency instead. Each accumulator is updated once per k step, and an FMA
+must wait 3.3–3.5 cycles for the previous FMA into the same accumulator,
+so a k step cannot be shorter than one FMA latency, however few FMAs it
+holds. With 8 accumulators that is 8 FMAs per ~4 cycles, about half of
+the 4 per cycle the core can issue. More rows put more independent FMAs
+into the same latency window:
+
+| M4 NEON FP64 micro-kernel, B in L1 | Accumulators | Cycles per k step | FMAs per cycle | GFLOP/s | % of peak |
+|---|--:|--:|--:|--:|--:|
+| 4 rows × 2 vectors | 8 | 4.27 | 1.87 | 33.6 | 47% |
+| 6 rows × 2 vectors | 12 | 4.67 | 2.57 | 46.1 | 64% |
+| 8 rows × 2 vectors | 16 | 4.89 | 3.27 | 58.6 | 82% |
+| 10 rows × 2 vectors | 20 | 5.80 | **3.45** | **61.9** | **86%** |
+| *Peak: 4 FMAs × 2 lanes × 2 flops × 4.48 GHz* | | | *4.00* | *71.7* | *100%* |
+
+*Data: [tile-sweeps](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/experiments/tile-sweeps/README.md), at the 4.48 GHz clock measured during the run.*
+
+Doubling the rows from 4 to 8 nearly doubles the throughput, because the
+k step grows only from 4.27 to 4.89 cycles while its work doubles. Past
+16 accumulators the gain is small: 10 rows add 6%, as the core nears its
+4 FMAs per cycle. The
+same reasoning gives the NEON default tile, 6 rows × 4 vectors with 24
+accumulators ([docs/kernels/neon.md](https://github.com/vdeviatkov/hpc-math-core/blob/main/docs/kernels/neon.md)).
 
 ### The AVX2 tile: 6 rows, chosen by measurement
 
