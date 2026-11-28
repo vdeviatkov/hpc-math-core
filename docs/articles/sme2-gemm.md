@@ -537,17 +537,12 @@ sizes (one run, median of 3,
 
 ### What packing costs
 
-Timing each phase of the full multiplication at N = 4096, median of 15,
-with the 2 × 2 tile arrangement (32-column strips)
-([`sme_b_layout`](https://github.com/vdeviatkov/hpc-math-core/blob/main/benchmarks/experiments/sme_b_layout.cpp), data in
-[experiments/sme-b-stride](https://github.com/vdeviatkov/hpc-math-core/tree/main/docs/experiments/sme-b-stride)):
-packing A takes 3.8 ms and packing B 4.9 ms of a 91 ms call, about 10%
-together, and the compute takes 82 ms whatever B's original stride was:
-1,670 GFLOP/s, 85% of peak. Packing B is itself slowed by the 16 KiB
-stride it reads from; with rows padded to 16,512 B it takes 2.5 ms and
-the two copies 7% of the call. At small N the copy shows: below N = 1024
-the unpacked kernels are faster (938 vs 768 GFLOP/s at N = 256), because
-the whole problem fits in L2 anyway.
+At N = 4096 the two copies take about 10% of the call (3.8 ms for A and
+4.9 ms for B, of 91 ms), and the compute takes the same 82 ms whatever B's
+original stride: [part 3](sme2-cache-associativity.md#fix-2-pack-b-and-why-it-wins)
+times each phase. At small N the copy shows: below N = 1024 the unpacked
+kernels are faster (938 against 768 GFLOP/s at N = 256), because the whole
+problem fits in L2 anyway.
 
 ## Step 5: both SME units — 3.5 TFLOP/s
 
