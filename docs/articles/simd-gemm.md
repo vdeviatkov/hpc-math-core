@@ -525,26 +525,13 @@ kernel is 704× faster in FP32.
 
 Code: [`gemm_simd_packed<Ymm>`, `gemm_simd_packed<Zmm>`, `gemm_simd_packed<Q>`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/simd.hpp).
 
-The register-tile kernels of Step 4 lose throughput as N grows, and the
-drops line up with the byte distance between B's rows, which these kernels
-read in place: AVX2 drops at FP32 N = 1024 and FP64 N = 512, both a 4 KiB
-stride, and AVX-512 by 5% at FP32 N = 1024. The micro-kernel runs down 256
-rows of B, and rows a power of two apart compete for a few cache sets. The
-micro-kernel experiment measures it directly, on data small enough for L1:
-
-| AVX-512 FP32, 16 accumulators, L1-resident | GFLOP/s |
-|---|--:|
-| B packed (rows contiguous) | 349.5 |
-| B rows 1 KiB apart | 334.3 (−4%) |
-| B rows 4 KiB apart | 274.6 (−21%) |
-
-The full kernel drops at the same sizes, by less: −5%, 327.9 → 312.8
-FP32 from N = 512 to 1024, where B's stride is one cost among several.
-With only the stride changed, it costs this micro-kernel 14–17%, through
-L2 set conflicts; [part 3](sme2-cache-associativity.md#the-same-experiment-on-amd-zen-5)
-measures and counts it. The cure is to pad B's rows or copy each strip of
-B into a contiguous buffer before the micro-kernel uses it; this step does
-the copy.
+The register-tile kernels of Step 4 read B in place, and they slow down
+when B's rows are a power of two apart: AVX2 at FP32 N = 1024 and FP64
+N = 512 (both a 4 KiB row stride), AVX-512 by 5% at FP32 N = 1024. Rows
+that far apart map to the same few cache sets and evict each other before
+they are reused; [part 3](sme2-cache-associativity.md#the-same-experiment-on-amd-zen-5)
+measures these conflicts on this core. Copying each strip of B into a
+contiguous buffer removes them, and that is this step.
 
 Every SIMD kernel in this series, including the 16- and 8-bit ones of
 [part 5](lowp-gemm.md), has the same inner step: load a few vectors of a
