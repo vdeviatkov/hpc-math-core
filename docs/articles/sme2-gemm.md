@@ -9,9 +9,10 @@ permalink: /articles/sme2-gemm.html
 
 *Apple M4 Max, one thread unless stated. Every number in this article was
 measured on that machine; the code is in
-[hpc-math-core](https://github.com/vdeviatkov/hpc-math-core). Part 2 of a
-series: [part 1](simd-gemm.md) builds the CPU SIMD kernel this one starts
-from.*
+[hpc-math-core](https://github.com/vdeviatkov/hpc-math-core). The kernel
+starts from the CPU SIMD kernel of [part 1](simd-gemm.md).*
+
+> **Matrix multiplication, from SIMD to Tensor Cores** · 1. [SIMD on CPU cores](simd-gemm.md) · **2. The SME2 matrix unit** (this article) · 3. [Cache-set conflicts](sme2-cache-associativity.md) · 4. [CUDA on an RTX 5080](cuda-gemm.md) · 5. [Low-precision formats](lowp-gemm.md)
 
 Apple's M4 is the first Apple chip that exposes its matrix unit through a
 public instruction set: ARM's Scalable Matrix Extension, SME2. This article

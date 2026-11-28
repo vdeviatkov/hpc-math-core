@@ -9,11 +9,9 @@ permalink: /articles/simd-gemm.html
 
 *One thread on an Apple M4 Max P-core and an AMD Ryzen 9 9950X (Zen 5)
 core. Every number was measured on those machines; the code is in
-[hpc-math-core](https://github.com/vdeviatkov/hpc-math-core). Part 1 of a
-series: [part 2](sme2-gemm.md) moves the same multiplication to Apple's
-matrix unit, [part 3](sme2-cache-associativity.md) analyses its cache-set
-conflicts, [part 4](cuda-gemm.md) moves it to an NVIDIA GPU and
-[part 5](lowp-gemm.md) to 16- and 8-bit formats.*
+[hpc-math-core](https://github.com/vdeviatkov/hpc-math-core).*
+
+> **Matrix multiplication, from SIMD to Tensor Cores** · **1. SIMD on CPU cores** (this article) · 2. [The SME2 matrix unit](sme2-gemm.md) · 3. [Cache-set conflicts](sme2-cache-associativity.md) · 4. [CUDA on an RTX 5080](cuda-gemm.md) · 5. [Low-precision formats](lowp-gemm.md)
 
 Matrix multiplication, C = A · B, is the operation the rest of this series
 optimises on ever more specialised hardware. Before matrix units and GPUs,
@@ -554,17 +552,10 @@ measures it directly, on data small enough for L1:
 
 The full kernel drops at the same sizes, by less: −5%, 327.9 → 312.8
 FP32 from N = 512 to 1024, where B's stride is one cost among several.
-[Part 3](sme2-cache-associativity.md#the-same-experiment-on-amd-zen-5)
-isolates it on this core: with only the stride changed, B rows 4, 8 and
-16 KiB apart cost a GEMM with this micro-kernel (8 × 2 tile, 64-row
-blocks) 14–17% against the same rows padded by one
-64-byte line. Counted with `perf`, the 256-row strips this kernel uses
-lose to L2 conflicts: L2 demand misses rise 1.6–1.7× at N = 1024, 2048
-and 4096, and from N = 2048 L1 misses rise 9–14% too; the missed lines
-come from Zen 5's L3, 45 cycles away, which keeps the cost far below the
-M4's two thirds ([part 3](sme2-cache-associativity.md#the-same-experiment-on-amd-zen-5)). The cure is to pad B's
-rows or copy each strip of B into a contiguous buffer before the
-micro-kernel uses it, as part 2 does for the SME2 kernel. The next step
+With only the stride changed, it costs this micro-kernel 14–17%, through
+L2 set conflicts; [part 3](sme2-cache-associativity.md#the-same-experiment-on-amd-zen-5)
+measures and counts it. The cure is to pad B's rows or copy each strip of
+B into a contiguous buffer before the micro-kernel uses it. The next step
 does the copy.
 
 ## Step 5: pack B

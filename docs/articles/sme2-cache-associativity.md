@@ -8,9 +8,10 @@ permalink: /articles/sme2-cache-associativity.html
 # A power-of-two stride cuts SME2 GEMM throughput by two thirds on Apple M4
 
 *Apple M4 Max, one thread, FP32, and for comparison one AMD Zen 5 core.
-Part 3 of a series. How the kernel is built, and the machine's caches,
-TLBs and SME unit: [part 2, Matrix multiplication on Apple M4's SME2
-unit](sme2-gemm.md).*
+How the kernel is built, and the machine's caches, TLBs and SME unit, are
+in [part 2](sme2-gemm.md).*
+
+> **Matrix multiplication, from SIMD to Tensor Cores** · 1. [SIMD on CPU cores](simd-gemm.md) · 2. [The SME2 matrix unit](sme2-gemm.md) · **3. Cache-set conflicts** (this article) · 4. [CUDA on an RTX 5080](cuda-gemm.md) · 5. [Low-precision formats](lowp-gemm.md)
 
 A matrix multiplication written for ARM's Scalable Matrix Extension (SME2)
 reached **1,494 GFLOP/s at N = 4000 and 480 GFLOP/s at N = 4096**. The larger
@@ -608,6 +609,10 @@ What the experiments do not establish:
    Zen 5's evicted lines come back from a nearby L3 that does not conflict
    at these strides ([where an evicted line goes](#where-an-evicted-line-goes-l1l2-inclusion-and-the-llc)).
 
+**Next:** [part 4](cuda-gemm.md) builds the same multiplication on an NVIDIA
+GPU, where the bank structure of shared memory plays the role the cache
+sets play here.
+
 ## Method and reproduction
 
 The Zen 5 setup is described in its section and in
@@ -647,10 +652,4 @@ taskset -c 2 ./build/benchmarks/avx512_b_stride height   # rows per block
 
 The chart data is in [sme2-bstride.csv](assets/sme2-bstride.csv) and the
 experiment CSVs; [render_charts.py](assets/render_charts.py) regenerates the
-three figures. The kernel is part of
-[hpc-math-core](https://github.com/vdeviatkov/hpc-math-core), a set of GEMM
-implementations from scalar C++ to SME2 and CUDA Tensor Cores.
-
-**Next:** [part 4](cuda-gemm.md) builds the same multiplication on an NVIDIA
-GPU, where the bank structure of shared memory plays the role the cache
-sets play here.
+three figures.

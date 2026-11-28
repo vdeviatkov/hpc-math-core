@@ -10,10 +10,10 @@ permalink: /articles/lowp-gemm.html
 *Apple M4 Max (one P-core and its SME2 unit), AMD Ryzen 9 9950X (one Zen 5
 core) and an NVIDIA RTX 5080. Every number was measured on those machines;
 the code is in [hpc-math-core](https://github.com/vdeviatkov/hpc-math-core).
-Part 5 of a series: [part 1](simd-gemm.md) builds the FP32 kernels on CPU
-vector units, [part 2](sme2-gemm.md) on Apple's SME2 matrix unit,
-[part 4](cuda-gemm.md) on the GPU. This part changes only the number
-format.*
+This part changes only the number format of the kernels built in parts 1, 2
+and 4.*
+
+> **Matrix multiplication, from SIMD to Tensor Cores** · 1. [SIMD on CPU cores](simd-gemm.md) · 2. [The SME2 matrix unit](sme2-gemm.md) · 3. [Cache-set conflicts](sme2-cache-associativity.md) · 4. [CUDA on an RTX 5080](cuda-gemm.md) · **5. Low-precision formats** (this article)
 
 Parts 1–4 multiplied FP32 matrices. Most matrix multiplications that run
 today, in neural-network inference and training, do not: they use 16-bit

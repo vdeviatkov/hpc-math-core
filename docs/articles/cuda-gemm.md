@@ -12,10 +12,9 @@ peaks and profiles). Every number was measured on that GPU. Throughput is
 measured with each level's swept tile sizes; the Nsight Compute counters of
 Levels 2 and 4–7 were profiled at other sizes, named in each section and
 under [the ladder table](#the-ladder-measured). The code is in
-[hpc-math-core](https://github.com/vdeviatkov/hpc-math-core). Part 4 of a
-series: [part 1](simd-gemm.md) builds the CPU SIMD kernel whose register
-tile reappears here, [part 2](sme2-gemm.md) does the same on Apple's matrix
-unit.*
+[hpc-math-core](https://github.com/vdeviatkov/hpc-math-core).*
+
+> **Matrix multiplication, from SIMD to Tensor Cores** · 1. [SIMD on CPU cores](simd-gemm.md) · 2. [The SME2 matrix unit](sme2-gemm.md) · 3. [Cache-set conflicts](sme2-cache-associativity.md) · **4. CUDA on an RTX 5080** (this article) · 5. [Low-precision formats](lowp-gemm.md)
 
 The CPU articles in this series end with one core doing about 1.6 TFLOP/s
 on a matrix unit. A consumer GPU has 84 streaming multiprocessors, each
@@ -467,18 +466,6 @@ at least twice around its stage ring) and 2688 × 96 × 1024 (84 blocks: the
    does the same `mma` as Level 7; it reaches cuBLAS by letting a copy
    engine move the tiles and a dedicated warp schedule them, so the
    warps that compute do nothing else.
-
-## The series
-
-The same multiplication, four times: one CPU core with vector FMAs reaches
-328 GFLOP/s ([part 1](simd-gemm.md)), Apple's SME2 matrix unit 1.6 TFLOP/s
-([part 2](sme2-gemm.md)), and this GPU 29.8 TFLOP/s on its FMA cores and
-120 on its Tensor Cores. Every one of those kernels is built the same way:
-a block of C held in registers or accumulator tiles, enough independent
-accumulators to cover the latency of the multiply-add unit, operands staged
-so that each loaded byte feeds many operations, and a layout that keeps
-those loads out of each other's way, in cache sets ([part
-3](sme2-cache-associativity.md)) or in shared-memory banks.
 
 **Next:** [part 5](lowp-gemm.md) multiplies in bf16, fp16, INT8 and FP8,
 on this GPU and on the CPUs, and measures what each format gains in speed
