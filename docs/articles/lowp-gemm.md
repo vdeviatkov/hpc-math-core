@@ -25,27 +25,18 @@ measures what each format costs in accuracy.
 
 **Key results**
 
-- **The speed-up is a property of the instruction, not of the bit count.**
-  Measured peaks relative to FP32 on the same unit range from **0.53×**
-  (bf16 on M4 NEON: slower than FP32) through **1.0×** (fp16 and bf16 on
-  M4 SME2: no faster) to **4×** (INT8 on Zen 5) and **8.3×** (INT8 and FP8
-  on the RTX 5080, against its FP32 cores).
-- **The accumulator decides as much as the inputs.** On the RTX 5080 and on
-  M4 NEON, fp16 inputs run twice as fast when the sums are also kept in
-  fp16, at an error that grows with K: 0.2% relative at K = 256, 1.9% at
-  K = 16,384.
-- **FP8 on the RTX 5080 has two instructions.** The portable one runs at
-  249 TFLOP/s with FP32 accumulation; the block-scaled "MX" one at 497, the
-  only FP32-accumulating Tensor Core instruction here that runs at full
-  rate. It needs an `sm_120a` build. cuBLAS
-  uses it; switching the hand-written kernels to it took FP8 from 214 to
-  291 TFLOP/s (cp.async kernel) and from 233 to 387 (part 4's Level 8).
-- **The kernels:** INT8 reaches 3,676 GOP/s on one M4 SME2 unit and 1,138
-  on one Zen 5 core, 2.3× and 3.8× their FP32 kernels at N = 2,048, and
-  419 TOP/s on the RTX 5080 at N = 16,384 (98% of cuBLAS). Each CUDA kernel serves all
-  five formats; only the `mma.sync` instruction and the element width
-  change. Part 4's Level 8 reaches 97–102% of cuBLAS in every format at
-  N = 8,192 (97–103% at 16,384).
+- **The speed-up belongs to the instruction, not the bit count:** from
+  **0.53× FP32** (bf16 on M4 NEON) through 1.0× (16-bit on M4 SME2) to
+  **8.3×** (INT8 and FP8 on the RTX 5080).
+- **The accumulator matters as much as the inputs.** Keeping the sums in
+  fp16 doubles the speed on the RTX 5080 and M4 NEON, at an error that
+  grows with K: 0.2% at K = 256, 1.9% at K = 16,384.
+- **FP8 runs at full rate only through the block-scaled instruction**
+  (497 against 249 TFLOP/s), which needs an `sm_120a` build. Using it took
+  Level 8's FP8 from 233 to 387 TFLOP/s.
+- **INT8 kernels:** 3,676 GOP/s on one M4 SME2 unit, 1,138 on one Zen 5
+  core and 419 TOP/s on the RTX 5080 (98% of NVIDIA cuBLAS). One CUDA
+  kernel template serves all five formats.
 
 ## The formats
 
@@ -539,7 +530,7 @@ because all three accumulate the same `mma` instructions in the same k order.
    more. Level 8 moves tiles with TMA and leaves the compute warps nothing
    but `mma`: 97–102% of cuBLAS for every format at N = 8,192.
 
-## The series
+## Across the series
 
 The same multiplication, five times: a CPU core's vector units ([part
 1](simd-gemm.md)), Apple's SME2 matrix unit ([part 2](sme2-gemm.md)), its

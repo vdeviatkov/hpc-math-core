@@ -22,25 +22,17 @@ the caches and the TLB.
 
 **Key results**
 
-- The SME unit completes one 16 × 16 FP32 outer product (512 flops) per
-  cycle, but each result takes 4 cycles to feed the next: **1.96 TFLOP/s
-  peak, reachable only with four independent accumulators**. There is one
-  unit per performance-core cluster, not per core.
+- The SME unit completes one 16 × 16 FP32 outer product per cycle with a
+  4-cycle latency: **1.96 TFLOP/s peak, reachable only with all four
+  accumulator tiles**. There is one unit per P-core cluster, not per core.
 - Three steps after a one-tile baseline take the kernel from **475 to
-  1,645 GFLOP/s** (84% of peak; best size of each kernel):
-  use all four accumulator tiles (3.2×), block for the caches GotoBLAS-style
-  with an 8 MiB A block resident in L2 (up to 4.3× at large N), and pack
-  the B operand (up to 3.1× at power-of-two sizes). The four tiles are
-  arranged 1 × 4, which measures up to 7% faster than the balanced 2 × 2.
-- The result reaches 91–100% of Apple's own Accelerate library on the same
-  core for N ≥ 1024 and beats Arm's KleidiAI micro-kernel called on the
-  whole matrix at N = 4096 (1,600 vs 1,099 GFLOP/s): KleidiAI leaves cache
-  blocking to its caller.
-- With both SME units (`gemm_sme_mt`), **3.49 TFLOP/s FP32 and 910
-  GFLOP/s FP64 at N = 4096**, 110% / 115% of Accelerate on all cores. It
-  takes 8 threads, not 2: macOS cannot pin threads to clusters, and only
-  more threads than one cluster has cores guarantee that both units get
-  work.
+  1,645 GFLOP/s**, 84% of peak: all four tiles, GotoBLAS cache blocking,
+  and packed B.
+- That is **91–100% of Apple Accelerate** on one core for N ≥ 1024, and
+  ahead of Arm KleidiAI at N = 4096 (1,600 against 1,099 GFLOP/s).
+- With both SME units, **3.49 TFLOP/s FP32 at N = 4096**, 110% of
+  Accelerate on all cores. It takes 8 threads, because macOS cannot pin
+  threads to clusters.
 
 ## The idea in three pictures
 
@@ -742,6 +734,24 @@ there, 123 at N = 1024, from a separate run.
 - With all cores, Accelerate roughly doubles its one-thread throughput
   from N = 1024 up (FP32 1.9–2.0×; FP64 2.0–2.3×, the 2.3× at N = 1024
   where its one-thread FP64 dips to 366), as two SME units predict.
+
+## Limitations
+
+- **One machine.** One M4 Max system, with the P-core clock at
+  3.94–3.99 GHz in these runs; the comparison tables are one run each.
+- **The peak is measured, not published.** Apple documents no figures for
+  its matrix unit; 1.96 TFLOP/s per unit comes from the `FMOPA` throughput
+  loop, and every percentage of peak here rests on it.
+- **Square matrices only.** The cache blocks were swept on square sizes;
+  strongly non-square shapes may have optima elsewhere.
+- **No counters, no pinning.** macOS exposes neither hardware counters nor
+  thread-to-cluster pinning, so cache behaviour is inferred from
+  throughput and latency, and `gemm_sme_mt`'s thread placement from its
+  speed.
+- **Libraries as black boxes.** Accelerate's internals are not visible, and
+  KleidiAI is called on the whole matrix without the cache blocking its
+  design leaves to the caller; its N = 4096 figure measures that use, not
+  the micro-kernel's limit.
 
 ## Takeaways
 

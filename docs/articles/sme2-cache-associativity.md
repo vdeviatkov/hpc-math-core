@@ -20,26 +20,16 @@ cliff to its cause and measures both fixes.
 
 **Key results**
 
-- The slowdown follows the **byte distance between rows of B**, not the
-  matrix size: keeping N = 4096 and padding each row of B by 128 bytes
-  makes it 3.1× faster with the same arithmetic.
-- At a 16 KiB row stride, the B rows the kernel reuses compete for a small
-  part of the cache. The kernel collapses between 576 and 640 rows per
-  reused strip, far past the 8 lines L1 keeps at this stride, and the CPU
-  core's own loads hit a limit of similar size: the evidence points to
-  **L2 set conflicts**.
-- **Packing B** into contiguous strips removes the cliff for any stride. It
-  costs 3–5.5% of the runtime (2.5–4.9 ms of about 90 ms) and cuts compute
-  time by 8–9% even when the stride is already padded.
-- **On AMD Zen 5 the same mechanism costs much less.** Part 1's AVX-512
-  kernel (then with an 8 × 2 tile) loses 14–17% at N = 1024, 2048 and
-  4096 against the same rows padded by 64 B, against 68% here. Counted
-  with `perf`: short strips of B lose to L1 conflicts (a strip's rows
-  share one L1 set's 12 ways), the 256-row strips the kernel uses to L2
-  conflicts (L2 demand misses +27–88%), whose lines come back from an L3
-  45 cycles away.
-  Packing B in GotoBLAS order ([part 1, Step 5](simd-gemm.md#step-5-pack-b))
-  removes it there too.
+- The slowdown follows the **byte distance between B's rows**, not the
+  matrix size: padding each row of B by 128 bytes at N = 4096 makes the
+  kernel **3.1× faster** with the same arithmetic.
+- At a 16 KiB stride, the rows the kernel reuses compete for a few cache
+  sets. Where the kernel collapses points to **L2 set conflicts**, not L1.
+- **Packing B** removes the cliff at any stride, for 3–5.5% of the
+  runtime.
+- **On AMD Zen 5 the same mechanism costs 14–17%**, not 68%. Counted with
+  `perf`, the conflicts are in L1 and L2, and the evicted lines return
+  from an L3 only 45 cycles away.
 
 ## The kernel and the B operand
 
@@ -552,7 +542,7 @@ above actually feel:
   Apple documents neither the inclusion policy of the M4's L2 nor
   the SLC's allocation policy.
 
-Put together, this explains rule 5 below. On Zen 5 a strip row evicted by
+Put together, this explains [takeaway 5](#takeaways). On Zen 5 a strip row evicted by
 an L1 conflict comes back from the inclusive L2 at 14 cycles, and one
 evicted by an L2 conflict comes back from the victim L3 at 45. Every
 level the kernel falls back to is close and does not conflict at these strides. On the M4 the
@@ -584,7 +574,7 @@ What the experiments do not establish:
   matching across experiments; macOS has no public counter API, so cache
   misses were not counted there.
 
-## Rules of thumb
+## Takeaways
 
 1. **Look at strides in bytes, not dimensions.** A row stride that is a
    large power of two leaves few cache sets for all the rows a loop reuses.
@@ -613,7 +603,7 @@ What the experiments do not establish:
 GPU, where the bank structure of shared memory plays the role the cache
 sets play here.
 
-## Method and reproduction
+## Reproduce
 
 The Zen 5 setup is described in its section and in
 [experiments/zen5-b-stride](https://github.com/vdeviatkov/hpc-math-core/tree/main/docs/experiments/zen5-b-stride).

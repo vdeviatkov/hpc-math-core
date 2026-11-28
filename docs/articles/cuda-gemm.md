@@ -25,26 +25,17 @@ regression.
 
 **Key results**
 
-- Measured limits of this GPU: **59.7 TFLOP/s FP32**, **124.4 TFLOP/s on
-  the FP16 Tensor Cores** (fp32 accumulate), **812 GB/s** of DRAM bandwidth.
-  A GEMM at N = 4096 can reach up to 683 flops per DRAM byte, far above
-  either ridge point: it is a question of on-chip reuse, not of DRAM.
-- On the FMA cores, register tiling is the decisive step: **3.7 → 24.3
-  TFLOP/s** (6.6×). With double buffering, 128-bit shared-memory reads and
-  16 × 8 outputs per thread the best FMA kernel reaches **29.8 TFLOP/s,
-  77% of cuBLAS SGEMM**.
+- Measured limits: **59.7 TFLOP/s FP32**, **124.4 TFLOP/s on the FP16
+  Tensor Cores** and **812 GB/s** of DRAM bandwidth. At N = 4096 a GEMM is
+  limited by on-chip reuse, not by DRAM.
+- On the FMA cores, register tiling is the decisive step, **3.7 → 24.3
+  TFLOP/s**. The best FMA kernel reaches **29.8 TFLOP/s, 77% of NVIDIA
+  cuBLAS SGEMM**.
 - Tensor Cores alone do not help: the WMMA kernel runs at 22.2 TFLOP/s,
-  **below** the FMA kernels; profiled with one fragment per warp in a 4 × 4
-  warp block, 88% of its shared-memory loads hit bank conflicts and the
-  Tensor pipe is busy 12% of the time. A pipelined kernel with 128 × 128
-  tiles and padded shared memory reaches **107.9 TFLOP/s**: 87% of the
-  measured Tensor Core peak and 91% of cuBLAS FP16, with the Tensor pipe
-  86% busy.
-- The last 9% is data movement, not arithmetic. Level 8 loads tiles with
-  the TMA copy engine into hardware-swizzled shared memory and dedicates
-  one warp to loading: **117–120 TFLOP/s at N ≥ 8192, 99% of cuBLAS
-  FP16** and 95–97% of the measured peak, executing a third of Level 7's
-  instructions.
+  below the FMA kernels, held back by shared-memory bank conflicts.
+  Pipelining with padded shared memory reaches **107.9 TFLOP/s**.
+- The last step is data movement: TMA loads and a dedicated loader warp
+  give **117–120 TFLOP/s at N ≥ 8192, 99% of cuBLAS FP16**.
 
 ## The machine, measured
 

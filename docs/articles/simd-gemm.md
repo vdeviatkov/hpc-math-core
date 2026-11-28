@@ -25,32 +25,17 @@ independent accumulators the inner loop keeps in registers.
 **Key results**
 
 - The textbook i-j-k loop runs at **0.4–0.6 GFLOP/s** at N = 4096: it
-  touches a new cache line of B for every multiply-add. Changing the loop
-  order to i-k-j is **52–73× faster** in FP32, with no other change.
-- The peak is set by the FMA units: **362 GFLOP/s FP32 on a Zen 5 core
-  (AVX-512)**, measured, and **~130 on an M4 P-core (NEON)**, four FMAs per
-  cycle at ~4.05 GHz. To reach it a
-  kernel needs FMA latency × FMA pipes independent accumulators: 8–12 on
-  Zen 5, 12–16 on M4.
-- An AVX-512 register tile with 8 accumulators runs at **60% of peak**
-  because GCC folds the B loads into the FMAs, re-loading B for every FMA.
-  With 8 rows the compiler loads B once per step, and the 8 × 3 tile with
-  measured cache blocks peaks at **328 GFLOP/s, 91% of peak**.
-- With the tile shape a template parameter, every family is swept over
-  9–10 shapes. The winners: 6 × 2 for AVX2 (+12–37% over 4 × 2 at
-  N ≥ 256), 8 × 3 for AVX-512 (+12–29% FP32 and +24–31% FP64 at N ≥ 1024
-  over 8 × 2), and on the M4 a 6 × 4 tile with A loaded by `LDR` instead
-  of `LD1R` (+23–30% for that tile): 86% / 87% of peak with its measured
-  block.
-- The cache blocks around the tile are swept the same way. The best keep
-  each block of B within half of Zen 5's L2 and make the blocks of A
-  384–512 rows tall: at N = 4096, against 64-row blocks, +9–12% for AVX2
-  and NEON, +28% (FP32) and +50% (FP64) for AVX-512.
-- Copying each block of B into contiguous strips (GotoBLAS packing),
-  with the same micro-kernels, removes the remaining drop at power-of-two
-  sizes: at N = 4096 **+60% (AVX2 FP32), +8% (AVX-512 FP32) and +18%
-  (NEON FP32)**, flat from N = 1024 to 4096. Below N = 512 the copy costs
-  2–13%.
+  touches a new cache line of B for every multiply-add. Reordering it to
+  i-k-j is **52–73× faster** in FP32, with no other change.
+- The peak is set by the FMA units, **362 GFLOP/s FP32 on a Zen 5 core**
+  and ~130 on an M4 P-core, and reaching it takes enough independent
+  accumulators to cover the FMA latency: 8–12 on Zen 5, 12–16 on the M4.
+- An AVX-512 tile with 8 accumulators stalls at **60% of peak**, because
+  GCC folds B's loads into the FMAs. With 8 rows and measured cache blocks,
+  the 8 × 3 tile reaches **328 GFLOP/s, 91% of peak**.
+- Packing B into contiguous strips removes the remaining drop at
+  power-of-two sizes: at N = 4096, **+60% for AVX2** and +8–18% for
+  AVX-512 and NEON, flat from N = 1024 up.
 
 ## The problem
 
