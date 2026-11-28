@@ -461,8 +461,10 @@ narrows the candidates; the sweep selects the final block sizes.
 
 Two rules came out:
 
-- **Tall blocks of A.** Each block of B is fetched again for every block
-  of A rows, N / TileM times in all. Once B no longer fits in the
+- **Tall blocks of A.** The outermost loop runs over blocks of TileM rows
+  of A, and each one sweeps the whole of B, so B is read M / TileM times
+  in all: 64 times with 64-row blocks at N = 4096, 11 times with 384-row
+  blocks. Once B no longer fits in the
   last-level cache (N = 4096: 64 MiB in FP32), that traffic sets the pace,
   and every doubling of TileM helps until about 384–512 rows. At N ≤ 1024
   TileM makes no difference.
@@ -519,15 +521,16 @@ run (that of the packed-B comparison) at N = 256 and 4096, so its
 percentages are up to two points lower. Against the textbook loop at N = 4096 the AVX-512
 kernel is 704× faster in FP32.
 
-## What remains: B's row stride
+## Step 5: pack B
 
-The register-tile kernels lose throughput as N grows, and the drops line
-up with the byte distance between B's rows, which these kernels read in
-place: AVX2 drops at FP32 N = 1024 and FP64 N = 512, both a 4 KiB stride,
-and AVX-512 by 5% at FP32 N = 1024. The micro-kernel runs down 256 rows of
-B, and rows a power
-of two apart compete for a few cache sets. The micro-kernel experiment
-measures it directly, on data small enough for L1:
+Code: [`gemm_simd_packed<Ymm>`, `gemm_simd_packed<Zmm>`, `gemm_simd_packed<Q>`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/simd.hpp).
+
+The register-tile kernels of Step 4 lose throughput as N grows, and the
+drops line up with the byte distance between B's rows, which these kernels
+read in place: AVX2 drops at FP32 N = 1024 and FP64 N = 512, both a 4 KiB
+stride, and AVX-512 by 5% at FP32 N = 1024. The micro-kernel runs down 256
+rows of B, and rows a power of two apart compete for a few cache sets. The
+micro-kernel experiment measures it directly, on data small enough for L1:
 
 | AVX-512 FP32, 16 accumulators, L1-resident | GFLOP/s |
 |---|--:|
@@ -540,12 +543,8 @@ FP32 from N = 512 to 1024, where B's stride is one cost among several.
 With only the stride changed, it costs this micro-kernel 14–17%, through
 L2 set conflicts; [part 3](sme2-cache-associativity.md#the-same-experiment-on-amd-zen-5)
 measures and counts it. The cure is to pad B's rows or copy each strip of
-B into a contiguous buffer before the micro-kernel uses it. The next step
-does the copy.
-
-## Step 5: pack B
-
-Code: [`gemm_simd_packed<Ymm>`, `gemm_simd_packed<Zmm>`, `gemm_simd_packed<Q>`](https://github.com/vdeviatkov/hpc-math-core/blob/main/src/gemm/simd.hpp).
+B into a contiguous buffer before the micro-kernel uses it; this step does
+the copy.
 
 Every SIMD kernel in this series, including the 16- and 8-bit ones of
 [part 5](lowp-gemm.md), has the same inner step: load a few vectors of a

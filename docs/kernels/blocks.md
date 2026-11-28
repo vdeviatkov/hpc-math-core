@@ -36,7 +36,7 @@ for each block of TileM rows of A            (i-block)
 - **TileK × TileN, the B block,** is read by every R-row strip of the
   i-block, so it should stay in L2 for the whole i-block.
 - **TileM** is how many strips share one trip of the B block into L2.
-  Every B block is fetched again for each i-block: B travels N / TileM
+  Every B block is fetched again for each i-block: B travels M / TileM
   times from beyond L2. With 64 rows that is 64 times at N = 4096, where B
   (64 MiB FP32) fits no cache.
 - **TileK** is also the length of the A strip, R × TileK, which stays in

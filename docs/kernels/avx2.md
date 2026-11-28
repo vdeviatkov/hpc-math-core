@@ -162,7 +162,7 @@ alternating two broadcast registers, still with no spill.
 
 The 6 × 2 kernel reaches 94% (FP32) and 93% (FP64) of the AVX2 peak at
 N = 256. Past N = 512 what remains is B's row stride, not the tile:
-[Part 1](../articles/simd-gemm.md#what-remains-bs-row-stride).
+[Part 1](../articles/simd-gemm.md#step-5-pack-b).
 
 ## Reproduce
 
